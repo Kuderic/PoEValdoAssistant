@@ -1,0 +1,10 @@
+.env
+# Raw Ctrl+S page saves (may embed session-specific markup); the trimmed,
+# reviewed fixture lives in tests/fixtures/results_snapshot.html instead.
+chrome-html-examples/
+logs/*
+!logs/.gitkeep
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/

@@ -1,0 +1,97 @@
+# Valdo Map Sniper configuration. Secrets go in .env, never here.
+
+# "auto" resolves the current challenge league from poe.ninja at startup;
+# set an explicit league id (e.g. "Allflame") to override.
+league: auto
+
+server:
+  host: 127.0.0.1
+  port: 8765
+
+thresholds:
+  # Profit thresholds in DIVINE ORBS (absolute, not %): alert when
+  # (reference - listing), normalized to divines, is at least this much.
+  global_profit_div: 2
+  # Keyed by the map's Reward name (the value driver, e.g. "Foil Mageblood");
+  # item_name is only the fallback key when a listing has no reward line.
+  per_map: {}                  # e.g. "Foil Mageblood": 25
+
+alerts:
+  expiry_seconds: 12           # a stale alert can never be traveled to by reflex
+  max_display: 3               # top pick + runners-up shown on the overlay
+  sound: ""                    # path to a .wav; empty -> system beep
+  traveled_display_seconds: 10 # traveled map's mods stay readable this long
+
+hotkey:
+  combo: "ctrl+alt+t"
+  consume: all                 # all: a press clears every alert | top: runners-up stay targetable
+
+ninja:
+  enabled: true
+  refresh_minutes: 10
+  base_url: "https://poe.ninja"   # API paths verified 2026-08-09, see DESIGN.md
+
+# Manual chaos-denominated rates, used when poe.ninja is unavailable.
+currency_rates:
+  chaos: 1
+  divine: 180
+  exalted: 8
+
+# Manual reference price table: fallback when poe.ninja lacks foil Valdo
+# coverage, and always an override when an entry exists here.
+# Keyed by Reward name (item_name fallback), like thresholds.per_map.
+prices: {}
+#  "Foil Mageblood":
+#    currency: divine
+#    amount: 220
+
+# Hard warn/block rules. match: case-insensitive substring by default; set
+# regex: true for a regex. match_all: every pattern must hit (combo rule).
+# severity: warn -> overlay chip, alert still fires
+#           block -> log-only, no sound, no overlay alert, regardless of profit
+mod_warnings: []
+#  - label: "no regen"
+#    match: "cannot regenerate"
+#    severity: block
+
+# Difficulty scoring. Every listing gets:
+#   score = max(base_default, min_base of matched rules) x product(multipliers)
+#   required profit = thresholds.global_profit_div + score x div_per_point
+# so a harder map must be cheaper before it alerts. warning: true rules also
+# show a special chip on the overlay. Match texts are derived from known mod
+# lines - every listing's full mod list is logged (logs/*.jsonl), so verify
+# and tune these against real captures.
+mod_scoring:
+  base_default: 25
+  div_per_point: 0.2       # 0.2 div of extra required profit per difficulty point
+  rules:
+    - { label: "The Feared", match: "area contains the feared", min_base: 100 }
+    - { label: "100% Delirious", match: "100% delirious", multiplier: 1.8 }
+    - { label: "Porcupines", match: "porcupine", min_base: 20 }
+    - { label: "The Twisted", match: "area contains the twisted", min_base: 50 }
+    - label: "3-4 Tormented Spirits"
+      match: "possessed by 3 to 4 tormented spirits"
+      multiplier: 2.2
+    - { label: "VOID", match: "sent to the void", multiplier: 2.0, warning: red }
+    - { label: "BISMUTH", match: "bismuth", warning: yellow }
+    - { label: "BLIGHT", match: "blight", warning: yellow }
+    - { label: "Einhar", match: "einhar", min_base: 80 }
+    - { label: "Increasingly lethal", match: "increasingly lethal", multiplier: 1.7 }
+    - { label: "Fatal after time", match: "becomes fatal", multiplier: 2.0 }
+    - { label: "Reflect", match: "reflect", multiplier: 1.1 }
+    - label: "Invitation boss"
+      match: "area contains the (hidden|formed|forgotten)"
+      regex: true
+      min_base: 60
+
+game:
+  process_names:
+    - PathOfExile.exe
+    - PathOfExile_x64.exe
+    - PathOfExileSteam.exe
+    - PathOfExile_KG.exe
+  window_title: "Path of Exile"
+
+logging:
+  level: INFO
+  dir: logs

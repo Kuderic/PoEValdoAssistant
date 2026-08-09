@@ -1,0 +1,11 @@
+{
+  "comment": "Shared FNV-1a 32 (UTF-8 bytes) vectors. Asserted by tests/test_hash_parity.py (Python) and tests/harness/harness.html (JS). The last entry is the listing-ID key of the hash-fallback row in the harness fixture.",
+  "vectors": [
+    { "input": "", "fnv1a32": "811c9dc5" },
+    { "input": "a", "fnv1a32": "e40c292c" },
+    { "input": "foobar", "fnv1a32": "bf9cf968" },
+    { "input": "Valdo's Puzzle Box", "fnv1a32": "07d95310" },
+    { "input": "Ünïcödé ✓ ×3", "fnv1a32": "c9aacf8a" },
+    { "input": "FixtureSeller3|Cortex|42.5|divine|Area contains two Unique Bosses~Players cannot Regenerate Life, Mana or Energy Shield", "fnv1a32": "d88a2e7d" }
+  ]
+}
