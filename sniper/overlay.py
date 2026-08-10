@@ -34,7 +34,7 @@ from sniper.bus import (
 from sniper.config import Config
 from sniper.logging_setup import event
 from sniper.margin import profit_per_100_difficulty
-from sniper.sound import load_wav, scale_wav
+from sniper.sound import alert_wav_path
 
 try:
     import winsound
@@ -119,8 +119,8 @@ class Overlay:
         self._alerts: tuple[AlertView, ...] = ()
         self._muted = False
         self._volume = config.alerts.volume
-        # ((sound path, volume), scaled WAV bytes | None); see _alert_wav
-        self._wav_cache: tuple[tuple[str, float], bytes | None] | None = None
+        # ((sound path, volume), playable WAV path | None); see _alert_wav
+        self._wav_cache: tuple[tuple[str, float], str | None] | None = None
         # after a travel, the traveled listing stays pinned in the top slot
         # for traveled_display_seconds instead of vanishing instantly
         self._pinned_top: AlertView | None = None
@@ -1068,8 +1068,8 @@ class Overlay:
         self._mute_btn.config(text="🔇" if self._muted else "🔊", fg=BAD if self._muted else DIM)
         event("mute_toggled", muted=self._muted)
 
-    def _alert_wav(self) -> bytes | None:
-        """Volume-scaled WAV bytes for the current sound + volume setting.
+    def _alert_wav(self) -> str | None:
+        """Path to the volume-scaled WAV for the current sound + volume.
 
         Cached: rescaling a ~240 KB WAV on every alert would be wasted work,
         and the first call is warmed at startup so no alert pays for it.
@@ -1079,8 +1079,7 @@ class Overlay:
         key = (self._config.alerts.sound, round(self._volume, 3))
         cached = self._wav_cache
         if cached is None or cached[0] != key:
-            raw = load_wav(key[0])
-            cached = (key, None if raw is None else scale_wav(raw, self._volume))
+            cached = (key, alert_wav_path(key[0], self._volume))
             self._wav_cache = cached
         return cached[1]
 
@@ -1095,13 +1094,17 @@ class Overlay:
         # (~100-500ms when interrupting a playing sound), so it must never
         # run on the UI thread - burst alerts would delay rendering.
         def play() -> None:
-            data = self._alert_wav()
-            if data is not None:
-                winsound.PlaySound(data, winsound.SND_MEMORY | winsound.SND_ASYNC)
-            else:  # no WAV available: alias playback ignores volume
-                winsound.PlaySound(
-                    "SystemExclamation",
-                    winsound.SND_ALIAS | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
-                )
+            try:
+                path = self._alert_wav()
+                if path is not None:
+                    winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                else:  # no WAV available: alias playback ignores volume
+                    winsound.PlaySound(
+                        "SystemExclamation",
+                        winsound.SND_ALIAS | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+                    )
+            except Exception as e:
+                # a silent alert is a missed snipe; never swallow the reason
+                event("alert_sound_error", error=repr(e))
 
         threading.Thread(target=play, name="alert-sound", daemon=True).start()

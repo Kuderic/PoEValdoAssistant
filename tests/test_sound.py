@@ -6,11 +6,12 @@ bug here means either silence or blown-out noise on every alert.
 
 import array
 import io
+import pathlib
 import wave
 
 import pytest
 
-from sniper.sound import load_wav, scale_wav
+from sniper.sound import alert_wav_path, load_wav, scale_wav, source_path
 
 
 def make_wav(samples, sampwidth=2, nchannels=1, framerate=44100) -> bytes:
@@ -90,3 +91,54 @@ def test_scales_the_real_system_alert_wav():
     loud_peak = max(abs(s) for s in read_samples(raw))
     quiet_peak = max(abs(s) for s in read_samples(quiet))
     assert quiet_peak == pytest.approx(loud_peak / 2, rel=0.02)
+
+
+# --------------------------------------------------- playable file, not bytes
+# winsound REFUSES SND_MEMORY | SND_ASYNC ("Cannot play asynchronously from
+# memory"), and the error surfaced only inside the sound thread, where it was
+# swallowed - the alert simply went silent. Playback therefore goes through a
+# real file. These tests pin that down.
+
+
+@pytest.mark.skipif(not source_path(), reason="no system alert WAV on this machine")
+def test_alert_wav_path_returns_an_existing_playable_file():
+    import wave
+
+    path = alert_wav_path("", 0.5)
+    assert path and pathlib.Path(path).is_file()
+    with wave.open(path, "rb") as w:  # a real WAV, not a truncated write
+        assert w.getnframes() > 0
+
+
+@pytest.mark.skipif(not source_path(), reason="no system alert WAV on this machine")
+def test_full_volume_plays_the_source_file_untouched():
+    assert alert_wav_path("", 1.0) == str(source_path())
+
+
+@pytest.mark.skipif(not source_path(), reason="no system alert WAV on this machine")
+def test_scaled_file_is_actually_quieter_and_is_reused():
+    quiet = alert_wav_path("", 0.25)
+    assert quiet != str(source_path())
+    assert max(abs(s) for s in read_samples(pathlib.Path(quiet).read_bytes())) == pytest.approx(
+        max(abs(s) for s in read_samples(source_path().read_bytes())) / 4, rel=0.02
+    )
+    assert alert_wav_path("", 0.25) == quiet  # cached, not rewritten
+
+
+@pytest.mark.skipif(not source_path(), reason="no system alert WAV on this machine")
+def test_different_volumes_get_different_cache_files():
+    assert alert_wav_path("", 0.25) != alert_wav_path("", 0.5)
+
+
+def test_no_source_wav_yields_none_so_caller_falls_back_to_the_alias(monkeypatch):
+    from sniper import sound
+
+    monkeypatch.setattr(sound, "DEFAULT_WAV", pathlib.Path("nope-does-not-exist.wav"))
+    assert sound.alert_wav_path("also-missing.wav", 0.5) is None
+
+
+def test_overlay_never_asks_winsound_to_play_async_from_memory():
+    """Regression guard for the flag pair winsound rejects."""
+    source = pathlib.Path("sniper/overlay.py").read_text(encoding="utf-8")
+    assert "SND_MEMORY" not in source
+    assert "SND_FILENAME | winsound.SND_ASYNC" in source

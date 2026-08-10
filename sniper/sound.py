@@ -1,10 +1,14 @@
 """Volume-scaled alert audio.
 
 `winsound.PlaySound` has no volume control, and the system alias sounds
-("SystemExclamation") cannot be scaled at all. So the alert WAV is read,
-its PCM samples are scaled in place, and the result is played from memory
-(`SND_MEMORY`). Scaling is pure, cached by the caller, and never runs on
-the UI thread.
+("SystemExclamation") cannot be scaled at all. So the alert WAV is read and
+its PCM samples scaled, then written to a cached temp FILE and played with
+`SND_FILENAME | SND_ASYNC`.
+
+The file matters: winsound refuses `SND_MEMORY | SND_ASYNC` outright
+("Cannot play asynchronously from memory"), and playback must stay async -
+a synchronous call blocks its thread for the whole sound and cannot be
+interrupted by the next alert.
 
 Anything we cannot safely rescale (compressed or exotic sample widths) is
 returned untouched rather than corrupted into noise.
@@ -13,8 +17,10 @@ returned untouched rather than corrupted into noise.
 from __future__ import annotations
 
 import array
+import hashlib
 import io
 import sys
+import tempfile
 import wave
 from pathlib import Path
 
@@ -63,8 +69,8 @@ def scale_wav(data: bytes, volume: float) -> bytes:
         return data  # never let a malformed sound file break alerting
 
 
-def load_wav(path: str = "") -> bytes | None:
-    """WAV bytes for the alert: the configured file if set and readable,
+def source_path(path: str = "") -> Path | None:
+    """The WAV to alert with: the configured file if set and readable,
     otherwise the Windows default alert sound. None when neither exists -
     the caller then falls back to the system alias, which plays at full
     volume because an alias cannot be rescaled."""
@@ -73,7 +79,49 @@ def load_wav(path: str = "") -> bytes | None:
     for candidate in candidates:
         try:
             if candidate.is_file():
-                return candidate.read_bytes()
+                return candidate
         except OSError:
             continue
     return None
+
+
+def load_wav(path: str = "") -> bytes | None:
+    """Raw bytes of the alert WAV (see source_path)."""
+    src = source_path(path)
+    try:
+        return None if src is None else src.read_bytes()
+    except OSError:
+        return None
+
+
+def alert_wav_path(path: str = "", volume: float = 1.0) -> str | None:
+    """Path to a WAV at the requested volume, ready for SND_FILENAME.
+
+    Full volume plays the source file directly; anything quieter is scaled
+    once into a temp file keyed by source identity + volume, so repeated
+    alerts re-use it. Returns None when there is no source WAV at all.
+    """
+    src = source_path(path)
+    if src is None:
+        return None
+    volume = max(0.0, min(1.0, volume))
+    if volume >= 1.0:
+        return str(src)
+    try:
+        stat = src.stat()
+        # mtime and size in the key so editing the sound file invalidates it
+        digest = hashlib.sha1(
+            f"{src.resolve()}|{stat.st_mtime_ns}|{stat.st_size}|{volume:.3f}".encode(),
+            usedforsecurity=False,
+        ).hexdigest()[:16]
+        cached = Path(tempfile.gettempdir()) / f"valdo-alert-{digest}.wav"
+        if not cached.is_file():
+            scaled = scale_wav(src.read_bytes(), volume)
+            # write via a temp name then replace, so a half-written file is
+            # never handed to the player
+            partial = cached.with_suffix(".part")
+            partial.write_bytes(scaled)
+            partial.replace(cached)
+        return str(cached)
+    except OSError:
+        return str(src)  # cannot cache: better loud than silent
