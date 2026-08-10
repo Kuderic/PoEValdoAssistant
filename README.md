@@ -1,11 +1,19 @@
 # Valdo Map Sniper
 
 Watches your live searches on the official PoE trade site for Valdo's
-Puzzle Box foil maps, scores each listing's **divine profit against
-poe.ninja market medians** (adjusted for how nasty its mods are), alerts
-with sound + always-on-top overlay, and travels to the seller's hideout on
-a single hotkey press or overlay click. PoE 3.27+ asynchronous trading —
-no whispers; you complete the purchase manually at Faustus.
+Puzzle Box foil maps, scores each listing's **divine profit against the
+reward's real market price** (trade-API average of the cheapest unid
+copies, adjusted for how nasty the map's mods are), alerts with sound +
+always-on-top overlay, and travels to the seller's hideout on a single
+hotkey press or overlay click. PoE 3.27+ asynchronous trading — no
+whispers; you complete the purchase manually at Faustus.
+
+<img src="docs/screenshot.png" alt="Valdo Sniper overlay: a Mageblood map alerting at +107 div profit, with difficulty-scored mods highlighted, a runner-up alert, and the live feed of recent listings" width="440">
+
+*A 100-div Mageblood map alerting at +107 div profit (52%). Scoring mods
+are highlighted with their difficulty modifiers, VOID gets a red warning
+chip, and the live feed at the bottom shows every incoming listing —
+grayed out when below threshold or mod-blocked.*
 
 **Trade etiquette / ToS stance (non-negotiable, see CLAUDE.md):** one user
 input = one server action. The Travel click fires only in direct response
@@ -30,7 +38,8 @@ polling.
    - `thresholds.global_profit_div` — divine orbs of profit required to
      alert (per-reward overrides in `per_map`).
    - `mod_scoring` — difficulty rules; harder maps need more profit
-     (`required = threshold + score × div_per_point`). Tune values live
+     (`required = threshold × score / 100` — the threshold is what a
+     100-difficulty map needs; 200 difficulty doubles it). Tune values live
      from the overlay's ⚙ panel; saved tweaks land in
      `scoring_overrides.yaml`.
    - `mod_warnings` — hard `block` rules (log-only, never alert).

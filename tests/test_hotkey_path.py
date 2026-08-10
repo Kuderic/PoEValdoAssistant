@@ -139,4 +139,19 @@ async def test_travel_emits_traveled_view_with_mods(monkeypatch):
     traveled = [e for e in bus.drain() if isinstance(e, Traveled)]
     assert len(traveled) == 1
     assert traveled[0].view.listing_id == "snipe"
-    assert traveled[0].view.mods == ("Monsters fire 2 additional Projectiles",)
+    assert traveled[0].view.mods == (("Monsters fire 2 additional Projectiles", ""),)
+
+
+async def test_every_decision_reaches_the_feed(monkeypatch):
+    from sniper.bus import ListingSeen
+
+    app, bus, clicks, focused = build_app(monkeypatch)
+    feed(app, "good", 100)  # alert (100 div profit >= 20)
+    feed(app, "meh", 195)  # below_threshold (5 div profit)
+    seen = [e.entry for e in bus.drain() if isinstance(e, ListingSeen)]
+    assert [(e.listing_id, e.verdict) for e in seen] == [
+        ("good", "alert"),
+        ("meh", "below_threshold"),
+    ]
+    assert seen[0].profit_div == 100
+    assert seen[1].profit_div == 5

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.2.0
+// @version      0.3.0
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
@@ -40,14 +40,13 @@ const SELECTORS = {
   modLine: '.item-mod span[data-field^="stat."]',
   rewardValue: '.item-property span[type="76"] > span:last-of-type',
   travelButton: 'button.direct-btn',
-  /* PLACEHOLDER: containers that might hold the hot-item confirmation
-     dialog. Not in the saved snapshot - the text filter below does the real
-     work; capture the dialog's HTML when it appears to tighten this. */
-  confirmDialog: '.modal-content, [class*="modal"], [class*="popup"], [class*="dialog"]',
 };
 
-// Confirm-button text filter for the hot-item confirmation dialog.
-const CONFIRM_TEXT = /^(travel|confirm|ok|yes|proceed|continue)\b/i;
+// Hot-item confirmation (verified from in-demand-confirmation.html snapshot,
+// 2026-08-09): there is NO modal - the Travel button itself turns into
+// "In demand. Teleport anyway?" (class gains "expired") and must be clicked
+// a second time to complete the same travel action.
+const CONFIRM_TEXT = /in demand|teleport anyway/i;
 const CONFIRM_WINDOW_MS = 3_000;
 
 const WS_URL = 'ws://127.0.0.1:8765';
@@ -162,8 +161,27 @@ function main() {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }
 
+  /**
+   * The reward this tab's search targets, taken as the majority reward among
+   * currently visible rows (a live search shows recent results immediately,
+   * so this resolves at page load). Lets the Python side price the reward
+   * via the trade API before the first live push arrives.
+   */
+  function majorityReward() {
+    if (!observedContainer) return null;
+    const counts = new Map();
+    for (const row of observedContainer.querySelectorAll(SELECTORS.row)) {
+      const reward = textOf(row, SELECTORS.rewardValue);
+      if (reward) counts.set(reward, (counts.get(reward) || 0) + 1);
+    }
+    let best = null;
+    let n = 0;
+    for (const [reward, count] of counts) if (count > n) { best = reward; n = count; }
+    return best;
+  }
+
   function hello() {
-    send({ type: 'hello', search_id: searchId, tab_id: tabId });
+    send({ type: 'hello', search_id: searchId, tab_id: tabId, search_reward: majorityReward() });
   }
 
   function connect() {
@@ -264,30 +282,23 @@ function main() {
     return null;
   }
 
-  let lastConfirmClick = 0; // guards against double-confirming overlapping dialogs
-
   /**
-   * Hot items can pop a confirmation dialog after the Travel click. Clicking
-   * its confirm button completes the SAME single user-initiated travel
-   * action (one input -> one server action): at most one confirm click, only
-   * within a short window after the travel click, never retried.
+   * Hot items: after the Travel click, the SAME button turns into
+   * "In demand. Teleport anyway?" and needs one more click. That second
+   * click completes the same single user-initiated travel action (one
+   * input -> one server action): at most one confirm click, only within a
+   * short window after the travel click, never retried.
    */
   function watchForConfirm(id) {
     const deadline = Date.now() + CONFIRM_WINDOW_MS;
     const timer = setInterval(() => {
       if (Date.now() > deadline) return clearInterval(timer);
-      for (const container of document.querySelectorAll(SELECTORS.confirmDialog)) {
-        if (!container.isConnected || container.offsetParent === null) continue;
-        for (const btn of container.querySelectorAll('button')) {
-          if (!CONFIRM_TEXT.test(btn.textContent.trim())) continue;
-          clearInterval(timer);
-          if (Date.now() - lastConfirmClick < 500) return;
-          lastConfirmClick = Date.now();
-          btn.click();
-          send({ type: 'click_result', listing_id: id, ok: true, reason: 'auto_confirmed' });
-          return;
-        }
-      }
+      const rowEl = resolveRow(id);
+      const btn = rowEl && rowEl.querySelector(SELECTORS.travelButton);
+      if (!btn || !CONFIRM_TEXT.test(btn.textContent.trim())) return;
+      clearInterval(timer);
+      btn.click();
+      send({ type: 'click_result', listing_id: id, ok: true, reason: 'auto_confirmed' });
     }, 100);
   }
 

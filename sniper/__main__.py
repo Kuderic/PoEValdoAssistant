@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import contextlib
 import threading
+from collections import OrderedDict
 
 from sniper import logging_setup
 from sniper.alerts import AlertStore
@@ -21,7 +22,9 @@ from sniper.bus import (
     AlertsChanged,
     Bus,
     ClickOutcome,
+    FeedEntry,
     GameStatus,
+    ListingSeen,
     PriceStatus,
     TabsChanged,
     Traveled,
@@ -58,10 +61,32 @@ class App:
             on_tabs_changed=self._on_tabs_changed,
         )
         self.watcher = GameWatcher(config.game.process_names)
+        # every recent decision (any verdict) so grayed-out feed rows are
+        # clickable too; _traveled_ids guards one-travel-per-listing
+        self._recent: OrderedDict[str, Decision] = OrderedDict()
+        self._traveled_ids: set[str] = set()
 
     # ------------------------------------------------------------ callbacks
 
     def _on_decision(self, decision: Decision) -> None:
+        self._recent[decision.listing.listing_id] = decision
+        while len(self._recent) > 200:
+            self._recent.popitem(last=False)
+        if self.bus:  # live feed shows every listing, alerting or not
+            self.bus.put(
+                ListingSeen(
+                    FeedEntry(
+                        listing_id=decision.listing.listing_id,
+                        key=decision.key,
+                        amount=decision.listing.price.amount,
+                        currency=decision.listing.price.currency,
+                        profit_div=decision.profit_div,
+                        difficulty=decision.difficulty,
+                        verdict=decision.verdict,
+                        mods=decision.mods_annotated,
+                    )
+                )
+            )
         if decision.verdict != "alert":
             return
         if self.store.insert(decision):
@@ -109,24 +134,40 @@ class App:
         await self._travel(alert)
 
     async def travel_listing(self, listing_id: str) -> None:
-        """Overlay click on a specific alert row: one user click = one
-        click_travel for exactly that listing. Same game gate as the hotkey."""
+        """Overlay click on any listed row - active alert OR a grayed-out
+        feed entry. One user click = one click_travel for exactly that
+        listing, once ever, with the same game gate as the hotkey."""
+        import time
+
+        from sniper.alerts import Alert
+
         if not self.watcher.running.is_set():
             event("travel_click_ignored", reason="poe_not_running", listing_id=listing_id)
             if self.bus:
                 self.bus.put(ClickOutcome(listing_id, False, "PoE not running - click ignored"))
             return
+        if listing_id in self._traveled_ids:
+            event("travel_click_noop", reason="already_traveled", listing_id=listing_id)
+            if self.bus:
+                self.bus.put(ClickOutcome(listing_id, False, "already traveled to this listing"))
+            return
         alert = self.store.consume(listing_id)
         self._push_alerts(new_alert=False)
         if alert is None:
-            event("travel_click_noop", reason="alert_gone", listing_id=listing_id)
-            if self.bus:
-                self.bus.put(ClickOutcome(listing_id, False, "alert expired or already used"))
-            return
+            decision = self._recent.get(listing_id)
+            if decision is None:
+                event("travel_click_noop", reason="listing_unknown", listing_id=listing_id)
+                if self.bus:
+                    self.bus.put(ClickOutcome(listing_id, False, "listing no longer tracked"))
+                return
+            now = time.monotonic()
+            alert = Alert(decision=decision, created_monotonic=now, expires_at_monotonic=now)
+        self._traveled_ids.add(listing_id)
         event(
             "travel_click",
             listing_id=listing_id,
             key=alert.decision.key,
+            verdict=alert.decision.verdict,
             profit_div=round(alert.decision.profit_div or 0, 2),
         )
         await self._travel(alert)
@@ -145,16 +186,22 @@ class App:
 
     # ------------------------------------------------------------ live tuning
 
-    def apply_scoring(self, scoring_config) -> None:
-        """Swap difficulty scoring live (tuning panel). Runs on the asyncio
-        thread via call_soon_threadsafe; affects listings from now on."""
+    def apply_tuning(self, scoring_config, global_profit_div: float) -> None:
+        """Swap difficulty scoring + profit threshold live (settings panel).
+        Runs on the asyncio thread via call_soon_threadsafe; affects listings
+        from now on."""
+        from dataclasses import replace
+
         from sniper.modrules import ModScoring
 
         self.server.set_scoring(ModScoring(scoring_config))
+        self.server.set_thresholds(
+            replace(self.config.thresholds, global_profit_div=global_profit_div)
+        )
         event(
-            "scoring_updated",
+            "tuning_updated",
+            global_profit_div=global_profit_div,
             base_default=scoring_config.base_default,
-            div_per_point=scoring_config.div_per_point,
             rules={
                 r.label: {"min_base": r.min_base, "multiplier": r.multiplier}
                 for r in scoring_config.rules
@@ -176,6 +223,65 @@ class App:
             await asyncio.sleep(10)
             if self.bus and self.server.tabs:
                 self.bus.put(TabsChanged(tuple(self.server.tab_snapshot())))
+
+    async def trade_price_loop(self, pricer) -> None:
+        """Average the cheapest unid listings of each active reward's unique
+        via the trade API (primary price source). Checks every 15s so a
+        NEWLY-opened live search gets priced within seconds; each reward is
+        re-priced every refresh_minutes."""
+        import time
+
+        from sniper.tradeprice import TradeBackoff
+
+        interval_s = self.config.trade_pricing.refresh_minutes * 60
+        last_priced: dict[str, float] = {}
+        while True:
+            await asyncio.sleep(15)
+            league = self.book.league  # resolves via the first ninja refresh
+            if league is None or pricer.in_backoff:
+                continue
+            now = time.monotonic()
+            due = [
+                r
+                for r in sorted(self.server.active_rewards())
+                if now - last_priced.get(r, -interval_s) >= interval_s
+            ]
+            for reward in due:
+                try:
+                    listings = await pricer.fetch_unid_listings(league, reward)
+                except TradeBackoff as e:
+                    event(
+                        "trade_backoff",
+                        reason=str(e),
+                        retry_in_s=round(max(pricer.backoff_remaining, 1), 1),
+                    )
+                    break
+                except Exception as e:  # pricing must never kill the app
+                    event("trade_price_error", reward=reward, error=repr(e))
+                    break
+                last_priced[reward] = time.monotonic()
+                chaos_prices = [
+                    c
+                    for amount, currency in listings
+                    if (c := self.book.to_chaos(amount, currency)) is not None
+                ]
+                if chaos_prices:
+                    avg = sum(chaos_prices) / len(chaos_prices)
+                    self.book.set_trade_price(reward, avg)
+                    divine = self.book.rate_chaos("divine") or 1
+                    event(
+                        "trade_price",
+                        reward=reward,
+                        listings=len(chaos_prices),
+                        avg_div=round(avg / divine, 1),
+                    )
+                else:
+                    event(
+                        "trade_price_empty",
+                        reward=reward,
+                        note="no unid listings found; ninja/manual fallback applies",
+                    )
+                await pricer.pause_between_rewards()
 
     async def price_refresh_loop(self, ninja: NinjaClient) -> None:
         interval_s = self.config.ninja.refresh_minutes * 60
@@ -211,6 +317,15 @@ class App:
             tasks.append(asyncio.create_task(self.price_refresh_loop(ninja), name="price-refresh"))
         else:
             event("ninja_disabled", note="manual price table only")
+        if self.config.trade_pricing.enabled:
+            from sniper.tradeprice import TradePricer
+
+            pricer = TradePricer(
+                base_url=self.config.trade_pricing.base_url,
+                max_listings=self.config.trade_pricing.max_listings,
+                corrupted_uniques=tuple(self.config.trade_pricing.corrupted_uniques),
+            )
+            tasks.append(asyncio.create_task(self.trade_price_loop(pricer), name="trade-price"))
         await asyncio.gather(*tasks)
 
 
@@ -245,8 +360,12 @@ def run_with_overlay(config: Config, config_path: str) -> None:
     def on_travel(listing_id: str) -> None:
         asyncio.run_coroutine_threadsafe(app.travel_listing(listing_id), loop)
 
-    def on_scoring_change(scoring_config) -> None:
-        loop.call_soon_threadsafe(app.apply_scoring, scoring_config)
+    def on_settings_change(scoring_config, global_profit_div: float, combo: str) -> str | None:
+        """Returns an error string (shown in the panel) or None. The hotkey
+        rebinds on this (UI) thread; scoring/threshold swap on the loop."""
+        error = hotkey.rebind(combo)
+        loop.call_soon_threadsafe(app.apply_tuning, scoring_config, global_profit_div)
+        return error
 
     root = tk.Tk()
     Overlay(
@@ -254,7 +373,7 @@ def run_with_overlay(config: Config, config_path: str) -> None:
         bus,
         config,
         on_travel=on_travel,
-        on_scoring_change=on_scoring_change,
+        on_settings_change=on_settings_change,
         overrides_path=Path(config_path).with_name(SCORING_OVERRIDES_NAME),
     )
     try:

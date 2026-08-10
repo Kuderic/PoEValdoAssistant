@@ -48,6 +48,9 @@ class PriceBook:
         self._ninja_rewards: dict[str, float] = {}  # reward -> median chaosValue
         self._live_rates: dict[str, float] = {}  # trade short id -> chaos
         self._last_refresh_monotonic: float | None = None
+        # trade-API unid-unique averages: reward -> (chaos, monotonic set-time)
+        self._trade_rewards: dict[str, tuple[float, float]] = {}
+        self._trade_ttl_s = max(config.trade_pricing.refresh_minutes * 60 * 2, 300)
 
     # ------------------------------------------------------------------ state
 
@@ -128,6 +131,30 @@ class PriceBook:
         rate = self.rate_chaos(currency)
         return None if rate is None else amount * rate
 
+    def set_trade_price(self, reward: str, chaos_value: float) -> None:
+        """Store a trade-API unid-unique average (App's trade refresh loop)."""
+        self._trade_rewards[reward] = (chaos_value, time.monotonic())
+
+    def _trade_reference(self, key: str) -> Reference | None:
+        entry = self._trade_rewards.get(key)
+        if entry is None:
+            return None
+        chaos, set_at = entry
+        if time.monotonic() - set_at > self._trade_ttl_s:
+            return None  # too old - fall through to ninja
+        divine_rate = self.rate_chaos("divine")
+        if divine_rate:
+            display_amount, display_currency = round(chaos / divine_rate, 1), "divine"
+        else:
+            display_amount, display_currency = round(chaos, 1), "chaos"
+        return Reference(
+            key=key,
+            display_amount=display_amount,
+            display_currency=display_currency,
+            chaos_value=chaos,
+            source="trade",
+        )
+
     def reference_for(self, key: str) -> Reference | None:
         manual = self._config.prices.get(key)
         if manual is not None:
@@ -141,6 +168,12 @@ class PriceBook:
                 chaos_value=chaos,
                 source="manual",
             )
+        # trade-API unid average is the primary market source (poe.ninja's
+        # per-map medians proved inaccurate); ninja remains the fallback
+        # until the first trade fetch lands or when it goes stale.
+        trade = self._trade_reference(key)
+        if trade is not None:
+            return trade
         chaos = self._ninja_rewards.get(key)
         if chaos is None:
             return None

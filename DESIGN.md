@@ -75,8 +75,11 @@ Userscript replies with `{"type": "click_result", "listing_id": "...",
 surface in the overlay instead of failing silently.
 
 Heartbeat: userscript sends `{"type": "hello", "search_id": ..., "tab_id":
-...}` on connect and every 30s; the overlay shows a per-tab connection
-indicator so a dead tab is visible before it costs a snipe.
+..., "search_reward": ...}` on connect and every 30s; the overlay shows a
+per-tab connection indicator so a dead tab is visible before it costs a
+snipe. `search_reward` is the majority reward among the tab's currently
+visible rows (a live search shows recent results at load) — it tells the
+trade pricer what to price before the first live push arrives.
 
 ## Scam guard
 
@@ -106,10 +109,11 @@ for regex, `match_all` for combos where every pattern must hit):
 - `score = max(base_default, min_bases of matched rules) x product of
   matched multipliers`. base_default is 25 (a clean Valdo map is assumed
   meaningfully hard); min-bases take the max, not the sum.
-- `required_profit_div = thresholds.global_profit_div (or per_map) +
-  score x div_per_point` — a harder map must be cheaper before it alerts.
-  Example: The Feared (base 100) + 100% Delirious (x1.8) = 180 points ->
-  at 0.2 div/point the map needs 36 extra div of profit.
+- `required_profit_div = thresholds.global_profit_div (or per_map) x
+  score / 100` — the base threshold is calibrated for a 100-difficulty
+  map; a 200-difficulty map needs 2x the profit, a 50-difficulty map only
+  half. Example: The Feared (base 100) + 100% Delirious (x1.8) = 180
+  points -> 1.8x the base threshold.
 - Alert ranking and the hotkey's best-pick use **surplus** (profit above
   the difficulty-adjusted requirement), not raw profit.
 - Baseline rule values (config.yaml): Feared 100 / Twisted 50 / Einhar 80 /
@@ -121,6 +125,30 @@ for regex, `match_all` for combos where every pattern must hit):
   patterns against real captures.
 
 ## Price cache and margin engine
+
+**Primary reward pricing — official trade API unid averages (added
+2026-08-09; poe.ninja's per-map medians proved inaccurate in practice):**
+
+- For every *active* reward (a connected tab's `search_reward`, plus
+  rewards seen in listings within the last 30 min), the trade pricer
+  searches the **unidentified** version of the unique —
+  `POST /api/trade/search/{league}` with `name` (verified: `name` matches
+  unid uniques; base-type search is a 1c gamble bin), `identified: false`,
+  `status: any`, no foil filter (foil doesn't matter; foils list at
+  market parity) — then fetches the cheapest `max_listings` and stores
+  the **average** in the PriceBook.
+- Cadence: the loop wakes every 15s so a newly-opened live search is
+  priced within seconds; each reward re-prices every
+  `trade_pricing.refresh_minutes` (10 min default, floor 5). Requests are
+  spaced ~3s (limits observed: 5 searches/10s) and 429/Retry-After backs
+  off exponentially. `POESESSID` from .env is attached when present.
+- ToS stance: these are supplementary PRICING queries like poe.ninja was
+  — a handful of requests per 10 minutes — not listing polling for
+  snipes (which remains push-only via the live-search tabs).
+- Reference precedence: manual `prices:` -> trade average (fresh, TTL
+  2x refresh) -> poe.ninja median (fallback until the first trade fetch,
+  or when trade data goes stale). Currency rates still come from ninja.
+
 
 - Source: poe.ninja economy API. **Verified 2026-08-09** (docs at
   poe.ninja/docs/api; the old `/api/data/*` endpoints are dead):
@@ -159,8 +187,8 @@ for regex, `match_all` for combos where every pattern must hit):
 
 ## Live tuning panel
 
-The overlay's ⚙ button opens a panel editing `base_default`,
-`div_per_point`, and every scoring rule's `min_base`/`multiplier`
+The overlay's ⚙ button opens a panel editing the base threshold, hotkey
+combo, `base_default`, and every scoring rule's `min_base`/`multiplier`
 (match patterns and warning colors stay in config.yaml). "Apply" swaps the
 scoring engine live (affects listings from then on); "Apply + Save" also
 writes `scoring_overrides.yaml` next to config.yaml, which is merged over
@@ -174,15 +202,15 @@ touching the commented main config.
   one server action, same PoE-process gate as the hotkey. Clicking
   consumes only the clicked alert (runners-up stay), while the hotkey
   keeps its configured consume mode and always targets the top pick.
-- Hot items can pop a confirmation dialog on the trade site after the
-  Travel click. The userscript watches for it for 3 seconds after its
-  single travel click and clicks the confirm button **at most once**,
-  reporting `click_result {ok: true, reason: "auto_confirmed"}`. This
-  completes the same single user-initiated action — never a second travel,
-  never retried, inert outside the 3s window. The dialog's markup is not
-  in our snapshot; the userscript matches by button text
-  (travel/confirm/ok/yes/proceed) under generic modal containers — capture
-  its HTML when it first appears to tighten `SELECTORS.confirmDialog`.
+- Hot items (verified from the in-demand-confirmation.html snapshot,
+  2026-08-09): there is **no modal** — after the Travel click, the same
+  `direct-btn` gains class `expired` and its text becomes
+  "In demand. Teleport anyway?". The userscript watches that row's button
+  for 3 seconds after its single travel click and clicks it **at most
+  once** when the in-demand text appears, reporting
+  `click_result {ok: true, reason: "auto_confirmed"}`. This completes the
+  same single user-initiated action — never a second travel, never
+  retried, inert outside the 3s window.
 
 ## Hotkey and focus path
 

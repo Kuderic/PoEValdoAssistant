@@ -33,7 +33,6 @@ mod_warnings:
 
 mod_scoring:
   base_default: 25
-  div_per_point: 0.2
   rules:
     - { label: "The Feared", match: "area contains the feared", min_base: 100 }
     - { label: "100% Delirious", match: "100% delirious", multiplier: 1.8 }

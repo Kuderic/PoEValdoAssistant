@@ -77,13 +77,15 @@ async def test_full_stream_end_to_end(running_server):
         assert by_id["case2-chaos-normalized"].currency_mismatch
         assert by_id["case2-chaos-normalized"].margin == (36000 - 9000) / 36000
         assert by_id["case3-blocked"].verdict == "blocked"
-        assert by_id["case4-below"].verdict == "below_threshold"
+        # proportional scaling: clean map (diff 25) needs 20 * 0.25 = 5 div,
+        # so case4's 10 div profit now alerts
+        assert by_id["case4-below"].verdict == "alert"
         assert by_id["case5-noref"].verdict == "no_reference"
         assert by_id["case6-warn-mod"].verdict == "alert"
         assert [h.label for h in by_id["case6-warn-mod"].mod_hits] == ["no regen"]
-        # difficulty scoring: Feared+Delirious -> diff 180 -> need 20 + 36 = 56 div
+        # difficulty scaling: Feared+Delirious -> diff 180 -> need 20*1.8 = 36 div
         assert by_id["case7-hard-but-cheap"].verdict == "alert"  # 120 div profit
-        assert by_id["case7-hard-but-cheap"].required_profit_div == 56
+        assert by_id["case7-hard-but-cheap"].required_profit_div == 36
         assert by_id["case8-hard-too-pricey"].verdict == "below_threshold"  # 25 div
         assert by_id["case9-void-warning"].verdict == "alert"
         assert by_id["case9-void-warning"].special_warnings == (("VOID", "red"),)

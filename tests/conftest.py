@@ -15,6 +15,7 @@ from sniper.config import (
     NinjaConfig,
     ServerConfig,
     Thresholds,
+    TradePricingConfig,
 )
 
 
@@ -27,7 +28,6 @@ def make_config(
     mod_warnings: tuple[ModWarningRule, ...] = (),
     scoring_rules: tuple[ModScoringRule, ...] = (),
     scoring_base_default: float = 25.0,
-    scoring_div_per_point: float = 0.2,
     ninja_enabled: bool = False,
     port: int = 8765,
 ) -> Config:
@@ -38,6 +38,7 @@ def make_config(
         alerts=AlertsConfig(),
         hotkey=HotkeyConfig(),
         ninja=NinjaConfig(enabled=ninja_enabled),
+        trade_pricing=TradePricingConfig(enabled=False),
         currency_rates=currency_rates or {"chaos": 1, "divine": 180, "exalted": 2},
         prices=prices
         if prices is not None
@@ -45,7 +46,6 @@ def make_config(
         mod_warnings=mod_warnings,
         mod_scoring=ModScoringConfig(
             base_default=scoring_base_default,
-            div_per_point=scoring_div_per_point,
             rules=scoring_rules,
         ),
         game=GameConfig(),

@@ -50,5 +50,21 @@ class Hotkey:
             return
         asyncio.run_coroutine_threadsafe(self._coro_factory(), self._loop)
 
+    def rebind(self, combo: str) -> str | None:
+        """Swap the hotkey combo live (settings panel). Returns an error
+        message on failure (old combo stays active), None on success."""
+        combo = combo.strip()
+        if combo == self._combo:
+            return None
+        try:
+            new_handle = keyboard.add_hotkey(combo, self._on_press)
+        except Exception as e:
+            return f"invalid hotkey {combo!r}: {e}"
+        keyboard.remove_hotkey(self._handle)
+        self._handle = new_handle
+        self._combo = combo
+        event("hotkey_rebound", combo=combo)
+        return None
+
     def unregister(self) -> None:
         keyboard.remove_hotkey(self._handle)

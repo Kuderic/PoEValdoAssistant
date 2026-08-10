@@ -1,8 +1,9 @@
 """Pure decision logic: listing + PriceBook + rules -> Decision. Hot path.
 
 Alert condition: profit_div >= required_profit_div, where
-required_profit_div = threshold + difficulty_score * div_per_point.
-Harder maps (per config mod_scoring rules) must be cheaper to alert.
+required_profit_div = threshold * difficulty_score / 100.
+The base threshold is calibrated for a 100-difficulty map: a 200-difficulty
+map needs twice the profit, a 50-difficulty map only half.
 """
 
 from __future__ import annotations
@@ -25,10 +26,11 @@ def evaluate(
     mod_hits = rules.evaluate(listing.mods)
     blocked = any(h.severity == "block" for h in mod_hits)
 
-    # no scoring engine -> neutral (score 0, no cutoff shift)
-    scoring = scoring or ModScoring(ModScoringConfig(base_default=0.0, div_per_point=0.0))
+    # no scoring engine -> neutral (difficulty 100 = exactly the threshold)
+    scoring = scoring or ModScoring(ModScoringConfig(base_default=100.0))
     difficulty = scoring.evaluate(listing.mods)
-    required = threshold + difficulty.score * scoring.div_per_point
+    annotated = scoring.annotate(listing.mods)
+    required = threshold * difficulty.score / 100.0
 
     reference = book.reference_for(key)
     if reference is None:
@@ -41,6 +43,7 @@ def evaluate(
             difficulty=difficulty.score,
             difficulty_mods=difficulty.matched,
             special_warnings=difficulty.warnings,
+            mods_annotated=annotated,
             required_profit_div=required,
         )
 
@@ -57,6 +60,7 @@ def evaluate(
             difficulty=difficulty.score,
             difficulty_mods=difficulty.matched,
             special_warnings=difficulty.warnings,
+            mods_annotated=annotated,
             required_profit_div=required,
         )
 
@@ -85,5 +89,6 @@ def evaluate(
         difficulty=difficulty.score,
         difficulty_mods=difficulty.matched,
         special_warnings=difficulty.warnings,
+        mods_annotated=annotated,
         required_profit_div=required,
     )

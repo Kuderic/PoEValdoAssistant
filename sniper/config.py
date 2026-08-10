@@ -39,22 +39,37 @@ def apply_scoring_overrides(scoring: ModScoringConfig, path: Path) -> ModScoring
         )
     return ModScoringConfig(
         base_default=float(raw.get("base_default", scoring.base_default)),
-        div_per_point=float(raw.get("div_per_point", scoring.div_per_point)),
         rules=tuple(rules),
     )
 
 
-def save_scoring_overrides(scoring: ModScoringConfig, path: Path) -> None:
-    """Persist tuning-panel values (numbers only; match patterns stay in
-    config.yaml)."""
+def save_scoring_overrides(
+    scoring: ModScoringConfig,
+    path: Path,
+    global_profit_div: float | None = None,
+    hotkey_combo: str | None = None,
+) -> None:
+    """Persist tuning-panel values (numbers + hotkey combo; match patterns
+    stay in config.yaml)."""
     data = {
         "base_default": scoring.base_default,
-        "div_per_point": scoring.div_per_point,
         "rules": {
             r.label: {"min_base": r.min_base, "multiplier": r.multiplier} for r in scoring.rules
         },
     }
+    if global_profit_div is not None:
+        data["global_profit_div"] = global_profit_div
+    if hotkey_combo is not None:
+        data["hotkey_combo"] = hotkey_combo
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def load_extra_overrides(path: Path) -> dict:
+    """Non-scoring values saved by the settings panel (threshold, hotkey)."""
+    if not path.exists():
+        return {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return {k: raw[k] for k in ("global_profit_div", "hotkey_combo") if raw.get(k) is not None}
 
 
 @dataclass(frozen=True)
@@ -77,6 +92,7 @@ class AlertsConfig:
     max_display: int = 3
     sound: str = ""
     traveled_display_seconds: float = 10.0  # keep the traveled map's mods readable
+    feed_rows: int = 6  # live-feed rows shown at the bottom of the overlay
 
 
 @dataclass(frozen=True)
@@ -90,6 +106,24 @@ class NinjaConfig:
     enabled: bool = True
     refresh_minutes: float = 10.0
     base_url: str = "https://poe.ninja"
+
+
+@dataclass(frozen=True)
+class TradePricingConfig:
+    """Official trade API pricing of unid uniques for active rewards."""
+
+    enabled: bool = True
+    refresh_minutes: float = 10.0
+    max_listings: int = 3  # cheapest N listings averaged
+    base_url: str = "https://www.pathofexile.com"
+    # Uniques that only exist corrupted - searched with corrupted: true
+    # (everything else is priced from uncorrupted listings).
+    corrupted_uniques: tuple[str, ...] = (
+        "Impossible Escape",
+        "The Adorned",
+        "Forbidden Flame",
+        "Forbidden Flesh",
+    )
 
 
 @dataclass(frozen=True)
@@ -118,8 +152,10 @@ class ModScoringRule:
 
 @dataclass(frozen=True)
 class ModScoringConfig:
+    """required_profit = global_profit_div * score / 100: the base threshold
+    is what a 100-difficulty map needs; 200 difficulty doubles it."""
+
     base_default: float = 25.0
-    div_per_point: float = 0.2  # extra divines of profit required per difficulty point
     rules: tuple[ModScoringRule, ...] = ()
 
 
@@ -154,6 +190,7 @@ class Config:
     alerts: AlertsConfig
     hotkey: HotkeyConfig
     ninja: NinjaConfig
+    trade_pricing: TradePricingConfig
     currency_rates: dict[str, float]
     prices: dict[str, ManualPrice]
     mod_warnings: tuple[ModWarningRule, ...]
@@ -210,6 +247,10 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     ninja = build(NinjaConfig, "ninja")
     if ninja.enabled and ninja.refresh_minutes < 1:
         raise ConfigError("ninja.refresh_minutes must be >= 1 (be kind to poe.ninja)")
+
+    trade_pricing = build(TradePricingConfig, "trade_pricing")
+    if trade_pricing.enabled and trade_pricing.refresh_minutes < 5:
+        raise ConfigError("trade_pricing.refresh_minutes must be >= 5 (trade API rate limits)")
 
     hotkey = build(HotkeyConfig, "hotkey")
     if hotkey.consume not in ("all", "top"):
@@ -272,7 +313,6 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         )
     mod_scoring = ModScoringConfig(
         base_default=float(scoring_raw.get("base_default", 25.0)),
-        div_per_point=float(scoring_raw.get("div_per_point", 0.2)),
         rules=tuple(scoring_rules),
     )
     mod_scoring = apply_scoring_overrides(mod_scoring, path.with_name(SCORING_OVERRIDES_NAME))
@@ -295,6 +335,13 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         if rate <= 0:
             raise ConfigError(f"currency_rates.{name} must be > 0, got {rate}")
 
+    # settings-panel overrides (saved next to the config) win over config.yaml
+    extra = load_extra_overrides(path.with_name(SCORING_OVERRIDES_NAME))
+    if "global_profit_div" in extra:
+        thresholds = replace(thresholds, global_profit_div=float(extra["global_profit_div"]))
+    if "hotkey_combo" in extra:
+        hotkey = replace(hotkey, combo=str(extra["hotkey_combo"]))
+
     game_raw = section("game")
     return Config(
         league=str(raw.get("league", "")),
@@ -303,6 +350,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         alerts=alerts,
         hotkey=hotkey,
         ninja=ninja,
+        trade_pricing=trade_pricing,
         currency_rates=currency_rates,
         prices=prices,
         mod_warnings=tuple(rules),

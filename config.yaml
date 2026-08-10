@@ -11,16 +11,17 @@ server:
 thresholds:
   # Profit thresholds in DIVINE ORBS (absolute, not %): alert when
   # (reference - listing), normalized to divines, is at least this much.
-  global_profit_div: 2
+  global_profit_div: 6
   # Keyed by the map's Reward name (the value driver, e.g. "Foil Mageblood");
   # item_name is only the fallback key when a listing has no reward line.
   per_map: {}                  # e.g. "Foil Mageblood": 25
 
 alerts:
-  expiry_seconds: 12           # a stale alert can never be traveled to by reflex
+  expiry_seconds: 16           # a stale alert can never be traveled to by reflex
   max_display: 3               # top pick + runners-up shown on the overlay
   sound: ""                    # path to a .wav; empty -> system beep
   traveled_display_seconds: 10 # traveled map's mods stay readable this long
+  feed_rows: 6                 # live-feed rows (all listings, alerting or not)
 
 hotkey:
   combo: "ctrl+alt+t"
@@ -30,6 +31,22 @@ ninja:
   enabled: true
   refresh_minutes: 10
   base_url: "https://poe.ninja"   # API paths verified 2026-08-09, see DESIGN.md
+
+# Primary reward pricing: official trade API average of the cheapest
+# unidentified, uncorrupted copies of each active reward's unique
+# (poe.ninja per-map medians proved inaccurate; ninja remains the fallback
+# + currency rates). Runs only for rewards with an open live search.
+trade_pricing:
+  enabled: true
+  refresh_minutes: 10
+  max_listings: 3          # average of the cheapest N listings
+  base_url: "https://www.pathofexile.com"
+  # These only exist corrupted, so they are searched with corrupted: yes
+  corrupted_uniques:
+    - "Impossible Escape"
+    - "The Adorned"
+    - "Forbidden Flame"
+    - "Forbidden Flesh"
 
 # Manual chaos-denominated rates, used when poe.ninja is unavailable.
 currency_rates:
@@ -56,14 +73,14 @@ mod_warnings: []
 
 # Difficulty scoring. Every listing gets:
 #   score = max(base_default, min_base of matched rules) x product(multipliers)
-#   required profit = thresholds.global_profit_div + score x div_per_point
-# so a harder map must be cheaper before it alerts. warning: true rules also
+#   required profit = thresholds.global_profit_div x score / 100
+# (the base threshold is what a 100-difficulty map needs; 200 difficulty
+# doubles it, 50 halves it). warning: red|yellow rules also
 # show a special chip on the overlay. Match texts are derived from known mod
 # lines - every listing's full mod list is logged (logs/*.jsonl), so verify
 # and tune these against real captures.
 mod_scoring:
   base_default: 25
-  div_per_point: 0.2       # 0.2 div of extra required profit per difficulty point
   rules:
     - { label: "The Feared", match: "area contains the feared", min_base: 100 }
     - { label: "100% Delirious", match: "100% delirious", multiplier: 1.8 }
@@ -83,6 +100,74 @@ mod_scoring:
       match: "area contains the (hidden|formed|forgotten)"
       regex: true
       min_base: 60
+    - label: "Players cannot suppress spell damage"
+      match: "cannot suppress spell damage"
+      multiplier: 1.3
+    - label: "Less damage per item"
+      match: "less damage per equipped item"
+      multiplier: 2.3
+    - label: "6 additional projectiles"
+      match: "fire 6 additional projectiles"
+      multiplier: 1.2
+    - label: "1 portal"
+      match: "only opens 1 portal"    # real wording: "Only opens 1 Portal to Area"
+      multiplier: 1.1
+    # --- base difficulty mods (batch added from snapshot corpus) ---
+    - { label: "The Elderslayers", match: "area contains the elderslayers", min_base: 70 }
+    - { label: "The Remembered", match: "area contains the remembered", min_base: 60 }
+    - { label: "Packs of four Map Bosses", match: "packs of four map bosses", min_base: 50 }
+    - { label: "Kitava's Heralds", match: "kitava's heralds", min_base: 40 }
+    - { label: "Restless Dead", match: "restless dead", min_base: 40 }
+    - { label: "Gigantic Rogue Exiles", match: "gigantic rogue exiles", min_base: 40 }
+    - { label: "Frost Wall rares", match: "create frost walls", min_base: 40 }
+    # --- multipliers (batch added from snapshot corpus) ---
+    - { label: "2 random Shrine Buffs", match: "random shrine buffs", multiplier: 2.0 }
+    - { label: "Meteors", match: "randomly targeted by meteors", multiplier: 1.3 }
+    - { label: "Apparitions", match: "players are assaulted by", multiplier: 1.3 }
+    - { label: "Deatomisation Storms", match: "deatomisation storms", multiplier: 1.1 }
+    - { label: "Melee-range damage only", match: "within 2 metres of a player", multiplier: 1.2 }
+    - { label: "Players cannot Block", match: "players cannot block", multiplier: 2.5 }
+    - { label: "Players cannot Evade", match: "players cannot evade", multiplier: 1.0 }
+    - { label: "No Flask Charges", match: "cannot gain flask charges", multiplier: 1.0 }
+    - { label: "Travel Skills Disabled", match: "travel skills are disabled", multiplier: 1.4 }
+    - { label: "Reduced Non-Curse Auras", match: "reduced effect of non-curse auras", multiplier: 1.6 }
+    - { label: "Petrification on hit", match: "inflict petrification", multiplier: 1.4 }
+    - { label: "Malediction on hit", match: "inflict malediction", multiplier: 1.2 }
+    - { label: "Grasping Vines", match: "grasping vine", multiplier: 1.2 }
+    - { label: "Runic monster damage", match: "runic monsters deal", multiplier: 1.2 }
+    - { label: "Runic monster life", match: "runic monsters have", multiplier: 1.2 }
+    - { label: "Enrage on Low Life", match: "enrage on low life", multiplier: 1.2 }
+    - { label: "Cull on hit", match: "or lower life on hit", multiplier: 1.0 }
+    - { label: "Rares extra modifiers", match: "rare monsters each have", multiplier: 1.1 }
+    - { label: "Extra random map mods", match: "additional random modifiers", multiplier: 1.3 }
+    - label: "Max Frenzy Charges"
+      match: "to maximum frenzy charges"
+      multiplier: 1.15
+    - label: "Max Power Charges"
+      match: "to maximum power charges"
+      multiplier: 1.15
+    - label: "Max Endurance Charges"
+      match: "to maximum endurance charges"
+      multiplier: 1.15
+    - label: "Frenzy Charge on Hit"
+      match: "gain a frenzy charge on hit"
+      multiplier: 1.15
+    - label: "Power Charge on Hit"
+      match: "gain a power charge on hit"
+      multiplier: 1.15
+    - label: "Endurance Charge on Hit"
+      match: "gain an endurance charge on hit"
+      multiplier: 1.15
+    - { label: "Maven interference", match: "maven interferes", multiplier: 1.2 }
+    - { label: "Maddening Tentacles", match: "maddening tentacles", multiplier: 1.1 }
+    - { label: "Creeping Agony", match: "creeping agony", multiplier: 1.1 }
+    - { label: "Driven mad", match: "driven mad", multiplier: 1.2 }
+    - { label: "Slower debuff expiry", match: "debuffs on players expire", multiplier: 1.2 }
+    - { label: "Instability on Kill", match: "instability on kill", multiplier: 1.5 }
+    - label: "No recovery above 50% in Rituals"
+      match: "recover life or energy shield above"
+      multiplier: 1.2
+    - { label: "LEGION", match: "legion", multiplier: 1.0, warning: yellow }
 
 game:
   process_names:

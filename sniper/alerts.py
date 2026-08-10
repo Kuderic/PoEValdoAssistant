@@ -40,7 +40,8 @@ class AlertView:
     mismatch: bool
     warn_labels: tuple[str, ...]
     special_warnings: tuple[tuple[str, str], ...]  # (label, color)
-    mods: tuple[str, ...]  # full mod lines, shown on the traveled panel
+    # (mod text, scoring note e.g. "×1.8"/""); tooltip + traveled panel
+    mods: tuple[tuple[str, str], ...]
     reference_amount: float
     reference_currency: str
     reference_source: str
@@ -70,7 +71,7 @@ class Alert:
             mismatch=d.currency_mismatch,
             warn_labels=tuple(h.label for h in d.mod_hits if h.severity == "warn"),
             special_warnings=d.special_warnings,
-            mods=d.listing.mods,
+            mods=d.mods_annotated,
             reference_amount=d.reference.display_amount if d.reference else 0.0,
             reference_currency=d.reference.display_currency if d.reference else "",
             reference_source=d.reference.source if d.reference else "",

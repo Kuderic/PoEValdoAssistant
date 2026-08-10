@@ -50,7 +50,29 @@ class Traveled:
     view: AlertView
 
 
-UiEvent = AlertsChanged | TabsChanged | PriceStatus | ClickOutcome | GameStatus | Traveled
+@dataclass(frozen=True)
+class FeedEntry:
+    """One live-feed row: every incoming listing, alerting or not."""
+
+    listing_id: str
+    key: str
+    amount: float
+    currency: str
+    profit_div: float | None  # None when no reference/rate exists
+    difficulty: float
+    verdict: str  # alert | below_threshold | blocked | no_reference | no_rate
+    # (mod text, scoring note e.g. "×1.8"/"") shown in the hover tooltip
+    mods: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class ListingSeen:
+    entry: FeedEntry
+
+
+UiEvent = (
+    AlertsChanged | TabsChanged | PriceStatus | ClickOutcome | GameStatus | Traveled | ListingSeen
+)
 
 
 class Bus:

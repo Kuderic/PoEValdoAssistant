@@ -29,6 +29,7 @@ class TabState:
     ws: websockets.ServerConnection
     search_id: str
     last_hello_monotonic: float
+    search_reward: str | None = None
 
 
 class SniperServer:
@@ -46,16 +47,22 @@ class SniperServer:
         self._book = book
         self._rules = rules
         self._scoring = scoring or ModScoring(config.mod_scoring)
+        self._thresholds = config.thresholds
         self._on_decision = on_decision
         self._on_click_result = on_click_result
         self._on_tabs_changed = on_tabs_changed
         self.tabs: dict[str, TabState] = {}
         self._listing_tab: OrderedDict[str, str] = OrderedDict()  # listing_id -> tab_id
+        self._recent_rewards: dict[str, float] = {}  # reward -> last seen monotonic
 
     def set_scoring(self, scoring: ModScoring) -> None:
         """Swap the difficulty engine (tuning panel). Call from the asyncio
         thread (via call_soon_threadsafe from the UI)."""
         self._scoring = scoring
+
+    def set_thresholds(self, thresholds) -> None:
+        """Swap profit thresholds live (tuning panel). Asyncio thread only."""
+        self._thresholds = thresholds
 
     # ---------------------------------------------------------------- serving
 
@@ -92,9 +99,15 @@ class SniperServer:
                         ws=ws,
                         search_id=frame.search_id,
                         last_hello_monotonic=time.monotonic(),
+                        search_reward=frame.search_reward,
                     )
                     if not known:
-                        event("tab_connect", tab_id=tab_id, search_id=frame.search_id)
+                        event(
+                            "tab_connect",
+                            tab_id=tab_id,
+                            search_id=frame.search_id,
+                            search_reward=frame.search_reward,
+                        )
                         self._notify_tabs()
                 elif isinstance(frame, Listing):
                     try:
@@ -120,6 +133,8 @@ class SniperServer:
 
     def _handle_listing(self, listing: Listing) -> None:
         received = time.monotonic()
+        if listing.reward:
+            self._recent_rewards[listing.reward] = received
         self._listing_tab[listing.listing_id] = listing.tab_id
         while len(self._listing_tab) > _ROUTE_CAP:
             self._listing_tab.popitem(last=False)
@@ -134,10 +149,11 @@ class SniperServer:
             seller=listing.seller,
             search_id=listing.search_id,
             detected_at=listing.detected_at,
+            mods=list(listing.mods),  # raw wording, for tuning match patterns
         )
 
         decision = margin.evaluate(
-            listing, self._book, self._config.thresholds, self._rules, self._scoring
+            listing, self._book, self._thresholds, self._rules, self._scoring
         )
 
         event(
@@ -189,12 +205,23 @@ class SniperServer:
 
     # ------------------------------------------------------------------ misc
 
+    def active_rewards(self) -> set[str]:
+        """Rewards the trade pricer should track: what connected tabs search
+        for, plus rewards seen in recent listings (fallback when a tab's
+        reward scrape failed)."""
+        now = time.monotonic()
+        self._recent_rewards = {r: t for r, t in self._recent_rewards.items() if now - t < 1800}
+        rewards = set(self._recent_rewards)
+        rewards.update(t.search_reward for t in self.tabs.values() if t.search_reward)
+        return rewards
+
     def tab_snapshot(self) -> list[dict]:
         now = time.monotonic()
         return [
             {
                 "tab_id": tid,
                 "search_id": t.search_id,
+                "search_reward": t.search_reward,
                 "hello_age_s": round(now - t.last_hello_monotonic, 1),
             }
             for tid, t in self.tabs.items()

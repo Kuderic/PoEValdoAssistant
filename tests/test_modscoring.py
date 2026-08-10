@@ -33,7 +33,7 @@ RULES = (
     ),
 )
 
-SCORING = ModScoring(ModScoringConfig(base_default=25, div_per_point=0.2, rules=RULES))
+SCORING = ModScoring(ModScoringConfig(base_default=25, rules=RULES))
 
 
 def score(mods):
@@ -125,20 +125,22 @@ def decide_with_scoring(amount: float, mods: list[str]):
 
 
 def test_hard_map_needs_more_profit():
-    # ref 200 div; The Feared + 100% Delirious -> diff 180 -> need 20 + 36 = 56 div
+    # ref 200 div; Feared + Delirious -> diff 180 -> need 20 * 180/100 = 36 div
     mods = ["Area contains The Feared", "Players in Area are 100% Delirious"]
 
     cheap = decide_with_scoring(80, mods)  # 120 div profit
-    assert cheap.required_profit_div == 56
+    assert cheap.required_profit_div == 36
     assert cheap.verdict == "alert"
 
-    pricey = decide_with_scoring(175, mods)  # 25 div profit >= old bar, < new bar
+    pricey = decide_with_scoring(175, mods)  # 25 div profit < 36
     assert pricey.verdict == "below_threshold"
 
 
-def test_clean_map_keeps_low_bar():
-    d = decide_with_scoring(170, [])  # 30 div profit, need 20 + 25*0.2 = 25
-    assert d.required_profit_div == 25
+def test_clean_map_needs_proportionally_less():
+    # clean map: diff 25 -> need 20 * 25/100 = 5 div (threshold is calibrated
+    # for a 100-difficulty map; easier maps need proportionally less)
+    d = decide_with_scoring(170, [])  # 30 div profit
+    assert d.required_profit_div == 5
     assert d.verdict == "alert"
 
 
@@ -146,4 +148,25 @@ def test_special_warning_carried_on_decision():
     d = decide_with_scoring(100, ["Players who Die in area are sent to the Void"])
     assert d.special_warnings == (("VOID", "red"),)
     assert d.difficulty == 50  # 25 x 2.0
-    assert d.verdict == "alert"  # 100 div profit >= 20 + 10
+    assert d.verdict == "alert"  # 100 div profit >= 20 * 50/100 = 10
+
+
+def test_annotate_marks_scoring_mods():
+    annotated = SCORING.annotate(
+        [
+            "Area contains The Feared",
+            "Players in Area are 100% Delirious",
+            "Monsters have 40% increased Attack Speed",
+        ]
+    )
+    assert annotated == (
+        ("Area contains The Feared", "base 100"),
+        ("Players in Area are 100% Delirious", "×1.8"),
+        ("Monsters have 40% increased Attack Speed", ""),
+    )
+
+
+def test_annotate_unmatched_rule_not_shown():
+    # Delirious rule exists but this map has no delirium: no annotation
+    annotated = SCORING.annotate(["Monsters deal extra damage"])
+    assert annotated == (("Monsters deal extra damage", ""),)

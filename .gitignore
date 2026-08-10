@@ -2,6 +2,8 @@
 # Raw Ctrl+S page saves (may embed session-specific markup); the trimmed,
 # reviewed fixture lives in tests/fixtures/results_snapshot.html instead.
 chrome-html-examples/
+in-demand-confirmation.html
+in-demand-confirmation_files/
 logs/*
 !logs/.gitkeep
 __pycache__/

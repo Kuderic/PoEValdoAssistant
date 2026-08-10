@@ -48,6 +48,7 @@ class Listing:
 class Hello:
     search_id: str
     tab_id: str
+    search_reward: str | None = None  # majority reward of the tab's visible rows
 
 
 @dataclass(frozen=True)
@@ -90,7 +91,12 @@ def parse_frame(msg: object) -> Frame:
         tab_id = _require_str(msg, "tab_id", errors)
         if errors:
             return FrameError(reason="; ".join(errors), raw=msg)
-        return Hello(search_id=search_id, tab_id=tab_id)
+        reward = msg.get("search_reward")
+        return Hello(
+            search_id=search_id,
+            tab_id=tab_id,
+            search_reward=reward if isinstance(reward, str) and reward else None,
+        )
 
     if mtype == "click_result":
         listing_id = _require_str(msg, "listing_id", errors)
@@ -183,5 +189,7 @@ class Decision:
     mod_hits: tuple[ModHit, ...] = field(default_factory=tuple)
     difficulty: float = 0.0  # mod-based difficulty score (modrules.ModScoring)
     difficulty_mods: tuple[str, ...] = field(default_factory=tuple)
+    # (mod text, scoring note like "×1.8" / "base 100" / "") per mod line
+    mods_annotated: tuple[tuple[str, str], ...] = field(default_factory=tuple)
     special_warnings: tuple[tuple[str, str], ...] = field(default_factory=tuple)  # (label, color)
-    required_profit_div: float | None = None  # threshold + difficulty x div_per_point
+    required_profit_div: float | None = None  # threshold * difficulty / 100

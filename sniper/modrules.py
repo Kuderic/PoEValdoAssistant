@@ -4,7 +4,8 @@ Two engines:
 - ModRules: warn/block severities (block downgrades a listing to log-only).
 - ModScoring: difficulty score = max(base_default, min_bases of matched
   rules) x product(multipliers of matched rules), plus special warnings.
-  The score raises the required divine profit (see margin.py).
+  The required profit scales with the score: threshold x score / 100
+  (see margin.py).
 """
 
 from __future__ import annotations
@@ -73,10 +74,6 @@ class ModScoring:
         self._config = config
         self._rules = [_CompiledScoringRule(r) for r in config.rules]
 
-    @property
-    def div_per_point(self) -> float:
-        return self._config.div_per_point
-
     def evaluate(self, mods: Iterable[str]) -> DifficultyResult:
         mods = list(mods)
         matched = [c.rule for c in self._rules if c.hits(mods)]
@@ -92,3 +89,23 @@ class ModScoring:
             matched=tuple(r.label for r in matched),
             warnings=tuple((r.label, r.warning) for r in matched if r.warning),
         )
+
+    def annotate(self, mods: Iterable[str]) -> tuple[tuple[str, str], ...]:
+        """Per-mod scoring annotations for the UI: (mod text, note) where
+        note is e.g. '×1.8' or 'base 100' - empty when the mod contributes
+        nothing. match_all combo rules annotate every line they touch."""
+        mods = list(mods)
+        matched = [c for c in self._rules if c.hits(mods)]
+        annotated = []
+        for mod in mods:
+            notes: list[str] = []
+            for compiled in matched:
+                if not any(m(mod) for m in compiled._matchers):
+                    continue
+                rule = compiled.rule
+                if rule.min_base is not None:
+                    notes.append(f"base {rule.min_base:g}")
+                if rule.multiplier is not None:
+                    notes.append(f"×{rule.multiplier:g}")
+            annotated.append((mod, " · ".join(dict.fromkeys(notes))))
+        return tuple(annotated)
