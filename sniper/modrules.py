@@ -105,20 +105,23 @@ class ModScoring:
         return "none"  # warning-only rules: the chip carries the color
 
     def annotate(self, mods: Iterable[str]) -> tuple[tuple[str, str, str], ...]:
-        """Per-mod scoring annotations for the UI: (mod text, note, level)
-        where note is e.g. '×1.8' or 'base 100' (empty when the mod
-        contributes nothing) and level is 'none' | 'yellow' | 'red'.
-        match_all combo rules annotate every line they touch."""
+        """Per-mod scoring annotations for the UI: (display text, note,
+        level) where note is e.g. '×1.8' or 'base 100' (empty when nothing
+        contributes) and level is 'none' | 'yellow' | 'red'.
+
+        Lines claimed by one match_all combo rule (two-liner mods like the
+        less-damage pair) merge into a SINGLE display row with the modifier
+        shown once."""
         rank = {"none": 0, "yellow": 1, "red": 2}
         mods = list(mods)
         matched = [c for c in self._rules if c.hits(mods)]
-        annotated = []
-        for mod in mods:
+
+        def describe(lines: list[str]) -> tuple[str, str, str]:
             notes: list[str] = []
             level = "none"
             warn_color = None
             for compiled in matched:
-                if not any(m(mod) for m in compiled._matchers):
+                if not any(m(line) for line in lines for m in compiled._matchers):
                     continue
                 rule = compiled.rule
                 if rule.min_base is not None:
@@ -129,8 +132,29 @@ class ModScoring:
                     level = self._rule_level(rule)
                 if rule.warning and (warn_color != "red"):
                     warn_color = rule.warning
-            # warning rules stamp their emoji on the mod line itself, so
+            # warning rules stamp their emoji on the row itself, so
             # VOID/ULTIMATUM/etc. are marked wherever mods are listed
-            text = {"red": f"❗ {mod}", "yellow": f"⚠️ {mod}"}.get(warn_color, mod)
-            annotated.append((text, " · ".join(dict.fromkeys(notes)), level))
-        return tuple(annotated)
+            text = " + ".join(lines)
+            text = {"red": f"❗ {text}", "yellow": f"⚠️ {text}"}.get(warn_color, text)
+            return (text, " · ".join(dict.fromkeys(notes)), level)
+
+        # assign each line to at most one matched combo rule
+        group_of: dict[int, int] = {}  # mod index -> index into `matched`
+        for ci, compiled in enumerate(matched):
+            if not compiled.rule.match_all:
+                continue
+            for i, mod in enumerate(mods):
+                if i not in group_of and any(m(mod) for m in compiled._matchers):
+                    group_of[i] = ci
+
+        rows: list[tuple[str, str, str]] = []
+        seen_groups: set[int] = set()
+        for i, mod in enumerate(mods):
+            ci = group_of.get(i)
+            if ci is None:
+                rows.append(describe([mod]))
+            elif ci not in seen_groups:
+                seen_groups.add(ci)
+                members = [mods[j] for j in sorted(group_of) if group_of[j] == ci]
+                rows.append(describe(members))
+        return tuple(rows)

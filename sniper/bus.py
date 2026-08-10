@@ -63,6 +63,7 @@ class FeedEntry:
     verdict: str  # alert | below_threshold | blocked | no_reference | no_rate
     # (mod text, scoring note e.g. "×1.8"/"") shown in the hover tooltip
     mods: tuple[tuple[str, str], ...] = ()
+    received_monotonic: float = 0.0  # for the feed's minutes-ago column
 
 
 @dataclass(frozen=True)

@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import contextlib
 import threading
+import time
 from collections import OrderedDict
 
 from sniper import logging_setup
@@ -84,6 +85,7 @@ class App:
                         difficulty=decision.difficulty,
                         verdict=decision.verdict,
                         mods=decision.mods_annotated,
+                        received_monotonic=time.monotonic(),
                     )
                 )
             )

@@ -177,7 +177,7 @@ class Overlay:
         self._update_threshold_note()
         tk.Label(
             feed_box,
-            text=f"{'Price':<12}{'Profit':<9}{'Difficulty':<12}Reward",
+            text=f"{'Price':<12}{'Profit':<9}{'Difficulty':<12}{'Time':<7}Reward",
             bg=BG,
             fg=DIM,
             font=("Consolas", 10, "bold"),
@@ -207,6 +207,7 @@ class Overlay:
 
         root.after(DRAIN_MS, self._drain)
         root.after(TICK_MS, self._tick)
+        root.after(30_000, self._refresh_feed_ages)
 
     # ------------------------------------------------------------------ bus
 
@@ -408,6 +409,12 @@ class Overlay:
         self._draw_countdown()
         self._root.after(TICK_MS, self._tick)
 
+    def _refresh_feed_ages(self) -> None:
+        """Keep the feed's minutes-ago column current between listings."""
+        if self._feed_entries:
+            self._render_feed()
+        self._root.after(30_000, self._refresh_feed_ages)
+
     # ---------------------------------------------------------- tuning panel
 
     def _open_tuning(self) -> None:
@@ -588,10 +595,15 @@ class Overlay:
                 "no_rate": "  [no rate]",
             }.get(e.verdict, "")
             price = f"{e.amount:g}d" if e.currency == "divine" else f"{e.amount:g} {e.currency}"
+            if e.received_monotonic > 0:
+                age = f"{max(0, int((time.monotonic() - e.received_monotonic) / 60))}m"
+            else:
+                age = "-"
             fg = FG if e.verdict == "alert" else FAINT
             row = tk.Label(
                 self._feed,
-                text=f"{price:<12}{profit:<9}{e.difficulty:<12g}{_display_name(e.key)}{note}",
+                text=f"{price:<12}{profit:<9}{e.difficulty:<12g}{age:<7}"
+                f"{_display_name(e.key)}{note}",
                 bg=BG,
                 fg=fg,
                 font=("Consolas", 10),

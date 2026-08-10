@@ -204,3 +204,53 @@ def test_annotate_stamps_warning_emoji_on_mod_text():
     assert void == (("❗ Players who Die in area are sent to the Void", "×2", "red"),)
     bismuth = SCORING.annotate(["Area contains a Bismuth Ore Deposit"])
     assert bismuth == (("⚠️ Area contains a Bismuth Ore Deposit", "", "none"),)
+
+
+def test_combo_pair_merges_into_one_display_row():
+    from sniper.config import ModScoringConfig, ModScoringRule
+    from sniper.modrules import ModScoring
+
+    scoring = ModScoring(
+        ModScoringConfig(
+            base_default=25,
+            rules=(
+                ModScoringRule(
+                    label="Less damage per item",
+                    match_all=("less damage per equipped item", "less damage per item equipped"),
+                    multiplier=2.3,
+                ),
+                ModScoringRule(label="Reflect", match="reflect", multiplier=1.1),
+            ),
+        )
+    )
+    rows = scoring.annotate(
+        [
+            "Players deal 10% less Damage per Equipped Item",
+            "Monsters reflect 18% of Elemental Damage",
+            "Players' Minions deal 10% less Damage per Item Equipped by their Master",
+        ]
+    )
+    # pair merged into ONE row, ×2.3 shown once; unrelated line untouched
+    assert rows == (
+        (
+            "Players deal 10% less Damage per Equipped Item + "
+            "Players' Minions deal 10% less Damage per Item Equipped by their Master",
+            "×2.3",
+            "red",
+        ),
+        ("Monsters reflect 18% of Elemental Damage", "×1.1", "yellow"),
+    )
+
+
+def test_half_pair_line_stays_single_when_combo_not_matched():
+    from sniper.config import ModScoringConfig, ModScoringRule
+    from sniper.modrules import ModScoring
+
+    scoring = ModScoring(
+        ModScoringConfig(
+            base_default=25,
+            rules=(ModScoringRule(label="pair", match_all=("aaa", "bbb"), multiplier=2.0),),
+        )
+    )
+    rows = scoring.annotate(["aaa only line"])  # combo requires both -> no match
+    assert rows == (("aaa only line", "", "none"),)
