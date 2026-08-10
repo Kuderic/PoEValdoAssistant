@@ -89,6 +89,9 @@ mod_scoring:
     - label: "3-4 Tormented Spirits"
       match: "possessed by 3 to 4 tormented spirits"
       multiplier: 2.2
+    - label: "1-2 Tormented Spirits"
+      match: "possessed by 1 to 2 tormented spirits"
+      multiplier: 1.5
     - { label: "VOID", match: "sent to the void", multiplier: 2.0, warning: red }
     - { label: "BISMUTH", match: "bismuth", warning: yellow }
     - { label: "BLIGHT", match: "blight", warning: yellow }
@@ -102,13 +105,14 @@ mod_scoring:
       min_base: 60
     - label: "Players cannot suppress spell damage"
       match: "cannot suppress spell damage"
-      multiplier: 1.3
+      multiplier: 1.5
+    # two-liner: player line + minions line always appear together
     - label: "Less damage per item"
-      match: "less damage per equipped item"
+      match_all: ["less damage per equipped item", "less damage per item equipped"]
       multiplier: 2.3
     - label: "6 additional projectiles"
       match: "fire 6 additional projectiles"
-      multiplier: 1.2
+      multiplier: 1.3
     - label: "1 portal"
       match: "only opens 1 portal"    # real wording: "Only opens 1 Portal to Area"
       multiplier: 1.1
@@ -122,41 +126,41 @@ mod_scoring:
     - { label: "Frost Wall rares", match: "create frost walls", min_base: 40 }
     # --- multipliers (batch added from snapshot corpus) ---
     - { label: "2 random Shrine Buffs", match: "random shrine buffs", multiplier: 2.0 }
-    - { label: "Meteors", match: "randomly targeted by meteors", multiplier: 1.3 }
-    - { label: "Apparitions", match: "players are assaulted by", multiplier: 1.3 }
+    - { label: "Meteors", match: "randomly targeted by meteors", multiplier: 1.2 }
+    - { label: "Apparitions", match: "players are assaulted by", multiplier: 1.2 }
     - { label: "Deatomisation Storms", match: "deatomisation storms", multiplier: 1.1 }
     - { label: "Melee-range damage only", match: "within 2 metres of a player", multiplier: 1.2 }
     - { label: "Players cannot Block", match: "players cannot block", multiplier: 2.5 }
     - { label: "Players cannot Evade", match: "players cannot evade", multiplier: 1.0 }
     - { label: "No Flask Charges", match: "cannot gain flask charges", multiplier: 1.0 }
-    - { label: "Travel Skills Disabled", match: "travel skills are disabled", multiplier: 1.4 }
+    # two-liner: "Travel Skills are Disabled" + "50% reduced Movement Speed"
+    # always appear together - one mod, one multiplier
+    - label: "Travel Skills Disabled + slow"
+      match_all: ["travel skills are disabled", "reduced movement speed"]
+      multiplier: 1.5
     - { label: "Reduced Non-Curse Auras", match: "reduced effect of non-curse auras", multiplier: 1.6 }
     - { label: "Petrification on hit", match: "inflict petrification", multiplier: 1.4 }
     - { label: "Malediction on hit", match: "inflict malediction", multiplier: 1.2 }
     - { label: "Grasping Vines", match: "grasping vine", multiplier: 1.2 }
-    - { label: "Runic monster damage", match: "runic monsters deal", multiplier: 1.2 }
-    - { label: "Runic monster life", match: "runic monsters have", multiplier: 1.2 }
+    # two-liner: "deal 100% more Damage" + "have 200% more Life" always
+    # appear together - one mod, one multiplier
+    - label: "Runic monsters"
+      match_all: ["runic monsters deal", "runic monsters have"]
+      multiplier: 1.2
     - { label: "Enrage on Low Life", match: "enrage on low life", multiplier: 1.2 }
     - { label: "Cull on hit", match: "or lower life on hit", multiplier: 1.0 }
     - { label: "Rares extra modifiers", match: "rare monsters each have", multiplier: 1.1 }
     - { label: "Extra random map mods", match: "additional random modifiers", multiplier: 1.3 }
-    - label: "Max Frenzy Charges"
-      match: "to maximum frenzy charges"
+    # two-liners: "gain a X charge on hit" + "+6 to maximum X charges"
+    # always appear together - one mod per charge type, one multiplier
+    - label: "Frenzy Charges"
+      match_all: ["gain a frenzy charge on hit", "to maximum frenzy charges"]
       multiplier: 1.15
-    - label: "Max Power Charges"
-      match: "to maximum power charges"
+    - label: "Power Charges"
+      match_all: ["gain a power charge on hit", "to maximum power charges"]
       multiplier: 1.15
-    - label: "Max Endurance Charges"
-      match: "to maximum endurance charges"
-      multiplier: 1.15
-    - label: "Frenzy Charge on Hit"
-      match: "gain a frenzy charge on hit"
-      multiplier: 1.15
-    - label: "Power Charge on Hit"
-      match: "gain a power charge on hit"
-      multiplier: 1.15
-    - label: "Endurance Charge on Hit"
-      match: "gain an endurance charge on hit"
+    - label: "Endurance Charges"
+      match_all: ["gain an endurance charge on hit", "to maximum endurance charges"]
       multiplier: 1.15
     - { label: "Maven interference", match: "maven interferes", multiplier: 1.2 }
     - { label: "Maddening Tentacles", match: "maddening tentacles", multiplier: 1.1 }

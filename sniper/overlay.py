@@ -170,9 +170,14 @@ class Overlay:
         feed_box = tk.Frame(root, bg=BG)
         feed_box.pack(side="bottom", fill="x", padx=10, pady=(2, 0))
         tk.Frame(feed_box, bg="#1d242c", height=1).pack(fill="x", pady=(0, 3))
+        self._threshold_note = tk.Label(
+            feed_box, text="", bg=BG, fg=DIM, font=("Consolas", 10), anchor="w"
+        )
+        self._threshold_note.pack(fill="x")
+        self._update_threshold_note()
         tk.Label(
             feed_box,
-            text=f"{'Price':<15}{'Profit':>7}{'Difficulty':>12}  Reward",
+            text=f"{'Price':<12}{'Profit':<9}{'Difficulty':<12}Reward",
             bg=BG,
             fg=DIM,
             font=("Consolas", 10, "bold"),
@@ -262,6 +267,11 @@ class Overlay:
         self._root.after(DRAIN_MS, self._drain)
 
     # ------------------------------------------------------------- rendering
+
+    def _update_threshold_note(self) -> None:
+        self._threshold_note.config(
+            text=f"Threshold: +{self._current_threshold:g}d profit per 100 difficulty"
+        )
 
     def _clear_frame(self, frame: tk.Frame) -> None:
         self._hide_tooltip()  # a hovered row may be getting destroyed
@@ -540,6 +550,7 @@ class Overlay:
             self._scoring_config = new_config
             self._current_threshold = new_threshold
             self._current_combo = new_combo
+            self._update_threshold_note()
             if save and self._overrides_path is not None:
                 save_scoring_overrides(
                     new_config,
@@ -575,7 +586,7 @@ class Overlay:
             fg = FG if e.verdict == "alert" else FAINT
             row = tk.Label(
                 self._feed,
-                text=f"{price:<15}{profit:>7}{e.difficulty:>12g}  {_display_name(e.key)}{note}",
+                text=f"{price:<12}{profit:<9}{e.difficulty:<12g}{_display_name(e.key)}{note}",
                 bg=BG,
                 fg=fg,
                 font=("Consolas", 10),
@@ -627,8 +638,8 @@ class Overlay:
                     row,
                     text=f"  {note}",
                     bg="#0a0d10",
-                    fg=BAD,
-                    font=("Consolas", 10, "bold"),
+                    fg=fg,  # note shares the mod's tier color
+                    font=("Consolas", 10, "bold" if level != "none" else "normal"),
                     anchor="e",
                 ).pack(side="right")
         x = widget.winfo_rootx() + 16

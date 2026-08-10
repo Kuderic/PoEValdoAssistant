@@ -116,6 +116,7 @@ class ModScoring:
         for mod in mods:
             notes: list[str] = []
             level = "none"
+            warn_color = None
             for compiled in matched:
                 if not any(m(mod) for m in compiled._matchers):
                     continue
@@ -126,5 +127,10 @@ class ModScoring:
                     notes.append(f"×{rule.multiplier:g}")
                 if rank[self._rule_level(rule)] > rank[level]:
                     level = self._rule_level(rule)
-            annotated.append((mod, " · ".join(dict.fromkeys(notes)), level))
+                if rule.warning and (warn_color != "red"):
+                    warn_color = rule.warning
+            # warning rules stamp their emoji on the mod line itself, so
+            # VOID/ULTIMATUM/etc. are marked wherever mods are listed
+            text = {"red": f"❗ {mod}", "yellow": f"⚠️ {mod}"}.get(warn_color, mod)
+            annotated.append((text, " · ".join(dict.fromkeys(notes)), level))
         return tuple(annotated)
