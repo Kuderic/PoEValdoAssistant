@@ -139,7 +139,7 @@ async def test_travel_emits_traveled_view_with_mods(monkeypatch):
     traveled = [e for e in bus.drain() if isinstance(e, Traveled)]
     assert len(traveled) == 1
     assert traveled[0].view.listing_id == "snipe"
-    assert traveled[0].view.mods == (("Monsters fire 2 additional Projectiles", ""),)
+    assert traveled[0].view.mods == (("Monsters fire 2 additional Projectiles", "", "none"),)
 
 
 async def test_every_decision_reaches_the_feed(monkeypatch):

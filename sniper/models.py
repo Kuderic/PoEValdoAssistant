@@ -189,7 +189,8 @@ class Decision:
     mod_hits: tuple[ModHit, ...] = field(default_factory=tuple)
     difficulty: float = 0.0  # mod-based difficulty score (modrules.ModScoring)
     difficulty_mods: tuple[str, ...] = field(default_factory=tuple)
-    # (mod text, scoring note like "×1.8" / "base 100" / "") per mod line
-    mods_annotated: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    # (mod text, scoring note like "×1.8"/"base 100"/"", severity level
+    # "none"|"yellow"|"red") per mod line
+    mods_annotated: tuple[tuple[str, str, str], ...] = field(default_factory=tuple)
     special_warnings: tuple[tuple[str, str], ...] = field(default_factory=tuple)  # (label, color)
     required_profit_div: float | None = None  # threshold * difficulty / 100

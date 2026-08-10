@@ -91,3 +91,37 @@ async def test_league_auto_resolution():
 @pytest.mark.parametrize("currency,expected", [("chaos", 1.0), ("divine", 180.0)])
 def test_rate_chaos_defaults(config, currency, expected):
     assert PriceBook(config).rate_chaos(currency) == expected
+
+
+async def test_trade_price_layer_divine_native(config):
+    book = PriceBook(config)
+    await book.refresh(FakeNinja())  # live: divine = 197.2
+
+    # trade average stored in divine; displayed verbatim regardless of rate
+    book.set_trade_price("Foil Sublime Vision", 82.0)
+    ref = book.reference_for("Foil Sublime Vision")
+    assert ref.source == "trade"
+    assert ref.display_amount == 82.0
+    assert ref.display_currency == "divine"
+    assert ref.chaos_value == 82.0 * 197.2  # chaos derived at CURRENT rate
+
+    # trade beats the ninja median; ninja still covers unpriced rewards
+    book.set_trade_price("Foil Tabula Rasa", 500.0)
+    assert book.reference_for("Foil Tabula Rasa").source == "trade"
+    assert book.reference_for("Foil Voices").source == "live"
+
+
+def test_trade_price_expires_to_ninja_fallback(config):
+    book = PriceBook(config)
+    book._ninja_rewards = {"Foil Sublime Vision": 18284.0}
+    book.set_trade_price("Foil Sublime Vision", 82.0)
+    assert book.reference_for("Foil Sublime Vision").source == "trade"
+    book._trade_rewards["Foil Sublime Vision"] = (82.0, -(10**9))  # force stale
+    ref = book.reference_for("Foil Sublime Vision")
+    assert ref.source in ("live", "stale")  # fell back to the ninja median
+
+
+def test_to_divine(config):
+    book = PriceBook(config)
+    assert book.to_divine(180, "chaos") == 1.0
+    assert book.to_divine(82, "divine") == 82.0

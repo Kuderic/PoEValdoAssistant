@@ -260,20 +260,19 @@ class App:
                     event("trade_price_error", reward=reward, error=repr(e))
                     break
                 last_priced[reward] = time.monotonic()
-                chaos_prices = [
-                    c
+                div_prices = [
+                    d
                     for amount, currency in listings
-                    if (c := self.book.to_chaos(amount, currency)) is not None
+                    if (d := self.book.to_divine(amount, currency)) is not None
                 ]
-                if chaos_prices:
-                    avg = sum(chaos_prices) / len(chaos_prices)
-                    self.book.set_trade_price(reward, avg)
-                    divine = self.book.rate_chaos("divine") or 1
+                if div_prices:
+                    avg_div = sum(div_prices) / len(div_prices)
+                    self.book.set_trade_price(reward, avg_div)
                     event(
                         "trade_price",
                         reward=reward,
-                        listings=len(chaos_prices),
-                        avg_div=round(avg / divine, 1),
+                        listings=len(div_prices),
+                        avg_div=round(avg_div, 1),
                     )
                 else:
                     event(

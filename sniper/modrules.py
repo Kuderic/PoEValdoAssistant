@@ -90,15 +90,32 @@ class ModScoring:
             warnings=tuple((r.label, r.warning) for r in matched if r.warning),
         )
 
-    def annotate(self, mods: Iterable[str]) -> tuple[tuple[str, str], ...]:
-        """Per-mod scoring annotations for the UI: (mod text, note) where
-        note is e.g. '×1.8' or 'base 100' - empty when the mod contributes
-        nothing. match_all combo rules annotate every line they touch."""
+    @staticmethod
+    def _rule_level(rule) -> str:
+        """Severity tier for UI coloring: ×1 mods stay uncolored, ×(1, 1.4]
+        yellow, above ×1.4 red; base-difficulty mods yellow."""
+        if rule.multiplier is not None:
+            if rule.multiplier > 1.4:
+                return "red"
+            if rule.multiplier > 1.0:
+                return "yellow"
+            return "none"
+        if rule.min_base is not None:
+            return "yellow"
+        return "none"  # warning-only rules: the chip carries the color
+
+    def annotate(self, mods: Iterable[str]) -> tuple[tuple[str, str, str], ...]:
+        """Per-mod scoring annotations for the UI: (mod text, note, level)
+        where note is e.g. '×1.8' or 'base 100' (empty when the mod
+        contributes nothing) and level is 'none' | 'yellow' | 'red'.
+        match_all combo rules annotate every line they touch."""
+        rank = {"none": 0, "yellow": 1, "red": 2}
         mods = list(mods)
         matched = [c for c in self._rules if c.hits(mods)]
         annotated = []
         for mod in mods:
             notes: list[str] = []
+            level = "none"
             for compiled in matched:
                 if not any(m(mod) for m in compiled._matchers):
                     continue
@@ -107,5 +124,7 @@ class ModScoring:
                     notes.append(f"base {rule.min_base:g}")
                 if rule.multiplier is not None:
                     notes.append(f"×{rule.multiplier:g}")
-            annotated.append((mod, " · ".join(dict.fromkeys(notes))))
+                if rank[self._rule_level(rule)] > rank[level]:
+                    level = self._rule_level(rule)
+            annotated.append((mod, " · ".join(dict.fromkeys(notes)), level))
         return tuple(annotated)

@@ -321,18 +321,22 @@ class Overlay:
             fg=GOOD,
         )
         self._price_big.config(text=f"{top.amount:g} {top.currency.upper()}")
+        # source tag makes fallback pricing visible: (trade) is the unid
+        # market average, (poe.ninja) the per-map median fallback
+        source = {"trade": "trade", "manual": "manual"}.get(top.reference_source, "poe.ninja")
         self._detail.config(
             text=f"Map asking price: {top.amount:g} {top.currency}   ·   "
-            f"Reward avg: {top.reference_amount:g} {top.reference_currency}"
+            f"Reward avg: {top.reference_amount:g} {top.reference_currency} ({source})"
         )
         self._clear_frame(self._top_mods)
-        for text, note in top.mods:
+        for text, note, level in top.mods:
+            fg = BAD if level == "red" else WARN if level == "yellow" else DIM
             tk.Label(
                 self._top_mods,
                 text=f"{text}" + (f"   {note}" if note else ""),
                 bg=BG,
-                fg=WARN if note else DIM,
-                font=("Segoe UI", 10, "bold" if note else "normal"),
+                fg=fg,
+                font=("Segoe UI", 10, "bold" if level != "none" else "normal"),
                 anchor="w",
                 justify="left",
                 wraplength=380,
@@ -341,7 +345,7 @@ class Overlay:
         for label, color in top.special_warnings:
             tk.Label(
                 self._chips,
-                text=f"‼ {label.upper()}",
+                text=f"{'❗' if color == 'red' else '⚠️'} {label.upper()}",
                 bg=BAD if color == "red" else WARN,
                 fg="white" if color == "red" else "#1a1a1a",
                 font=("Segoe UI", 10, "bold"),
@@ -604,15 +608,16 @@ class Overlay:
         win.attributes("-topmost", True)
         frame = tk.Frame(win, bg="#0a0d10", highlightthickness=1, highlightbackground="#3a4550")
         frame.pack()
-        for text, note in mods or (("(no mods captured)", ""),):
+        for text, note, level in mods or (("(no mods captured)", "", "none"),):
             row = tk.Frame(frame, bg="#0a0d10")
             row.pack(fill="x", padx=8, pady=1)
+            fg = BAD if level == "red" else WARN if level == "yellow" else DIM
             tk.Label(
                 row,
                 text=text,
                 bg="#0a0d10",
-                fg=WARN if note else DIM,
-                font=("Segoe UI", 10, "bold" if note else "normal"),
+                fg=fg,
+                font=("Segoe UI", 10, "bold" if level != "none" else "normal"),
                 anchor="w",
                 justify="left",
                 wraplength=320,

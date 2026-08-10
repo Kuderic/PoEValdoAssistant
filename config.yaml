@@ -168,6 +168,12 @@ mod_scoring:
       match: "recover life or energy shield above"
       multiplier: 1.2
     - { label: "LEGION", match: "legion", multiplier: 1.0, warning: yellow }
+    # excludes "Area has no chance to contain Ultimatum Encounters"
+    - label: "ULTIMATUM"
+      match: "an ultimatum encounter|ultimatum encounter waves|ultimatum modifier"
+      regex: true
+      multiplier: 1.0
+      warning: yellow
 
 game:
   process_names:

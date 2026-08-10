@@ -131,27 +131,34 @@ class PriceBook:
         rate = self.rate_chaos(currency)
         return None if rate is None else amount * rate
 
-    def set_trade_price(self, reward: str, chaos_value: float) -> None:
-        """Store a trade-API unid-unique average (App's trade refresh loop)."""
-        self._trade_rewards[reward] = (chaos_value, time.monotonic())
+    def to_divine(self, amount: float, currency: str) -> float | None:
+        chaos = self.to_chaos(amount, currency)
+        divine_rate = self.rate_chaos("divine")
+        if chaos is None or not divine_rate:
+            return None
+        return chaos / divine_rate
+
+    def set_trade_price(self, reward: str, divine_value: float) -> None:
+        """Store a trade-API unid-unique average, in DIVINE natively (the
+        listings are div-denominated; storing chaos let divine-rate drift
+        between fetch and display distort the shown average)."""
+        self._trade_rewards[reward] = (divine_value, time.monotonic())
 
     def _trade_reference(self, key: str) -> Reference | None:
         entry = self._trade_rewards.get(key)
         if entry is None:
             return None
-        chaos, set_at = entry
+        divine_value, set_at = entry
         if time.monotonic() - set_at > self._trade_ttl_s:
             return None  # too old - fall through to ninja
         divine_rate = self.rate_chaos("divine")
-        if divine_rate:
-            display_amount, display_currency = round(chaos / divine_rate, 1), "divine"
-        else:
-            display_amount, display_currency = round(chaos, 1), "chaos"
+        if not divine_rate:
+            return None
         return Reference(
             key=key,
-            display_amount=display_amount,
-            display_currency=display_currency,
-            chaos_value=chaos,
+            display_amount=round(divine_value, 1),
+            display_currency="divine",
+            chaos_value=divine_value * divine_rate,
             source="trade",
         )
 

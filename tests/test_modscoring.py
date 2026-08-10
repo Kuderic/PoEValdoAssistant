@@ -160,13 +160,40 @@ def test_annotate_marks_scoring_mods():
         ]
     )
     assert annotated == (
-        ("Area contains The Feared", "base 100"),
-        ("Players in Area are 100% Delirious", "×1.8"),
-        ("Monsters have 40% increased Attack Speed", ""),
+        ("Area contains The Feared", "base 100", "yellow"),
+        ("Players in Area are 100% Delirious", "×1.8", "red"),  # >1.4 -> red
+        ("Monsters have 40% increased Attack Speed", "", "none"),
     )
 
 
 def test_annotate_unmatched_rule_not_shown():
     # Delirious rule exists but this map has no delirium: no annotation
     annotated = SCORING.annotate(["Monsters deal extra damage"])
-    assert annotated == (("Monsters deal extra damage", ""),)
+    assert annotated == (("Monsters deal extra damage", "", "none"),)
+
+
+def test_annotate_severity_tiers():
+    from sniper.config import ModScoringConfig, ModScoringRule
+    from sniper.modrules import ModScoring
+
+    tiers = ModScoring(
+        ModScoringConfig(
+            base_default=25,
+            rules=(
+                ModScoringRule(label="free", match="cull", multiplier=1.0),
+                ModScoringRule(label="mild", match="maven", multiplier=1.2),
+                ModScoringRule(label="edge", match="petrif", multiplier=1.4),
+                ModScoringRule(label="harsh", match="cannot block", multiplier=2.5),
+            ),
+        )
+    )
+    annotated = tiers.annotate(
+        ["cull mod", "maven mod", "petrif mod", "cannot block mod", "plain mod"]
+    )
+    assert [(note, level) for _, note, level in annotated] == [
+        ("×1", "none"),  # ×1.0: annotated but uncolored
+        ("×1.2", "yellow"),
+        ("×1.4", "yellow"),  # boundary: 1.4 is still yellow
+        ("×2.5", "red"),
+        ("", "none"),
+    ]
