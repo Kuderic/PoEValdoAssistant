@@ -38,8 +38,10 @@ class TradePricer:
         client: httpx.AsyncClient | None = None,
         spacing_s: float = REQUEST_SPACING_S,
         corrupted_uniques: tuple[str, ...] = (),
+        min_unid_listings: int = 10,
     ):
         self._corrupted_uniques = {u.lower() for u in corrupted_uniques}
+        self._min_unid_listings = min_unid_listings
         headers = {"User-Agent": USER_AGENT}
         cookies = {}
         if os.environ.get("POESESSID"):
@@ -88,13 +90,10 @@ class TradePricer:
         """Reward 'Foil Mageblood' -> trade-searchable unique name."""
         return reward.removeprefix("Foil ").strip()
 
-    async def fetch_unid_listings(self, league: str, reward: str) -> list[tuple[float, str]]:
-        """Cheapest listed prices for the unidentified, uncorrupted unique,
-        as (amount, currency) pairs, ascending. Uniques that only exist
-        corrupted (Impossible Escape, The Adorned, Forbidden Flame/Flesh)
-        are searched with corrupted: true instead. Empty list = none."""
-        name = self.unique_name(reward)
-        corrupted = "true" if name.lower() in self._corrupted_uniques else "false"
+    async def _search(
+        self, league: str, name: str, identified: bool, corrupted: bool
+    ) -> tuple[str, list[str], int]:
+        """One search; returns (query_id, cheapest hashes, total listings)."""
         query = {
             "query": {
                 "status": {"option": "any"},
@@ -102,8 +101,8 @@ class TradePricer:
                 "filters": {
                     "misc_filters": {
                         "filters": {
-                            "identified": {"option": "false"},
-                            "corrupted": {"option": corrupted},
+                            "identified": {"option": "true" if identified else "false"},
+                            "corrupted": {"option": "true" if corrupted else "false"},
                         }
                     }
                 },
@@ -112,12 +111,47 @@ class TradePricer:
         }
         resp = await self._request("POST", f"/api/trade/search/{league}", json=query)
         data = resp.json()
-        hashes = (data.get("result") or [])[: self._max_listings]
+        return data["id"], (data.get("result") or [])[: self._max_listings], data.get("total", 0)
+
+    async def fetch_reward_listings(
+        self, league: str, reward: str
+    ) -> tuple[list[tuple[float, str]], str]:
+        """Cheapest listed prices for the reward's unique, as ((amount,
+        currency) pairs ascending, filter mode used).
+
+        Filter ladder: unid+uncorrupted by default; below min_unid_listings
+        fall back to identified+uncorrupted (e.g. Headhunter has ~2 unid
+        listings); if that has none, identified+corrupted (e.g. Fortress
+        Covenant). corrupted_uniques (Forbidden Flame/Flesh, Impossible
+        Escape, Rain of Splinters) skip the ladder: unid+corrupted."""
+        name = self.unique_name(reward)
+        if name.lower() in self._corrupted_uniques:
+            query_id, hashes, _total = await self._search(
+                league, name, identified=False, corrupted=True
+            )
+            mode = "unid+corrupted"
+        else:
+            query_id, hashes, total = await self._search(
+                league, name, identified=False, corrupted=False
+            )
+            mode = "unid"
+            if total < self._min_unid_listings:
+                await asyncio.sleep(self._spacing_s)
+                query_id, hashes, total = await self._search(
+                    league, name, identified=True, corrupted=False
+                )
+                mode = "identified"
+                if total == 0:
+                    await asyncio.sleep(self._spacing_s)
+                    query_id, hashes, total = await self._search(
+                        league, name, identified=True, corrupted=True
+                    )
+                    mode = "identified+corrupted"
         if not hashes:
-            return []
+            return [], mode
         await asyncio.sleep(self._spacing_s)
         resp = await self._request(
-            "GET", f"/api/trade/fetch/{','.join(hashes)}", params={"query": data["id"]}
+            "GET", f"/api/trade/fetch/{','.join(hashes)}", params={"query": query_id}
         )
         prices: list[tuple[float, str]] = []
         for item in resp.json().get("result") or []:
@@ -125,7 +159,7 @@ class TradePricer:
             amount, currency = price.get("amount"), price.get("currency")
             if isinstance(amount, int | float) and amount > 0 and currency:
                 prices.append((float(amount), str(currency).lower()))
-        return prices
+        return prices, mode
 
     async def pause_between_rewards(self) -> None:
         await asyncio.sleep(self._spacing_s)

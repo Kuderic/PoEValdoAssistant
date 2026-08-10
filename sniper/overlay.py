@@ -198,14 +198,12 @@ class Overlay:
         self._status_line.pack(side="bottom", fill="x", padx=10, pady=(0, 6))
 
         # Warm-up: realize the banner once so its first real appearance does
-        # not pay font-load/relayout cost, and prime the sound path (audible
-        # "ready" chime; PlaySound loads the file synchronously even in
-        # SND_ASYNC mode, so pay that cost now, not on the first snipe).
+        # not pay font-load/relayout cost. (No startup sound: alert audio
+        # plays on a background thread, so no priming is needed.)
         self._banner.config(text="⚠ CURRENCY MISMATCH")
         self._banner.pack(fill="x", padx=10, pady=(6, 0), before=self._key_label)
         root.update_idletasks()
         self._banner.pack_forget()
-        self._play_sound()
 
         root.after(DRAIN_MS, self._drain)
         root.after(TICK_MS, self._tick)
@@ -302,6 +300,7 @@ class Overlay:
 
     def _render_alerts(self) -> None:
         pinned = self._pinned_top
+        top_widgets = (self._key_label, self._price_big, self._detail)
         if not self._alerts and pinned is None:
             self._banner.pack_forget()
             self._key_label.config(text="No active alert", fg=DIM)
@@ -311,7 +310,11 @@ class Overlay:
             self._clear_frame(self._top_mods)
             self._clear_frame(self._runners)
             self._countdown.delete("all")
+            for widget in top_widgets:  # nothing to click or hover
+                widget.configure(cursor="")
             return
+        for widget in top_widgets:
+            widget.configure(cursor="hand2")
 
         # while pinned, the traveled listing holds the top slot and live
         # alerts queue below it
@@ -558,18 +561,20 @@ class Overlay:
                     global_profit_div=new_threshold,
                     hotkey_combo=new_combo,
                 )
-                note.config(text=f"Saved to {self._overrides_path.name}", fg=GOOD)
-            else:
-                note.config(text="Applied (not saved)", fg=GOOD)
+            note.config(text="Saved ✓", fg=GOOD)
 
-        buttons = tk.Frame(body, bg=BG)
-        buttons.grid(row=len(sc.rules) + 3, column=0, columnspan=3, pady=8)
-        tk.Button(buttons, text="Apply", command=lambda: collect(save=False)).pack(
-            side="left", padx=4
-        )
-        tk.Button(buttons, text="Apply + Save", command=lambda: collect(save=True)).pack(
-            side="left", padx=4
-        )
+        # settings apply + save automatically: every edit is debounced, then
+        # applied live and persisted (invalid intermediate values just show
+        # in the note and change nothing until fixed)
+        pending: list[str] = []
+
+        def schedule_apply(_event=None) -> None:
+            if pending:
+                win.after_cancel(pending.pop())
+            pending.append(win.after(600, lambda: win.winfo_exists() and collect(save=True)))
+
+        for widget in [thr_e, combo_e, base_e, *entries.values()]:
+            widget.bind("<KeyRelease>", schedule_apply)
 
     # ------------------------------------------------------------- live feed
 
@@ -610,16 +615,19 @@ class Overlay:
         widget.bind("<Leave>", lambda e: self._hide_tooltip())
 
     def _show_tooltip(self, widget: tk.Widget, mods) -> None:
-        """mods: tuple of (mod text, scoring note). Mods that carry a
+        """mods: tuple of (mod text, scoring note, level). Mods that carry a
         difficulty modifier are highlighted with the modifier shown beside
-        them; neutral mods render dim."""
+        them; neutral mods render dim. No tooltip when there is nothing to
+        show (no active alert / no captured mods)."""
         self._hide_tooltip()
+        if not mods:
+            return
         win = tk.Toplevel(self._root)
         win.wm_overrideredirect(True)
         win.attributes("-topmost", True)
         frame = tk.Frame(win, bg="#0a0d10", highlightthickness=1, highlightbackground="#3a4550")
         frame.pack()
-        for text, note, level in mods or (("(no mods captured)", "", "none"),):
+        for text, note, level in mods:
             row = tk.Frame(frame, bg="#0a0d10")
             row.pack(fill="x", padx=8, pady=1)
             fg = BAD if level == "red" else WARN if level == "yellow" else DIM

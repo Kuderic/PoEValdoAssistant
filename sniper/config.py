@@ -115,14 +115,17 @@ class TradePricingConfig:
     enabled: bool = True
     refresh_minutes: float = 10.0
     max_listings: int = 3  # cheapest N listings averaged
+    # unid+uncorrupted needs at least this many listings, else fall back to
+    # identified+uncorrupted (and to identified+corrupted if that has none)
+    min_unid_listings: int = 10
     base_url: str = "https://www.pathofexile.com"
-    # Uniques that only exist corrupted - searched with corrupted: true
-    # (everything else is priced from uncorrupted listings).
+    # Uniques that only exist corrupted - searched unid + corrupted: true
+    # (skipping the fallback ladder).
     corrupted_uniques: tuple[str, ...] = (
         "Impossible Escape",
-        "The Adorned",
         "Forbidden Flame",
         "Forbidden Flesh",
+        "Rain of Splinters",
     )
 
 

@@ -248,7 +248,7 @@ class App:
             ]
             for reward in due:
                 try:
-                    listings = await pricer.fetch_unid_listings(league, reward)
+                    listings, mode = await pricer.fetch_reward_listings(league, reward)
                 except TradeBackoff as e:
                     event(
                         "trade_backoff",
@@ -273,12 +273,14 @@ class App:
                         reward=reward,
                         listings=len(div_prices),
                         avg_div=round(avg_div, 1),
+                        mode=mode,
                     )
                 else:
                     event(
                         "trade_price_empty",
                         reward=reward,
-                        note="no unid listings found; ninja/manual fallback applies",
+                        mode=mode,
+                        note="no listings at any filter stage; ninja/manual fallback applies",
                     )
                 await pricer.pause_between_rewards()
 
@@ -323,6 +325,7 @@ class App:
                 base_url=self.config.trade_pricing.base_url,
                 max_listings=self.config.trade_pricing.max_listings,
                 corrupted_uniques=tuple(self.config.trade_pricing.corrupted_uniques),
+                min_unid_listings=self.config.trade_pricing.min_unid_listings,
             )
             tasks.append(asyncio.create_task(self.trade_price_loop(pricer), name="trade-price"))
         await asyncio.gather(*tasks)

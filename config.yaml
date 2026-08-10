@@ -33,20 +33,26 @@ ninja:
   base_url: "https://poe.ninja"   # API paths verified 2026-08-09, see DESIGN.md
 
 # Primary reward pricing: official trade API average of the cheapest
-# unidentified, uncorrupted copies of each active reward's unique
-# (poe.ninja per-map medians proved inaccurate; ninja remains the fallback
-# + currency rates). Runs only for rewards with an open live search.
+# listings of each active reward's unique (poe.ninja per-map medians proved
+# inaccurate; ninja remains the fallback + currency rates). Runs only for
+# rewards with an open live search. Filter ladder:
+#   1. unidentified + uncorrupted (default)
+#   2. if fewer than min_unid_listings exist: identified + uncorrupted
+#      (e.g. Headhunter often has only ~2 unid listings)
+#   3. if that has none either: identified + corrupted
+#      (e.g. Fortress Covenant)
+# corrupted_uniques skip the ladder: unid + corrupted directly.
 trade_pricing:
   enabled: true
   refresh_minutes: 10
   max_listings: 3          # average of the cheapest N listings
+  min_unid_listings: 10
   base_url: "https://www.pathofexile.com"
-  # These only exist corrupted, so they are searched with corrupted: yes
   corrupted_uniques:
     - "Impossible Escape"
-    - "The Adorned"
     - "Forbidden Flame"
     - "Forbidden Flesh"
+    - "Rain of Splinters"
 
 # Manual chaos-denominated rates, used when poe.ninja is unavailable.
 currency_rates:
