@@ -7,6 +7,7 @@ task, never on the detection hot path.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -75,7 +76,9 @@ class NinjaClient:
         resp.raise_for_status()
 
         self._fail_count = 0
-        data = resp.json()
+        # the ValdoMap overview is a large payload; parse it in the executor
+        # so a listing arriving mid-refresh never waits behind json.loads
+        data = await asyncio.get_running_loop().run_in_executor(None, resp.json)
         etag = resp.headers.get("ETag")
         if etag:
             self._etags[url] = (etag, data)

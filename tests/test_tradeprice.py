@@ -48,7 +48,7 @@ def make_handler(totals: dict[tuple[str, str], int]):
             pair = query_filters(request)
             searches.append(pair)
             total = totals.get(pair, 0)
-            hashes = [f"h{i}" for i in range(min(total, 3))]
+            hashes = [f"h{i}" for i in range(min(total, 10))]
             return httpx.Response(200, json={"id": "q1", "total": total, "result": hashes})
         fetches.append(request.url.path)
         return httpx.Response(200, json=FETCH_RESPONSE)
@@ -71,7 +71,7 @@ async def test_plenty_of_unid_listings_single_search():
     assert mode == "unid"
     assert searches == [("false", "false")]
     assert listings == [(165.0, "divine"), (220.0, "divine"), (39600.0, "chaos")]
-    assert fetches == ["/api/trade/fetch/h0,h1,h2"]
+    assert fetches == ["/api/trade/fetch/" + ",".join(f"h{i}" for i in range(10))]
 
 
 async def test_few_unid_falls_back_to_identified():
@@ -149,3 +149,29 @@ async def test_averaging_via_book():
     book = PriceBook(make_config())
     divs = [book.to_divine(a, c) for a, c in listings]
     assert divs == [165.0, 220.0, 220.0]  # 39600 chaos / 180
+
+
+def test_select_representative_drops_price_fixers():
+    from sniper.tradeprice import select_representative
+
+    # the real Mageblood case: 2c troll + low-roll + real listings
+    prices = [0.01, 50.0, 209.0, 215.0, 219.0, 220.0, 225.0, 230.0, 230.0, 235.0]
+    avg, dropped = select_representative(prices, max_listings=3, outlier_cutoff=0.5)
+    assert dropped == 2  # 0.01 and 50 are below half the ~219.5 median
+    assert avg == (209.0 + 215.0 + 219.0) / 3
+
+    # the Headhunter case: single troll among honest listings
+    avg, dropped = select_representative(
+        [0.01, 35.0, 35.0, 35.0, 36.0, 37.0], max_listings=3, outlier_cutoff=0.5
+    )
+    assert dropped == 1
+    assert avg == 35.0
+
+
+def test_select_representative_edge_cases():
+    from sniper.tradeprice import select_representative
+
+    assert select_representative([], 3, 0.5) == (None, 0)
+    assert select_representative([80.0], 3, 0.5) == (80.0, 0)
+    # all-identical: nothing dropped
+    assert select_representative([5.0, 5.0, 5.0], 3, 0.5) == (5.0, 0)

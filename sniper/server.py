@@ -135,6 +135,12 @@ class SniperServer:
         received = time.monotonic()
         if listing.reward:
             self._recent_rewards[listing.reward] = received
+            # a tab's listings identify its search even when the page had no
+            # visible rows to scrape at hello time
+            tab = self.tabs.get(listing.tab_id)
+            if tab is not None and tab.search_reward != listing.reward:
+                tab.search_reward = listing.reward
+                self._notify_tabs()
         self._listing_tab[listing.listing_id] = listing.tab_id
         while len(self._listing_tab) > _ROUTE_CAP:
             self._listing_tab.popitem(last=False)

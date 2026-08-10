@@ -1,6 +1,7 @@
 """The only channel between the asyncio thread and the tkinter main thread:
-a plain thread-safe queue of immutable UI events, drained by the overlay
-via root.after polling."""
+a plain thread-safe queue of immutable UI events. The overlay registers a
+waker so each put wakes the Tk drain immediately (a slow root.after poll
+remains as the safety net)."""
 
 from __future__ import annotations
 
@@ -71,17 +72,42 @@ class ListingSeen:
     entry: FeedEntry
 
 
+@dataclass(frozen=True)
+class RewardPrices:
+    """Current reference price per active reward, for the Searching tooltip:
+    (reward, amount, currency, source) tuples."""
+
+    entries: tuple[tuple[str, float, str, str], ...]
+
+
 UiEvent = (
-    AlertsChanged | TabsChanged | PriceStatus | ClickOutcome | GameStatus | Traveled | ListingSeen
+    AlertsChanged
+    | TabsChanged
+    | PriceStatus
+    | ClickOutcome
+    | GameStatus
+    | Traveled
+    | ListingSeen
+    | RewardPrices
 )
 
 
 class Bus:
     def __init__(self) -> None:
         self._q: queue.Queue[UiEvent] = queue.Queue()
+        self._waker = None  # Callable[[], None] | None, set by the overlay
+
+    def set_waker(self, waker) -> None:
+        """Register a callback invoked after every put, from the producing
+        thread. The overlay uses it to event_generate a Tk wake so events
+        render immediately instead of on the next poll tick."""
+        self._waker = waker
 
     def put(self, event: UiEvent) -> None:
         self._q.put_nowait(event)
+        waker = self._waker
+        if waker is not None:
+            waker()
 
     def drain(self) -> list[UiEvent]:
         events: list[UiEvent] = []

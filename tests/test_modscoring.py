@@ -202,8 +202,11 @@ def test_annotate_severity_tiers():
 def test_annotate_stamps_warning_emoji_on_mod_text():
     void = SCORING.annotate(["Players who Die in area are sent to the Void"])
     assert void == (("❗ Players who Die in area are sent to the Void", "×2", "red"),)
+    # warning-only rules color their row too, not just the chip
     bismuth = SCORING.annotate(["Area contains a Bismuth Ore Deposit"])
-    assert bismuth == (("⚠️ Area contains a Bismuth Ore Deposit", "", "none"),)
+    assert bismuth == (("⚠️ Area contains a Bismuth Ore Deposit", "", "yellow"),)
+    blight = SCORING.annotate(["Area contains a Blight Encounter"])
+    assert blight == (("⚠️ Area contains a Blight Encounter", "", "yellow"),)
 
 
 def test_combo_pair_merges_into_one_display_row():

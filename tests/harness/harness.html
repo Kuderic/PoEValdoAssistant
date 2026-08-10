@@ -202,6 +202,65 @@ check("SeenSet FIFO eviction", () => {
   return eq([s.has("a"), s.has("b"), s.has("d")], [false, true, true]);
 });
 
+// --- network capture: /api/trade/fetch parsing ----------------------------
+// Trimmed inline copy of tests/fixtures/trade_fetch_response.json (real
+// response, 2026-08-10; file:// pages cannot fetch local JSON).
+const FETCH_ENTRY = {
+  id: "15523929be5966777cad9140f10b7d0d66f7b859074a1c363f4a0b9a2f73e9cd",
+  listing: {
+    method: "psapi",
+    price: { type: "~b/o", amount: 199, currency: "divine" },
+    account: { name: "WhaatColor#2070", online: null },
+  },
+  item: {
+    name: "Abandoned Realm",
+    typeLine: "Valdo Map",
+    properties: [
+      { name: "Map Area", values: [["Strand", 0]], displayMode: 0, type: 105 },
+      { name: "Reward", values: [["Foil Mageblood", 10]], displayMode: 0, type: 76 },
+      { name: "Item Quantity", values: [["+100%", 1]], displayMode: 0, type: 2 },
+    ],
+    explicitMods: [
+      { description: "Monsters have +6 to Maximum Power Charges", hash: "stat.explicit.stat_1103106414" },
+      { description: "Monsters gain a Power Charge on Hit", hash: "stat.explicit.stat_406353061" },
+      { description: "Players cannot Suppress Spell Damage", hash: "stat.explicit.stat_3203905334" },
+    ],
+  },
+};
+
+check("parseFetchItem: real fetch entry", () => eq(V.parseFetchItem(FETCH_ENTRY), {
+  id: "15523929be5966777cad9140f10b7d0d66f7b859074a1c363f4a0b9a2f73e9cd",
+  item_name: "Abandoned Realm",
+  price: { amount: 199, currency: "divine" },
+  seller: "WhaatColor#2070",
+  reward: "Foil Mageblood",
+  mods: ["Monsters have +6 to Maximum Power Charges",
+         "Monsters gain a Power Charge on Hit",
+         "Players cannot Suppress Spell Damage"],
+}));
+check("parseFetchItem: string-form explicitMods (public API shape)", () => {
+  const e = JSON.parse(JSON.stringify(FETCH_ENTRY));
+  e.item.explicitMods = ["Players cannot Evade"];
+  return eq(V.parseFetchItem(e).mods, ["Players cannot Evade"]);
+});
+check("parseFetchItem: no Reward property -> reward null", () => {
+  const e = JSON.parse(JSON.stringify(FETCH_ENTRY));
+  e.item.properties = e.item.properties.filter((p) => p.type !== 76);
+  return eq(V.parseFetchItem(e).reward, null);
+});
+check("parseFetchItem: missing price -> null", () => {
+  const e = JSON.parse(JSON.stringify(FETCH_ENTRY));
+  delete e.listing.price;
+  return eq(V.parseFetchItem(e), null);
+});
+check("parseFetchItem: missing account name -> null", () => {
+  const e = JSON.parse(JSON.stringify(FETCH_ENTRY));
+  delete e.listing.account;
+  return eq(V.parseFetchItem(e), null);
+});
+check("parseFetchItem: id matches DOM data-id format (64 hex)", () =>
+  eq(/^[0-9a-f]{64}$/.test(V.parseFetchItem(FETCH_ENTRY).id), true));
+
 // --- real snapshot rows ---------------------------------------------------
 const SNAP_ID = "c611fb204793322d6a2103bd6d1a172522503599ea626a5e896d104b3e2d033f";
 const snapRow = document.querySelector(`#snapshot-fixture .row[data-id="${SNAP_ID}"]`);

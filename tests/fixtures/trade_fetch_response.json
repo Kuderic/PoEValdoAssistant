@@ -1,0 +1,160 @@
+{
+  "_comment": "Real /api/trade/fetch response from a Valdo live search (Allflame, 2026-08-10), sanitized: hideout_token and extended.text replaced with REDACTED. Reference for parseFetchItem() in userscript/valdo-sniper.user.js; the harness inlines a trimmed copy.",
+  "result": [
+    {
+      "id": "15523929be5966777cad9140f10b7d0d66f7b859074a1c363f4a0b9a2f73e9cd",
+      "listing": {
+        "method": "psapi",
+        "indexed": "2026-08-10T05:10:04Z",
+        "stash": { "name": "7", "x": 8, "y": 8 },
+        "price": { "type": "~b/o", "amount": 199, "currency": "divine" },
+        "fee": 3352,
+        "account": { "name": "WhaatColor#2070", "online": null },
+        "hideout_token": "REDACTED"
+      },
+      "item": {
+        "verified": true,
+        "w": 1,
+        "h": 1,
+        "icon": "https://web.poecdn.com/gen/image/REDACTED/ValdoMapSymbol.png",
+        "league": "Allflame",
+        "id": "15523929be5966777cad9140f10b7d0d66f7b859074a1c363f4a0b9a2f73e9cd",
+        "isRelic": true,
+        "foilVariation": 8,
+        "name": "Abandoned Realm",
+        "typeLine": "Valdo Map",
+        "baseType": "Valdo Map",
+        "rarity": "Rare",
+        "ilvl": 100,
+        "identified": true,
+        "note": "~b/o 199 divine",
+        "unmodifiable": true,
+        "properties": [
+          {
+            "name": "Map Area",
+            "values": [["Strand", 0]],
+            "displayMode": 0,
+            "type": 105
+          },
+          {
+            "name": "Reward",
+            "values": [["Foil Mageblood", 10]],
+            "displayMode": 0,
+            "type": 76
+          },
+          {
+            "name": "Item Quantity",
+            "values": [["+100%", 1]],
+            "displayMode": 0,
+            "type": 2
+          },
+          {
+            "name": "Item Rarity",
+            "values": [["+20%", 1]],
+            "displayMode": 0,
+            "type": 3
+          },
+          {
+            "name": "Monster Pack Size",
+            "values": [["+21%", 1]],
+            "displayMode": 0,
+            "type": 4
+          },
+          { "name": "", "values": [], "displayMode": 4 },
+          {
+            "name": "",
+            "values": [["Chance for dropped Maps to convert to:", 24]],
+            "displayMode": 1,
+            "type": 77
+          },
+          {
+            "name": "Shaper Map",
+            "values": [["3%", 1]],
+            "displayMode": 0,
+            "type": 80
+          },
+          {
+            "name": "Elder Map",
+            "values": [["3%", 1]],
+            "displayMode": 0,
+            "type": 81
+          },
+          {
+            "name": "Unique Map",
+            "values": [["4%", 1]],
+            "displayMode": 0,
+            "type": 83
+          },
+          {
+            "name": "Scarab",
+            "values": [["14%", 1]],
+            "displayMode": 0,
+            "type": 84
+          }
+        ],
+        "monsterLevel": 84,
+        "explicitMods": [
+          {
+            "description": "Monsters have +6 to Maximum Power Charges",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_1103106414",
+            "mods": [{ "magnitudes": [{ "min": "6", "max": "6" }] }]
+          },
+          {
+            "description": "Monsters gain a Power Charge on Hit",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_406353061",
+            "mods": [{ "magnitudes": [{ "min": "100", "max": "100" }] }]
+          },
+          {
+            "description": "Monsters inflict Petrification for 4 seconds on hit",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_3437613601",
+            "mods": [{ "magnitudes": [{ "min": "4", "max": "4" }] }]
+          },
+          {
+            "description": "Players cannot Evade",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_1011537121",
+            "mods": [{ "magnitudes": [{ "min": "1", "max": "1" }] }]
+          },
+          {
+            "description": "Area contains The Remembered",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_1210020540",
+            "mods": [{ "magnitudes": [{ "min": "1", "max": "1" }] }]
+          },
+          {
+            "description": "Monsters inflict Malediction on hit",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_3444140926",
+            "mods": [{ "magnitudes": [{ "min": "1", "max": "1" }] }]
+          },
+          {
+            "description": "Players cannot Suppress Spell Damage",
+            "domain": "explicit",
+            "hash": "stat.explicit.stat_3203905334",
+            "mods": [{ "magnitudes": [{ "min": "1", "max": "1" }] }]
+          }
+        ],
+        "descrText": "Travel to this Map by using it in a personal Map Device. Maps can only be used once. Defeat 90% of all monsters in this Map, including all Rare and Unique enemies to obtain the Reward. The area created is not affected by your Atlas Passive Tree, and cannot be augmented via the Map Device.",
+        "frameType": 10,
+        "frameTypeId": "SupporterFoil",
+        "extended": {
+          "hashes": {
+            "explicit": [
+              ["explicit.stat_1103106414", [1]],
+              ["explicit.stat_406353061", [1]],
+              ["explicit.stat_3437613601", [2]],
+              ["explicit.stat_1011537121", [3]],
+              ["explicit.stat_1210020540", [0]],
+              ["explicit.stat_3444140926", [4]],
+              ["explicit.stat_3203905334", [5]]
+            ]
+          },
+          "text": "REDACTED"
+        }
+      }
+    }
+  ]
+}

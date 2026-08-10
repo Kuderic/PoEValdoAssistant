@@ -92,8 +92,12 @@ class ModScoring:
 
     @staticmethod
     def _rule_level(rule) -> str:
-        """Severity tier for UI coloring: ×1 mods stay uncolored, ×(1, 1.4]
-        yellow, above ×1.4 red; base-difficulty mods yellow."""
+        """Severity tier for UI coloring: warning rules always carry their
+        warning color (BISMUTH/ULTIMATUM/BLIGHT/... must stand out wherever
+        mods render, not just on the chip); otherwise ×1 mods stay uncolored,
+        ×(1, 1.4] yellow, above ×1.4 red; base-difficulty mods yellow."""
+        if rule.warning:
+            return rule.warning
         if rule.multiplier is not None:
             if rule.multiplier > 1.4:
                 return "red"
@@ -102,7 +106,7 @@ class ModScoring:
             return "none"
         if rule.min_base is not None:
             return "yellow"
-        return "none"  # warning-only rules: the chip carries the color
+        return "none"
 
     def annotate(self, mods: Iterable[str]) -> tuple[tuple[str, str, str], ...]:
         """Per-mod scoring annotations for the UI: (display text, note,

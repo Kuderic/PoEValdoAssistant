@@ -92,7 +92,7 @@ class AlertsConfig:
     max_display: int = 3
     sound: str = ""
     traveled_display_seconds: float = 10.0  # keep the traveled map's mods readable
-    feed_rows: int = 6  # live-feed rows shown at the bottom of the overlay
+    feed_rows: int = 12  # live-feed rows shown at the bottom of the overlay
 
 
 @dataclass(frozen=True)
@@ -114,7 +114,10 @@ class TradePricingConfig:
 
     enabled: bool = True
     refresh_minutes: float = 10.0
-    max_listings: int = 3  # cheapest N listings averaged
+    max_listings: int = 3  # cheapest N listings averaged (after outlier drop)
+    # listings below this fraction of the sample median are price-fixers
+    # (the perennial 2-chaos Mageblood) and are dropped before averaging
+    outlier_cutoff: float = 0.5
     # unid+uncorrupted needs at least this many listings, else fall back to
     # identified+uncorrupted (and to identified+corrupted if that has none)
     min_unid_listings: int = 10

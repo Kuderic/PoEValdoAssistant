@@ -15,9 +15,32 @@ from __future__ import annotations
 
 import asyncio
 import os
+import statistics
 import time
 
 import httpx
+
+# fetch this many cheapest listings (trade API max per fetch); the average
+# uses max_listings of them after outlier rejection
+FETCH_LIMIT = 10
+
+
+def select_representative(
+    div_prices: list[float], max_listings: int, outlier_cutoff: float
+) -> tuple[float | None, int]:
+    """Average the cheapest max_listings after dropping price-fixer lowballs
+    (anything below outlier_cutoff x median of the fetched sample - e.g. the
+    perennial 2-chaos Mageblood listing). Returns (avg, dropped_count)."""
+    if not div_prices:
+        return None, 0
+    ordered = sorted(div_prices)
+    median = statistics.median(ordered)
+    kept = [p for p in ordered if p >= outlier_cutoff * median]
+    if not kept:  # degenerate sample; keep everything rather than nothing
+        kept = ordered
+    sample = kept[:max_listings]
+    return sum(sample) / len(sample), len(ordered) - len(kept)
+
 
 USER_AGENT = "valdo-map-sniper/0.3 (personal snipe-margin tool; contact: easymccarthy@gmail.com)"
 
@@ -110,8 +133,9 @@ class TradePricer:
             "sort": {"price": "asc"},
         }
         resp = await self._request("POST", f"/api/trade/search/{league}", json=query)
-        data = resp.json()
-        return data["id"], (data.get("result") or [])[: self._max_listings], data.get("total", 0)
+        # parse off the loop: pricing must never stall a listing decision
+        data = await asyncio.get_running_loop().run_in_executor(None, resp.json)
+        return data["id"], (data.get("result") or [])[:FETCH_LIMIT], data.get("total", 0)
 
     async def fetch_reward_listings(
         self, league: str, reward: str
@@ -153,8 +177,9 @@ class TradePricer:
         resp = await self._request(
             "GET", f"/api/trade/fetch/{','.join(hashes)}", params={"query": query_id}
         )
+        fetched = await asyncio.get_running_loop().run_in_executor(None, resp.json)
         prices: list[tuple[float, str]] = []
-        for item in resp.json().get("result") or []:
+        for item in fetched.get("result") or []:
             price = ((item or {}).get("listing") or {}).get("price") or {}
             amount, currency = price.get("amount"), price.get("currency")
             if isinstance(amount, int | float) and amount > 0 and currency:

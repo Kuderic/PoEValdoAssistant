@@ -113,3 +113,37 @@ async def test_full_stream_end_to_end(running_server):
 async def test_click_travel_unknown_listing(running_server):
     server, config, decisions, clicks = running_server
     assert not await server.send_click_travel("never-seen")
+
+
+async def test_listing_reward_identifies_its_tab(running_server):
+    """A tab that couldn't scrape its reward (empty search page) gets named
+    by its first listing."""
+    server, config, decisions, clicks = running_server
+    url = f"ws://127.0.0.1:{config.server.port}"
+    async with websockets.connect(url) as ws:
+        # hello with NO search_reward (page had no rows to scrape)
+        await ws.send(json.dumps({"type": "hello", "search_id": "hh", "tab_id": "tab-hh"}))
+        await asyncio.sleep(0.2)
+        assert server.tabs["tab-hh"].search_reward is None
+        assert server.active_rewards() == set()
+
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "new_listing",
+                    "search_id": "hh",
+                    "tab_id": "tab-hh",
+                    "listing_id": "hh1",
+                    "item_name": "Twisted Sands",
+                    "price": {"amount": 30, "currency": "divine"},
+                    "seller": "S",
+                    "reward": "Foil Headhunter",
+                    "mods": [],
+                    "row_index": 0,
+                    "detected_at": "2026-08-10T12:00:00.000Z",
+                }
+            )
+        )
+        await asyncio.sleep(0.3)
+        assert server.tabs["tab-hh"].search_reward == "Foil Headhunter"
+        assert "Foil Headhunter" in server.active_rewards()

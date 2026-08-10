@@ -64,6 +64,31 @@ otherwise `fnv1a32(seller + "|" + item_name + "|" + amount + "|" + currency
 and Python with shared test vectors. Python treats the ID as opaque; the
 userscript maps ID -> DOM row.
 
+### Network capture (primary detection on live pages)
+
+The live search page receives new item ids on its own websocket, fetches
+details via `/api/trade/fetch/...?query=<search>`, and only then renders
+the row. The userscript wraps `window.fetch` and `XMLHttpRequest` to read
+those responses (the page's own traffic — zero additional requests, so the
+no-polling constraint is untouched) and forwards the listing before Vue
+renders it, saving ~100–500 ms over DOM observation. Verified against a
+real response (2026-08-10, sanitized copy in
+`tests/fixtures/trade_fetch_response.json`):
+
+- `result[].id` equals the DOM row's `data-id`, so dedup (`seen`) and the
+  click path work unchanged; network-captured listings send
+  `row_index: -1` (no row yet).
+- price is `listing.price.{amount,currency}` (currency already the short
+  trade id), seller is `listing.account.name`, reward is
+  `item.properties[type==76].values[0][0]`, mods are
+  `item.explicitMods[].description` (plain strings also accepted).
+- Responses arriving within 4 s of page init / SPA navigation are
+  remembered silently (page-load fetches for already-listed rows — mirrors
+  the DOM path's silent attach). Non-live search pages are excluded.
+- The DOM MutationObserver + retry ladder + 2 s sweep stay on as the
+  authority behind the hook; whichever path sees a listing first wins,
+  `seen` dedupes the other.
+
 Python -> Userscript:
 
 ```json
@@ -71,8 +96,9 @@ Python -> Userscript:
 ```
 
 Userscript replies with `{"type": "click_result", "listing_id": "...",
-"ok": true|false, "reason": "..."}` so failures (row gone, button missing)
-surface in the overlay instead of failing silently.
+"ok": true|false, "reason": "..."}` so failures (row gone, button missing,
+item no longer available) surface in the overlay instead of failing
+silently.
 
 Heartbeat: userscript sends `{"type": "hello", "search_id": ..., "tab_id":
 ..., "search_reward": ...}` on connect and every 30s; the overlay shows a
@@ -211,6 +237,14 @@ touching the commented main config.
   `click_result {ok: true, reason: "auto_confirmed"}`. This completes the
   same single user-initiated action — never a second travel, never
   retried, inert outside the 3s window.
+- Sold items (verified from the progenesis snapshot, 2026-08-09): the row
+  swaps its buttons (`.btns` gets `display: none`) for
+  `<span class="error">Item no longer available</span>`. The same 3s
+  post-click watch reports `click_result {ok: false, reason:
+  "item_no_longer_available"}`; if the error span is already present when
+  `click_travel` arrives, the click is not attempted at all. The overlay
+  shows TRAVEL FAILED and drops the traveled pin so the user can
+  immediately target the runner-up.
 
 ## Hotkey and focus path
 

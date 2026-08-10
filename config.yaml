@@ -21,7 +21,7 @@ alerts:
   max_display: 3               # top pick + runners-up shown on the overlay
   sound: ""                    # path to a .wav; empty -> system beep
   traveled_display_seconds: 10 # traveled map's mods stay readable this long
-  feed_rows: 6                 # live-feed rows (all listings, alerting or not)
+  feed_rows: 12                # live-feed rows (all listings, alerting or not)
 
 hotkey:
   combo: "ctrl+alt+t"
@@ -45,8 +45,9 @@ ninja:
 trade_pricing:
   enabled: true
   refresh_minutes: 10
-  max_listings: 3          # average of the cheapest N listings
+  max_listings: 3          # average of the cheapest N listings (after outlier drop)
   min_unid_listings: 10
+  outlier_cutoff: 0.5      # drop listings under this fraction of the sample median
   base_url: "https://www.pathofexile.com"
   corrupted_uniques:
     - "Impossible Escape"

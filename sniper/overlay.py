@@ -1,18 +1,23 @@
 """Always-on-top tkinter overlay. Runs on the MAIN thread only; all state
-arrives as immutable events drained from the bus every 15 ms.
+arrives as immutable events from the bus. The asyncio thread wakes the
+drain via a <<BusWake>> Tk event the instant it publishes (a DRAIN_MS
+root.after poll remains as safety net), so the decision -> render delay is
+event-driven, not poll-quantized.
 
-Latency contract: sound + render happen inside the same drain tick that
+Latency contract: sound + render happen inside the same drain pass that
 delivers AlertsChanged(new_alert=True); the frame->UI delta is logged as
 `alert_shown` for the <100 ms acceptance check.
 """
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 import tkinter as tk
 from collections import deque
 from pathlib import Path
+from tkinter import font as tkfont
 
 from sniper.alerts import AlertView
 from sniper.bus import (
@@ -22,6 +27,7 @@ from sniper.bus import (
     GameStatus,
     ListingSeen,
     PriceStatus,
+    RewardPrices,
     TabsChanged,
     Traveled,
 )
@@ -33,7 +39,7 @@ try:
 except ImportError:  # non-Windows dev machine
     winsound = None
 
-DRAIN_MS = 15
+DRAIN_MS = 50  # fallback poll only; <<BusWake>> makes the drain event-driven
 TICK_MS = 100
 
 
@@ -91,41 +97,69 @@ class Overlay:
         self._pinned_top: AlertView | None = None
         self._pinned_until = 0.0
         self._pin_token = 0
+        # shared Font objects, keyed by (family, base size, weight):
+        # Ctrl+/Ctrl- rescale every widget through them (see _zoom)
+        self._fonts: dict[tuple[str, int, str], tkfont.Font] = {}
+        self._font_scale = 1.0
 
         root.title("Valdo Sniper")
         root.configure(bg=BG)
         root.attributes("-topmost", True)
-        root.geometry("410x560+40+40")
+        root.geometry("410x760+40+40")
         root.minsize(360, 320)
+        # bind_all so the zoom keys work from the settings panel too
+        root.bind_all("<Control-plus>", lambda e: self._zoom(+1))
+        root.bind_all("<Control-equal>", lambda e: self._zoom(+1))
+        root.bind_all("<Control-KP_Add>", lambda e: self._zoom(+1))
+        root.bind_all("<Control-minus>", lambda e: self._zoom(-1))
+        root.bind_all("<Control-KP_Subtract>", lambda e: self._zoom(-1))
+        root.bind_all("<Control-0>", lambda e: self._zoom(0))  # reset
 
         # header: tab dots | tune button | price pill | game pill
         header = tk.Frame(root, bg=BG)
         header.pack(fill="x", padx=10, pady=(8, 2))
-        self._tabs_label = tk.Label(header, text="Tabs: 0", bg=BG, fg=DIM, font=("Consolas", 10))
+        self._tabs_label = tk.Label(
+            header, text="Tabs: 0", bg=BG, fg=DIM, font=self._font("Consolas", 10)
+        )
         self._tabs_label.pack(side="left")
-        tune_btn = tk.Label(header, text="⚙", bg=BG, fg=DIM, font=("Segoe UI", 11), cursor="hand2")
+        tune_btn = tk.Label(
+            header, text="⚙", bg=BG, fg=DIM, font=self._font("Segoe UI", 11), cursor="hand2"
+        )
         tune_btn.pack(side="right")
         tune_btn.bind("<Button-1>", lambda e: self._open_tuning())
         self._mute_btn = tk.Label(
-            header, text="🔊", bg=BG, fg=DIM, font=("Segoe UI", 11), cursor="hand2"
+            header, text="🔊", bg=BG, fg=DIM, font=self._font("Segoe UI", 11), cursor="hand2"
         )
         self._mute_btn.pack(side="right", padx=(0, 6))
         self._mute_btn.bind("<Button-1>", lambda e: self._toggle_mute())
-        self._game_label = tk.Label(header, text="PoE: ?", bg=BG, fg=DIM, font=("Consolas", 10))
+        self._game_label = tk.Label(
+            header, text="PoE: ?", bg=BG, fg=DIM, font=self._font("Consolas", 10)
+        )
         self._game_label.pack(side="right", padx=(0, 8))
         self._price_label = tk.Label(
-            header, text="Prices: manual", bg=BG, fg=DIM, font=("Consolas", 10)
+            header, text="Prices: manual", bg=BG, fg=DIM, font=self._font("Consolas", 10)
         )
         self._price_label.pack(side="right", padx=(0, 10))
         # reward names being live-searched, on their own line (the header
         # row is too crowded to hold them)
         self._searches_label = tk.Label(
-            root, text="", bg=BG, fg=DIM, font=("Consolas", 10), anchor="w", wraplength=390
+            root,
+            text="",
+            bg=BG,
+            fg=DIM,
+            font=self._font("Consolas", 10),
+            anchor="w",
+            wraplength=390,
         )
         self._searches_label.pack(fill="x", padx=10)
+        # hovering shows what the app currently thinks each reward is worth
+        self._reward_prices: tuple = ()
+        self._bind_tooltip(self._searches_label, self._reward_price_rows)
 
         # mismatch banner (hidden by default)
-        self._banner = tk.Label(root, text="", bg=BAD, fg="white", font=("Segoe UI", 12, "bold"))
+        self._banner = tk.Label(
+            root, text="", bg=BAD, fg="white", font=self._font("Segoe UI", 12, "bold")
+        )
 
         # main alert area
         self._key_label = tk.Label(
@@ -133,12 +167,12 @@ class Overlay:
             text="Waiting for listings…",
             bg=BG,
             fg=FG,
-            font=("Segoe UI", 16, "bold"),
+            font=self._font("Segoe UI", 16, "bold"),
             anchor="w",
         )
         self._key_label.pack(fill="x", padx=10, pady=(6, 0))
         self._price_big = tk.Label(
-            root, text="", bg=BG, fg=PRICE, font=("Segoe UI", 26, "bold"), anchor="w"
+            root, text="", bg=BG, fg=PRICE, font=self._font("Segoe UI", 26, "bold"), anchor="w"
         )
         self._price_big.pack(fill="x", padx=10)
         self._detail = tk.Label(
@@ -146,7 +180,7 @@ class Overlay:
             text="",
             bg=BG,
             fg=DIM,
-            font=("Segoe UI", 11),
+            font=self._font("Segoe UI", 11),
             anchor="w",
             justify="left",
             wraplength=380,
@@ -171,7 +205,7 @@ class Overlay:
         feed_box.pack(side="bottom", fill="x", padx=10, pady=(2, 0))
         tk.Frame(feed_box, bg="#1d242c", height=1).pack(fill="x", pady=(0, 3))
         self._threshold_note = tk.Label(
-            feed_box, text="", bg=BG, fg=DIM, font=("Consolas", 10), anchor="w"
+            feed_box, text="", bg=BG, fg=DIM, font=self._font("Consolas", 10), anchor="w"
         )
         self._threshold_note.pack(fill="x")
         self._update_threshold_note()
@@ -180,11 +214,30 @@ class Overlay:
             text=f"{'Price':<12}{'Profit':<9}{'Difficulty':<12}{'Time':<7}Reward",
             bg=BG,
             fg=DIM,
-            font=("Consolas", 10, "bold"),
+            font=self._font("Consolas", 10, "bold"),
             anchor="w",
         ).pack(fill="x")
         self._feed = tk.Frame(feed_box, bg=BG)
         self._feed.pack(fill="x")
+        # fixed pool of feed row labels updated in place: destroying and
+        # recreating a dozen Labels per listing (widget + font layout) is
+        # where render-time outliers came from. Rows are packed on first
+        # use and never unpacked (the deque only grows to maxlen).
+        self._feed_rows: list[tk.Label] = []
+        self._feed_mapped = 0
+        for i in range(self._feed_entries.maxlen or 1):
+            row = tk.Label(
+                self._feed,
+                text="",
+                bg=BG,
+                fg=FAINT,
+                font=self._font("Consolas", 10),
+                anchor="w",
+                cursor="hand2",
+            )
+            row.bind("<Button-1>", lambda e, idx=i: self._feed_click(idx))
+            self._bind_tooltip(row, lambda idx=i: self._feed_mods(idx))
+            self._feed_rows.append(row)
 
         # the top alert is clickable too - click any listing to travel to it;
         # hovering shows the map's full mod list
@@ -193,7 +246,7 @@ class Overlay:
             widget.configure(cursor="hand2")
             self._bind_tooltip(widget, lambda: self._alerts[0].mods if self._alerts else ())
         self._status_line = tk.Label(
-            root, text="", bg=BG, fg=DIM, font=("Consolas", 10), anchor="w"
+            root, text="", bg=BG, fg=DIM, font=self._font("Consolas", 10), anchor="w"
         )
         self._status_line.pack(side="bottom", fill="x", padx=10, pady=(0, 6))
 
@@ -205,30 +258,45 @@ class Overlay:
         root.update_idletasks()
         self._banner.pack_forget()
 
+        # event-driven drain: the asyncio thread fires <<BusWake>> after each
+        # put; the DRAIN_MS poll below only covers a lost/failed wake
+        root.bind("<<BusWake>>", lambda e: self._drain_once())
+        bus.set_waker(self._wake)
         root.after(DRAIN_MS, self._drain)
         root.after(TICK_MS, self._tick)
         root.after(30_000, self._refresh_feed_ages)
 
     # ------------------------------------------------------------------ bus
 
+    def _wake(self) -> None:
+        """Bus waker, called from the asyncio thread after every put.
+        event_generate is safe cross-thread (thread-enabled Tcl queues it);
+        when the window is tearing down the fallback poll covers the rest."""
+        with contextlib.suppress(tk.TclError, RuntimeError):
+            self._root.event_generate("<<BusWake>>", when="tail")
+
     def _drain(self) -> None:
+        self._drain_once()
+        self._root.after(DRAIN_MS, self._drain)
+
+    def _drain_once(self) -> None:
+        """Apply every queued event, then render each dirty region ONCE - a
+        burst of events costs one alerts render + one feed render, not one
+        per event."""
+        alerts_dirty = False
+        feed_dirty = False
+        new_alert = False
+        new_views: list[AlertView] = []
         for ev in self._bus.drain():
             if isinstance(ev, AlertsChanged):
                 self._alerts = ev.alerts
-                self._render_alerts()
+                alerts_dirty = True
                 if ev.new_alert:
-                    # log BEFORE the sound call so audio quirks never pollute
-                    # the render latency figure; ev.new_view carries the
-                    # arriving alert even when it ranks below the display cut
+                    new_alert = True
+                    # ev.new_view carries the arriving alert even when it
+                    # ranks below the display cut
                     if ev.new_view is not None:
-                        event(
-                            "alert_shown",
-                            listing_id=ev.new_view.listing_id,
-                            frame_to_ui_ms=round(
-                                (time.monotonic() - ev.new_view.created_monotonic) * 1000, 1
-                            ),
-                        )
-                    self._play_sound()
+                        new_views.append(ev.new_view)
             elif isinstance(ev, TabsChanged):
                 n = len(ev.tabs)
                 # a tab whose 30s heartbeat is >75s old is silently dead
@@ -238,9 +306,13 @@ class Overlay:
                 )
                 text = f"Tabs: {n}" + (f" ({stale} stale)" if stale else "")
                 self._tabs_label.config(text=text, fg=WARN if stale else GOOD if n else BAD)
-                self._searches_label.config(
-                    text=f"Searching: {', '.join(rewards)}" if rewards else ""
-                )
+                unknown = sum(1 for t in ev.tabs if not t.get("search_reward"))
+                parts = []
+                if rewards:
+                    parts.append(", ".join(rewards))
+                if unknown and n:  # tabs whose reward is not yet known
+                    parts.append(f"+{unknown} unidentified")
+                self._searches_label.config(text=f"Searching: {' · '.join(parts)}" if parts else "")
             elif isinstance(ev, PriceStatus):
                 color = {"live": GOOD, "stale": WARN, "manual": DIM}.get(ev.status, DIM)
                 source = "poe.ninja" if ev.status in ("live", "stale") else "Prices"
@@ -249,7 +321,16 @@ class Overlay:
                 if ev.ok:
                     text = "Travel sent" + (f" ({ev.reason})" if ev.reason else "")
                 else:
-                    text = f"TRAVEL FAILED: {ev.reason}"
+                    text = f"TRAVEL FAILED: {ev.reason.replace('_', ' ')}"
+                    # a failed travel (item sold, row gone...) must not keep
+                    # the ➜ pin up as if the teleport were in progress
+                    if (
+                        self._pinned_top is not None
+                        and self._pinned_top.listing_id == ev.listing_id
+                    ):
+                        self._pin_token += 1  # cancel the pending unpin timer
+                        self._pinned_top = None
+                        alerts_dirty = True
                 self._status_line.config(text=text, fg=GOOD if ev.ok else BAD)
             elif isinstance(ev, GameStatus):
                 self._game_label.config(
@@ -260,12 +341,58 @@ class Overlay:
                 # keep the traveled listing in the top slot (mods visible
                 # inline) so it's readable during the loading screen
                 self._pin_top(ev.view)
+                alerts_dirty = True
             elif isinstance(ev, ListingSeen):
                 self._feed_entries.appendleft(ev.entry)
-                self._render_feed()
-        self._root.after(DRAIN_MS, self._drain)
+                feed_dirty = True
+            elif isinstance(ev, RewardPrices):
+                self._reward_prices = ev.entries
+        if alerts_dirty:
+            self._render_alerts()
+        if feed_dirty:
+            self._render_feed()
+        # log AFTER the render it measures, BEFORE the sound call so audio
+        # quirks never pollute the render latency figure
+        for view in new_views:
+            event(
+                "alert_shown",
+                listing_id=view.listing_id,
+                frame_to_ui_ms=round((time.monotonic() - view.created_monotonic) * 1000, 1),
+            )
+        if new_alert:  # one sound per batch: SND_ASYNC bursts cancel anyway
+            self._play_sound()
+
+    # ----------------------------------------------------------------- fonts
+
+    def _font(self, family: str, size: int, weight: str = "normal") -> tkfont.Font:
+        """Shared mutable Font per (family, base size, weight); every widget
+        - static, per-render, or tooltip - goes through here so _zoom can
+        rescale the whole overlay at once."""
+        key = (family, size, weight)
+        if key not in self._fonts:
+            self._fonts[key] = tkfont.Font(family=family, size=self._scaled(size), weight=weight)
+        return self._fonts[key]
+
+    def _scaled(self, size: int) -> int:
+        return max(6, round(size * self._font_scale))
+
+    def _zoom(self, step: int) -> None:
+        """Ctrl+ / Ctrl- / Ctrl+0: grow, shrink, or reset every font."""
+        scale = 1.0 if step == 0 else round(self._font_scale + 0.1 * step, 2)
+        scale = min(1.8, max(0.7, scale))
+        if scale == self._font_scale:
+            return
+        self._font_scale = scale
+        for (_family, size, _weight), f in self._fonts.items():
+            f.configure(size=self._scaled(size))
 
     # ------------------------------------------------------------- rendering
+
+    def _reward_price_rows(self):
+        return tuple(
+            (f"{_display_name(reward)}: {amount:g} {currency}", f"({source})", "none")
+            for reward, amount, currency, source in self._reward_prices
+        )
 
     def _update_threshold_note(self) -> None:
         self._threshold_note.config(
@@ -286,6 +413,7 @@ class Overlay:
             self._on_travel(self._pinned_top.listing_id)  # no-ops: already traveled
 
     def _pin_top(self, view: AlertView) -> None:
+        """Sets pin state only; the caller (drain) renders once per batch."""
         self._pinned_top = view
         self._pinned_until = time.monotonic() + self._config.alerts.traveled_display_seconds
         self._pin_token += 1
@@ -297,7 +425,6 @@ class Overlay:
                 self._render_alerts()
 
         self._root.after(int(self._config.alerts.traveled_display_seconds * 1000), unpin)
-        self._render_alerts()
 
     def _render_alerts(self) -> None:
         pinned = self._pinned_top
@@ -350,7 +477,7 @@ class Overlay:
                 text=f"{text}" + (f"   {note}" if note else ""),
                 bg=BG,
                 fg=fg,
-                font=("Segoe UI", 10, "bold" if level != "none" else "normal"),
+                font=self._font("Segoe UI", 10, "bold" if level != "none" else "normal"),
                 anchor="w",
                 justify="left",
                 wraplength=380,
@@ -362,12 +489,16 @@ class Overlay:
                 text=f"{'❗' if color == 'red' else '⚠️'} {label.upper()}",
                 bg=BAD if color == "red" else WARN,
                 fg="white" if color == "red" else "#1a1a1a",
-                font=("Segoe UI", 10, "bold"),
+                font=self._font("Segoe UI", 10, "bold"),
                 padx=6,
             ).pack(side="left", padx=(0, 6))
         for label in top.warn_labels:
             tk.Label(
-                self._chips, text=f"⚠ {label}", bg=BG, fg=WARN, font=("Segoe UI", 10, "bold")
+                self._chips,
+                text=f"⚠ {label}",
+                bg=BG,
+                fg=WARN,
+                font=self._font("Segoe UI", 10, "bold"),
             ).pack(side="left", padx=(0, 6))
 
         self._clear_frame(self._runners)
@@ -378,7 +509,7 @@ class Overlay:
                 f"(avg {a.reference_amount:g})  {_display_name(a.key)}",
                 bg=BG,
                 fg=DIM,
-                font=("Consolas", 10),
+                font=self._font("Consolas", 10),
                 anchor="w",
                 cursor="hand2",
             )
@@ -451,7 +582,7 @@ class Overlay:
         general.grid(row=0, column=0, columnspan=3, sticky="we", padx=10, pady=(8, 6))
 
         def general_row(r: int, label: str, value: str, width: int = 10) -> tk.Entry:
-            tk.Label(general, text=label, bg=BG, fg=FG, font=("Consolas", 10)).grid(
+            tk.Label(general, text=label, bg=BG, fg=FG, font=self._font("Consolas", 10)).grid(
                 row=r, column=0, sticky="w", pady=(0, 2)
             )
             entry = tk.Entry(general, width=width, bg="#1d242c", fg=FG, insertbackground=FG)
@@ -469,7 +600,7 @@ class Overlay:
             "  difficulty 200 → 2× threshold, 50 → ½ threshold",
             bg=BG,
             fg=DIM,
-            font=("Consolas", 10),
+            font=self._font("Consolas", 10),
             anchor="w",
             justify="left",
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
@@ -486,16 +617,21 @@ class Overlay:
         def section(title: str, column_title: str, rules, values) -> None:
             r = row_cursor[0]
             tk.Label(
-                body, text=title, bg=BG, fg=FG, font=("Consolas", 10, "bold"), anchor="w"
+                body, text=title, bg=BG, fg=FG, font=self._font("Consolas", 10, "bold"), anchor="w"
             ).grid(row=r, column=0, sticky="w", padx=(10, 6), pady=(8, 1))
-            tk.Label(body, text=column_title, bg=BG, fg=FG, font=("Consolas", 10, "bold")).grid(
-                row=r, column=1, padx=(2, 10), pady=(8, 1)
-            )
+            tk.Label(
+                body, text=column_title, bg=BG, fg=FG, font=self._font("Consolas", 10, "bold")
+            ).grid(row=r, column=1, padx=(2, 10), pady=(8, 1))
             row_cursor[0] += 1
             for rule, value in zip(rules, values, strict=True):
                 r = row_cursor[0]
                 tk.Label(
-                    body, text=rule.label, bg=BG, fg=DIM, font=("Consolas", 10), anchor="w"
+                    body,
+                    text=rule.label,
+                    bg=BG,
+                    fg=DIM,
+                    font=self._font("Consolas", 10),
+                    anchor="w",
                 ).grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
                 e = tk.Entry(body, width=7, bg="#1d242c", fg=FG, insertbackground=FG)
                 e.insert(0, value)
@@ -516,7 +652,7 @@ class Overlay:
             [_fmt(r.multiplier) for r in mult_rules],
         )
 
-        note = tk.Label(body, text="", bg=BG, fg=BAD, font=("Consolas", 10))
+        note = tk.Label(body, text="", bg=BG, fg=BAD, font=self._font("Consolas", 10))
         note.grid(row=row_cursor[0], column=0, columnspan=2, pady=(4, 0))
         row_cursor[0] += 1
 
@@ -585,9 +721,16 @@ class Overlay:
 
     # ------------------------------------------------------------- live feed
 
+    def _feed_click(self, idx: int) -> None:
+        if self._on_travel is not None and idx < len(self._feed_entries):
+            self._on_travel(self._feed_entries[idx].listing_id)
+
+    def _feed_mods(self, idx: int):
+        return self._feed_entries[idx].mods if idx < len(self._feed_entries) else ()
+
     def _render_feed(self) -> None:
-        self._clear_frame(self._feed)
-        for e in self._feed_entries:
+        """Update the pooled row labels in place (see __init__)."""
+        for idx, e in enumerate(self._feed_entries):
             profit = "?d" if e.profit_div is None else f"{e.profit_div:+.0f}d"
             note = {
                 "blocked": "  [blocked]",
@@ -599,23 +742,15 @@ class Overlay:
                 age = f"{max(0, int((time.monotonic() - e.received_monotonic) / 60))}m"
             else:
                 age = "-"
-            fg = FG if e.verdict == "alert" else FAINT
-            row = tk.Label(
-                self._feed,
+            row = self._feed_rows[idx]
+            row.config(
                 text=f"{price:<12}{profit:<9}{e.difficulty:<12g}{age:<7}"
                 f"{_display_name(e.key)}{note}",
-                bg=BG,
-                fg=fg,
-                font=("Consolas", 10),
-                anchor="w",
-                cursor="hand2",
+                fg=FG if e.verdict == "alert" else FAINT,
             )
-            row.pack(fill="x")
-            row.bind(
-                "<Button-1>",
-                lambda ev, lid=e.listing_id: self._on_travel and self._on_travel(lid),
-            )
-            self._bind_tooltip(row, e.mods)
+            if idx >= self._feed_mapped:
+                row.pack(fill="x")
+                self._feed_mapped = idx + 1
 
     # ---------------------------------------------------------- mod tooltip
 
@@ -648,7 +783,7 @@ class Overlay:
                 text=text,
                 bg="#0a0d10",
                 fg=fg,
-                font=("Segoe UI", 10, "bold" if level != "none" else "normal"),
+                font=self._font("Segoe UI", 10, "bold" if level != "none" else "normal"),
                 anchor="w",
                 justify="left",
                 wraplength=320,
@@ -659,7 +794,7 @@ class Overlay:
                     text=f"  {note}",
                     bg="#0a0d10",
                     fg=fg,  # note shares the mod's tier color
-                    font=("Consolas", 10, "bold" if level != "none" else "normal"),
+                    font=self._font("Consolas", 10, "bold" if level != "none" else "normal"),
                     anchor="e",
                 ).pack(side="right")
         x = widget.winfo_rootx() + 16

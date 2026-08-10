@@ -27,6 +27,7 @@ from sniper.bus import (
     GameStatus,
     ListingSeen,
     PriceStatus,
+    RewardPrices,
     TabsChanged,
     Traveled,
 )
@@ -218,6 +219,17 @@ class App:
                 self._push_alerts(new_alert=False)
             await asyncio.sleep(0.25)
 
+    def _push_reward_prices(self) -> None:
+        """Current reference per active reward -> Searching-line tooltip."""
+        if not self.bus:
+            return
+        entries = []
+        for reward in sorted(self.server.active_rewards()):
+            ref = self.book.reference_for(reward)
+            if ref is not None:
+                entries.append((reward, ref.display_amount, ref.display_currency, ref.source))
+        self.bus.put(RewardPrices(tuple(entries)))
+
     async def tab_freshness_loop(self) -> None:
         """Push tab heartbeat ages every 10s so a silently dead tab shows as
         stale on the overlay before it costs a snipe (hello comes every 30s)."""
@@ -233,7 +245,7 @@ class App:
         re-priced every refresh_minutes."""
         import time
 
-        from sniper.tradeprice import TradeBackoff
+        from sniper.tradeprice import TradeBackoff, select_representative
 
         interval_s = self.config.trade_pricing.refresh_minutes * 60
         last_priced: dict[str, float] = {}
@@ -267,13 +279,18 @@ class App:
                     for amount, currency in listings
                     if (d := self.book.to_divine(amount, currency)) is not None
                 ]
-                if div_prices:
-                    avg_div = sum(div_prices) / len(div_prices)
+                avg_div, dropped = select_representative(
+                    div_prices,
+                    self.config.trade_pricing.max_listings,
+                    self.config.trade_pricing.outlier_cutoff,
+                )
+                if avg_div is not None:
                     self.book.set_trade_price(reward, avg_div)
                     event(
                         "trade_price",
                         reward=reward,
                         listings=len(div_prices),
+                        dropped_outliers=dropped,
                         avg_div=round(avg_div, 1),
                         mode=mode,
                     )
@@ -285,6 +302,7 @@ class App:
                         note="no listings at any filter stage; ninja/manual fallback applies",
                     )
                 await pricer.pause_between_rewards()
+            self._push_reward_prices()
 
     async def price_refresh_loop(self, ninja: NinjaClient) -> None:
         interval_s = self.config.ninja.refresh_minutes * 60
