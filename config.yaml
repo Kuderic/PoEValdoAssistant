@@ -24,7 +24,7 @@ alerts:
   feed_rows: 12                # live-feed rows (all listings, alerting or not)
 
 hotkey:
-  combo: "ctrl+alt+t"
+  combo: "`"
   consume: all                 # all: a press clears every alert | top: runners-up stay targetable
 
 ninja:

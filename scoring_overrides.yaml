@@ -166,4 +166,4 @@ rules:
     min_base: null
     multiplier: 1.0
 global_profit_div: 4.0
-hotkey_combo: ctrl+alt+t
+hotkey_combo: '`'
