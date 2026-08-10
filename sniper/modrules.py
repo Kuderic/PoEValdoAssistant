@@ -52,6 +52,14 @@ class ModRules:
         )
 
 
+# A base-difficulty mod at or above this renders red rather than yellow.
+# 100 is the reference difficulty the threshold is calibrated for
+# (required profit = threshold x score / 100), so a mod that alone drags the
+# map to 100 single-handedly demands the full base threshold - e.g. The
+# Feared. Anything below (Einhar 80, Elderslayers 70, ...) stays yellow.
+RED_MIN_BASE = 100.0
+
+
 @dataclass(frozen=True)
 class DifficultyResult:
     score: float
@@ -95,7 +103,8 @@ class ModScoring:
         """Severity tier for UI coloring: warning rules always carry their
         warning color (BISMUTH/ULTIMATUM/BLIGHT/... must stand out wherever
         mods render, not just on the chip); otherwise ×1 mods stay uncolored,
-        ×(1, 1.4] yellow, above ×1.4 red; base-difficulty mods yellow."""
+        ×(1, 1.4] yellow, above ×1.4 red; base-difficulty mods yellow, or
+        red at or above RED_MIN_BASE."""
         if rule.warning:
             return rule.warning
         if rule.multiplier is not None:
@@ -105,7 +114,7 @@ class ModScoring:
                 return "yellow"
             return "none"
         if rule.min_base is not None:
-            return "yellow"
+            return "red" if rule.min_base >= RED_MIN_BASE else "yellow"
         return "none"
 
     def annotate(self, mods: Iterable[str]) -> tuple[tuple[str, str, str], ...]:

@@ -261,6 +261,31 @@ check("parseFetchItem: missing account name -> null", () => {
 check("parseFetchItem: id matches DOM data-id format (64 hex)", () =>
   eq(/^[0-9a-f]{64}$/.test(V.parseFetchItem(FETCH_ENTRY).id), true));
 
+// --- dedup key: re-listings ----------------------------------------------
+// A re-listed item keeps its trade id and changes price, so the price must
+// be part of the dedup key (id-only silently swallowed every re-price).
+check("seenKey: same id + same price -> identical key", () =>
+  eq(V.seenKey("abc", { amount: 190, currency: "divine" }),
+     V.seenKey("abc", { amount: 190, currency: "divine" })));
+check("seenKey: price change -> different key (re-alerts)", () =>
+  eq(V.seenKey("abc", { amount: 190, currency: "divine" })
+     !== V.seenKey("abc", { amount: 185, currency: "divine" }), true));
+check("seenKey: currency change -> different key", () =>
+  eq(V.seenKey("abc", { amount: 190, currency: "divine" })
+     !== V.seenKey("abc", { amount: 190, currency: "chaos" }), true));
+check("seenKey: currency case is normalised", () =>
+  eq(V.seenKey("abc", { amount: 1, currency: "Divine" }),
+     V.seenKey("abc", { amount: 1, currency: "divine" })));
+check("seenKey: DOM and network paths agree (no double-send)", () => {
+  const domRow = row("fx-row1");                       // 12 divine, native-id-111
+  const domKey = V.seenKey(V.listingId(domRow, null), V.parseRow(domRow).price);
+  const netKey = V.seenKey("native-id-111", { amount: 12, currency: "divine" });
+  return eq(domKey, netKey);
+});
+check("parsePrice: matches the price parseRow reports", () =>
+  eq(V.parsePrice(row("fx-row2")), V.parseRow(row("fx-row2")).price));
+check("parsePrice: unrendered price -> null", () => eq(V.parsePrice(row("fx-row4")), null));
+
 // --- real snapshot rows ---------------------------------------------------
 const SNAP_ID = "c611fb204793322d6a2103bd6d1a172522503599ea626a5e896d104b3e2d033f";
 const snapRow = document.querySelector(`#snapshot-fixture .row[data-id="${SNAP_ID}"]`);

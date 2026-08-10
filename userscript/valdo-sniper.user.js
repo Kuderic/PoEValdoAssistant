@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.5.0
+// @version      0.6.0
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
@@ -56,6 +56,12 @@ const CONFIRM_TEXT = /in demand|teleport anyway/i;
 const UNAVAILABLE_TEXT = /no longer available/i;
 const CONFIRM_WINDOW_MS = 3_000;
 
+/* Sent in every hello and logged by the server: a tab keeps running the
+   script it loaded with until it is reloaded, so this is the only way to
+   tell from logs/ whether a live tab is on a stale userscript.
+   KEEP IN SYNC with the @version header above. */
+const SCRIPT_VERSION = '0.6.0';
+
 const WS_URL = 'ws://127.0.0.1:8765';
 const HEARTBEAT_MS = 30_000;
 const SENTINEL_MS = 2_000;
@@ -68,7 +74,7 @@ const TRADE_FETCH_RE = /\/api\/trade\/fetch\//;
 /* rows whose price/seller render a tick after insertion retry on this
    schedule (first retry is a rAF) instead of waiting for the 2s sweep */
 const RETRY_DELAYS_MS = [50, 100, 200, 400];
-const SEEN_CAP = 500;
+const SEEN_CAP = 500; // holds seenKey()s, so re-prices cost an extra slot each
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const PENDING_CAP = 50; // listings queued during ws reconnects
@@ -101,23 +107,46 @@ function extractMods(rowEl) {
 }
 
 /**
- * Parse one result row into the new_listing payload fields.
- * Returns null when mandatory fields are missing (row not fully rendered yet).
+ * Price fields only - the cheap half of parseRow. Split out so the 2s sweep
+ * can skip unchanged rows with two querySelectors instead of a full parse
+ * (dedup is price-aware, so the old id-only fast path no longer suffices).
+ * Returns null when the price has not rendered yet.
  */
-function parseRow(rowEl) {
-  const itemName = textOf(rowEl, SELECTORS.itemName);
+function parsePrice(rowEl) {
   const amountText = textOf(rowEl, SELECTORS.priceAmount).replace(/[,×x]/g, '');
   // Prefer the currency image's alt ("divine" - the short trade id used by
   // config and poe.ninja); fall back to the visible text ("Divine Orb").
   const currencyImg = rowEl.querySelector(SELECTORS.priceCurrencyImg);
   const currency = (currencyImg && currencyImg.getAttribute('alt')?.trim())
     || textOf(rowEl, SELECTORS.priceCurrencyText);
-  const seller = textOf(rowEl, SELECTORS.seller);
   const amount = parseFloat(amountText);
-  if (!itemName || !currency || !seller || !Number.isFinite(amount)) return null;
+  if (!currency || !Number.isFinite(amount)) return null;
+  return { amount, currency };
+}
+
+/**
+ * Dedup key. A re-listed item KEEPS its trade id but gets a new price, so
+ * keying on the id alone silently swallowed every re-price (a seller cutting
+ * 190d -> 155d would never have been forwarded). Price is part of the key:
+ * one alert per distinct price, re-pushes at an unchanged price stay quiet.
+ * Both capture paths share this key, so DOM and network never double-send.
+ */
+function seenKey(id, price) {
+  return `${id}|${price.amount}|${String(price.currency).toLowerCase()}`;
+}
+
+/**
+ * Parse one result row into the new_listing payload fields.
+ * Returns null when mandatory fields are missing (row not fully rendered yet).
+ */
+function parseRow(rowEl) {
+  const itemName = textOf(rowEl, SELECTORS.itemName);
+  const price = parsePrice(rowEl);
+  const seller = textOf(rowEl, SELECTORS.seller);
+  if (!itemName || !price || !seller) return null;
   return {
     item_name: itemName,
-    price: { amount, currency },
+    price,
     seller,
     reward: textOf(rowEl, SELECTORS.rewardValue) || null,
     mods: extractMods(rowEl),
@@ -177,7 +206,8 @@ function parseFetchItem(entry) {
   };
 }
 
-/** Bounded set with FIFO eviction; the dedup authority for forwarded rows. */
+/** Bounded set with FIFO eviction; holds seenKey()s (id + price), the dedup
+ *  authority for forwarded rows across both capture paths. */
 class SeenSet {
   constructor(cap) {
     this.cap = cap;
@@ -266,7 +296,13 @@ function main() {
 
   function hello() {
     lastSentReward = majorityReward();
-    send({ type: 'hello', search_id: searchId, tab_id: tabId, search_reward: lastSentReward });
+    send({
+      type: 'hello',
+      search_id: searchId,
+      tab_id: tabId,
+      search_reward: lastSentReward,
+      version: SCRIPT_VERSION,
+    });
   }
 
   /**
@@ -315,15 +351,20 @@ function main() {
    * unseen so the 2s sweep retries it.
    */
   function handleRow(rowEl, silent) {
-    // cheap native-id check first so sweeps skip seen rows without parsing
+    // cheap price-only check first so sweeps skip unchanged rows without a
+    // full parse; a re-priced row falls through and is forwarded again
     const native = rowEl.getAttribute(SELECTORS.rowIdAttr);
-    if (native && seen.has(native)) return true;
+    if (native) {
+      const price = parsePrice(rowEl);
+      if (price && seen.has(seenKey(native, price))) return true;
+    }
     const parsed = parseRow(rowEl);
     if (!parsed) return false;
     const id = listingId(rowEl, parsed);
     if (!id) return false;
-    if (seen.has(id)) return true;
-    seen.add(id);
+    const key = seenKey(id, parsed.price);
+    if (seen.has(key)) return true;
+    seen.add(key);
     rowRefs.set(id, new WeakRef(rowEl));
     if (silent) return true;
     const rows = Array.from(rowEl.parentElement?.children ?? []);
@@ -406,8 +447,10 @@ function main() {
 
   function handleFetchEntry(entry) {
     const parsed = parseFetchItem(entry);
-    if (!parsed || seen.has(parsed.id)) return;
-    seen.add(parsed.id);
+    if (!parsed) return;
+    const key = seenKey(parsed.id, parsed.price);
+    if (seen.has(key)) return;
+    seen.add(key);
     if (Date.now() < networkSilentUntil) return; // page-load fetch, not a push
     const { id, ...fields } = parsed;
     send({
@@ -621,7 +664,10 @@ function main() {
 }
 
 if (window.__VALDO_TEST__) {
-  window.__valdo = { SELECTORS, fnv1a32, extractMods, parseRow, parseFetchItem, listingId, SeenSet };
+  window.__valdo = {
+    SELECTORS, fnv1a32, extractMods, parsePrice, seenKey,
+    parseRow, parseFetchItem, listingId, SeenSet,
+  };
 } else {
   main();
 }

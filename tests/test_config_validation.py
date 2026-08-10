@@ -8,7 +8,7 @@ BASE = """
 league: auto
 server: {{ host: 127.0.0.1, port: {port} }}
 thresholds: {{ global_profit_div: {threshold} }}
-alerts: {{ expiry_seconds: {expiry}, max_display: {max_display} }}
+alerts: {{ expiry_seconds: {expiry}, max_display: {max_display}, volume: {volume} }}
 hotkey: {{ combo: "{combo}", consume: {consume} }}
 ninja: {{ enabled: true, refresh_minutes: {refresh} }}
 currency_rates: {{ chaos: 1, divine: {divine_rate} }}
@@ -26,6 +26,7 @@ def write(tmp_path, **overrides):
         "threshold": 10,
         "expiry": 12,
         "max_display": 3,
+        "volume": 0.5,
         "combo": "ctrl+alt+t",
         "consume": "all",
         "refresh": 10,
@@ -75,23 +76,47 @@ def test_bad_configs_raise_precise_errors(tmp_path, overrides, needle):
 
 
 def test_unknown_section_key_names_allowed_keys(tmp_path):
-    path = tmp_path / "config.yaml"
-    path.write_text(
-        BASE.format(
-            port=8765,
-            threshold=10,
-            expiry=12,
-            max_display=3,
-            combo="ctrl+alt+t",
-            consume="all",
-            refresh=10,
-            divine_rate=180,
-            warnings="[]",
-            scoring="[]",
-        ).replace("alerts: { expiry_seconds: 12, max_display: 3 }", "alerts: { expiry_secs: 12 }"),
-        encoding="utf-8",
-    )
+    path = write(tmp_path)
+    text = path.read_text(encoding="utf-8")
+    # swap whatever the alerts line currently is for one with a bad key, so
+    # this stays valid as the template gains fields
+    alerts_line = next(ln for ln in text.splitlines() if ln.startswith("alerts:"))
+    path.write_text(text.replace(alerts_line, "alerts: { expiry_secs: 12 }"), encoding="utf-8")
     with pytest.raises(ConfigError) as err:
         load_config(path)
     assert "expiry_secs" in str(err.value)
     assert "expiry_seconds" in str(err.value)  # tells the user what IS allowed
+
+
+# ------------------------------------------------------------- alert volume
+
+
+def test_alert_volume_defaults_to_half():
+    """winsound cannot attenuate; the default must be the scaled 50%."""
+    from sniper.config import AlertsConfig
+
+    assert AlertsConfig().volume == 0.5
+
+
+def test_alert_volume_read_from_config(tmp_path):
+    assert load_config(write(tmp_path, volume=0.2)).alerts.volume == 0.2
+
+
+@pytest.mark.parametrize("bad", [1.5, -0.1])
+def test_alert_volume_out_of_range_rejected(tmp_path, bad):
+    with pytest.raises(ConfigError, match="alerts.volume"):
+        load_config(write(tmp_path, volume=bad))
+
+
+def test_settings_panel_volume_round_trips(tmp_path):
+    """The panel writes alert_volume into the overrides file; the next
+    start must pick it up over config.yaml."""
+    from sniper.config import SCORING_OVERRIDES_NAME, ModScoringConfig, save_scoring_overrides
+
+    cfg = write(tmp_path, volume=0.5)
+    save_scoring_overrides(
+        ModScoringConfig(base_default=25.0, rules=()),
+        tmp_path / SCORING_OVERRIDES_NAME,
+        alert_volume=0.15,
+    )
+    assert load_config(cfg).alerts.volume == 0.15

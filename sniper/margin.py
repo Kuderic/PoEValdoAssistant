@@ -14,6 +14,21 @@ from sniper.modrules import ModRules, ModScoring
 from sniper.prices import PriceBook
 
 
+def profit_per_100_difficulty(profit_div: float | None, difficulty: float) -> float | None:
+    """Divine profit normalised to a 100-difficulty map.
+
+    The same unit as the configured threshold (which IS the profit a
+    100-difficulty map must make), so this value is directly comparable to
+    it: >= threshold is exactly the alert condition, restated. Used as the
+    alert ranking key and shown as the overlay's P/100D column.
+
+    None when profit is unknown (no reference/rate) or difficulty is zero.
+    """
+    if profit_div is None or not difficulty:
+        return None
+    return profit_div / difficulty * 100
+
+
 def evaluate(
     listing: Listing,
     book: PriceBook,

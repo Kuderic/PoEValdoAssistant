@@ -19,9 +19,10 @@ thresholds:
 alerts:
   expiry_seconds: 16           # a stale alert can never be traveled to by reflex
   max_display: 3               # top pick + runners-up shown on the overlay
-  sound: ""                    # path to a .wav; empty -> system beep
+  sound: ""                    # path to a .wav; empty -> Windows alert sound
+  volume: 0.5                  # 0.0-1.0, also editable in the ⚙ panel
   traveled_display_seconds: 10 # traveled map's mods stay readable this long
-  feed_rows: 12                # live-feed rows (all listings, alerting or not)
+  feed_rows: 40                # live-feed history rows (the area scrolls)
 
 hotkey:
   combo: "`"
@@ -175,10 +176,21 @@ mod_scoring:
     - { label: "Driven mad", match: "driven mad", multiplier: 1.2 }
     - { label: "Slower debuff expiry", match: "debuffs on players expire", multiplier: 1.2 }
     - { label: "Instability on Kill", match: "instability on kill", multiplier: 1.5 }
+    - { label: "Shroud Walker", match: "shroud walker", multiplier: 2.5 }
     - label: "No recovery above 50% in Rituals"
       match: "recover life or energy shield above"
       multiplier: 1.2
     - { label: "LEGION", match: "legion", multiplier: 1.0, warning: yellow }
+    # three-liner: the stabilise-and-close requirement, the extra-breach
+    # count ("an"/"2"/"3 additional"), and the breach boss line always
+    # appear together in captures - one mod, one multiplier, one display row
+    - label: "BREACH"
+      match_all:
+        - "unstable breaches must be stabilised"
+        - "additional unstable breach"
+        - "unstable breaches in area contain a boss"
+      multiplier: 1.5
+      warning: yellow
     # excludes "Area has no chance to contain Ultimatum Encounters"
     - label: "ULTIMATUM"
       match: "an ultimatum encounter|ultimatum encounter waves|ultimatum modifier"

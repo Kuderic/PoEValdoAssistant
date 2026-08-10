@@ -64,6 +64,26 @@ otherwise `fnv1a32(seller + "|" + item_name + "|" + amount + "|" + currency
 and Python with shared test vectors. Python treats the ID as opaque; the
 userscript maps ID -> DOM row.
 
+### Dedup and re-listings
+
+A seller who re-prices an item keeps the **same** trade listing id, so the
+userscript dedups on `id + amount + currency` (`seenKey()`), not on the id
+alone — id-only dedup silently swallowed every re-price, including price
+*drops*, which are exactly the snipes worth having. Both capture paths
+share the key, so DOM and network never double-send the same price.
+
+Consequences on the Python side:
+
+- `AlertStore.insert` treats a changed price for an id with an **active**
+  alert as a replacement, so the overlay never shows a stale price for the
+  rest of the expiry window; the countdown restarts and the sound replays,
+  because it is a new listing state.
+- A re-push at an unchanged price is still a duplicate and is ignored.
+- A **consumed** listing never re-alerts, whatever its new price — single
+  consumption stays a hard guarantee (see the ToS notes in `alerts.py`).
+  A listing you already traveled to therefore stays silent after a
+  re-price; that is deliberate, not a gap.
+
 ### Network capture (primary detection on live pages)
 
 The live search page receives new item ids on its own websocket, fetches
@@ -140,8 +160,13 @@ for regex, `match_all` for combos where every pattern must hit):
   map; a 200-difficulty map needs 2x the profit, a 50-difficulty map only
   half. Example: The Feared (base 100) + 100% Delirious (x1.8) = 180
   points -> 1.8x the base threshold.
-- Alert ranking and the hotkey's best-pick use **surplus** (profit above
-  the difficulty-adjusted requirement), not raw profit.
+- Alert ranking and the hotkey's best-pick use **profit per 100 difficulty**
+  (`margin.profit_per_100_difficulty`), not raw profit and not surplus:
+  the hotkey should take the map that pays best for what it costs to run.
+  A clean 25-difficulty map at +20 div (80/100D) outranks a Feared+VOID
+  map at +50 div (4/100D). This is the overlay's P/100D feed column, and
+  the same unit as the threshold — P/100D >= threshold is precisely the
+  alert condition.
 - Baseline rule values (config.yaml): Feared 100 / Twisted 50 / Einhar 80 /
   invitation bosses 60 / porcupines 20 (inert while base_default is 25);
   multipliers: ghosts 3-4 x2.2, void x2 (+warning), fatal x2, delirium
@@ -200,7 +225,8 @@ for regex, `match_all` for combos where every pattern must hit):
   (`thresholds.global_profit_div`, `thresholds.per_map`) are absolute
   divine amounts, not percentages; listings below threshold are logged but
   do not alert. Margin % is still computed for display. Alert ranking (and
-  the hotkey's best-pick) uses absolute divine profit.
+  the hotkey's best-pick) uses profit per 100 difficulty — see the scoring
+  section above.
 - **What the ValdoMap overview prices (verified 2026-08-09):** each line is
   the market price of the *map itself* (stash-listed, keyed map name +
   reward variant), NOT the price of the foil unique reward. E.g. Foil
@@ -250,7 +276,7 @@ touching the commented main config.
 
 - `keyboard` registers one global hotkey (default in `config.yaml`).
 - An AlertStore keeps the non-expired above-threshold alerts; the hotkey
-  always targets the one with the **highest absolute divine profit**. The
+  always targets the one with the **highest profit per 100 difficulty**. The
   overlay shows the top pick large plus up to 2 runners-up. Alerts expire
   after N seconds (config) to avoid traveling to a stale row.
 - A press consumes: with `hotkey.consume: all` (default) the whole store is

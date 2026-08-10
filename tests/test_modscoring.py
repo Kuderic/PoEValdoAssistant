@@ -160,10 +160,30 @@ def test_annotate_marks_scoring_mods():
         ]
     )
     assert annotated == (
-        ("Area contains The Feared", "base 100", "yellow"),
+        ("Area contains The Feared", "base 100", "red"),  # base >= 100 -> red
         ("Players in Area are 100% Delirious", "×1.8", "red"),  # >1.4 -> red
         ("Monsters have 40% increased Attack Speed", "", "none"),
     )
+
+
+def test_base_difficulty_colour_boundary():
+    """Base mods go red only once they alone reach the reference difficulty
+    of 100; lesser ones (Einhar 80, The Twisted 50) stay yellow."""
+    from sniper.config import ModScoringConfig, ModScoringRule
+    from sniper.modrules import ModScoring
+
+    tiers = ModScoring(
+        ModScoringConfig(
+            base_default=25,
+            rules=(
+                ModScoringRule(label="just under", match="einhar", min_base=99),
+                ModScoringRule(label="at the line", match="feared", min_base=100),
+                ModScoringRule(label="well over", match="twisted", min_base=150),
+            ),
+        )
+    )
+    rows = tiers.annotate(["einhar mod", "feared mod", "twisted mod"])
+    assert [level for _, _, level in rows] == ["yellow", "red", "red"]
 
 
 def test_annotate_unmatched_rule_not_shown():
@@ -257,3 +277,69 @@ def test_half_pair_line_stays_single_when_combo_not_matched():
     )
     rows = scoring.annotate(["aaa only line"])  # combo requires both -> no match
     assert rows == (("aaa only line", "", "none"),)
+
+
+# --------------------------------------------------------- shipped config.yaml
+# The real config.yaml is loaded at startup and rewritten by the settings
+# panel; a typo there is a SystemExit, not a test failure, so guard it here.
+# Mod wordings below are verbatim from logs/ captures.
+
+BREACH_LINES = [
+    "All Unstable Breaches must be Stabilised and Closed to claim Reward",
+    "Unstable Breaches in Area contain a Boss",
+    "Area contains 2 additional unstable Breaches",
+]
+
+
+def _shipped_scoring():
+    from pathlib import Path
+
+    from sniper.config import load_config
+
+    config = load_config(str(Path(__file__).resolve().parent.parent / "config.yaml"))
+    return ModScoring(config.mod_scoring)
+
+
+def test_shipped_config_breach_is_one_merged_row():
+    """All three breach lines always ship together: one rule, one ×1.5, one row."""
+    scoring = _shipped_scoring()
+    result = scoring.evaluate(BREACH_LINES)
+    assert ("BREACH", "yellow") in result.warnings
+    assert result.score == 25 * 1.5
+    rows = [r for r in scoring.annotate(BREACH_LINES) if "Breach" in r[0]]
+    assert len(rows) == 1  # merged, not three separate rows
+    text, note, level = rows[0]
+    assert note == "×1.5"
+    assert level == "yellow"  # warning rules color the row, not just the chip
+    assert text.startswith("⚠️ ")
+
+
+def test_shipped_config_breach_variants_all_match():
+    """Only the count line varies ('an' / 2 / 3 additional)."""
+    scoring = _shipped_scoring()
+    for count_line in (
+        "Area contains an additional unstable Breach",
+        "Area contains 2 additional unstable Breaches",
+        "Area contains 3 additional unstable Breaches",
+    ):
+        mods = BREACH_LINES[:2] + [count_line]
+        assert "BREACH" in scoring.evaluate(mods).matched, count_line
+
+
+def test_shipped_config_shroud_walker():
+    scoring = _shipped_scoring()
+    result = scoring.evaluate(["Players have Shroud Walker"])
+    assert "Shroud Walker" in result.matched
+    assert result.score == 25 * 2.5
+
+
+def test_shipped_config_feared_is_red():
+    scoring = _shipped_scoring()
+    rows = scoring.annotate(["Area contains The Feared"])
+    assert rows == (("Area contains The Feared", "base 100", "red"),)
+
+
+def test_shipped_config_lesser_base_mods_stay_yellow():
+    scoring = _shipped_scoring()
+    (_, _, level) = scoring.annotate(["Area contains Einhar, Beastmaster"])[0]
+    assert level == "yellow"

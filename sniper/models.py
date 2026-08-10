@@ -49,6 +49,10 @@ class Hello:
     search_id: str
     tab_id: str
     search_reward: str | None = None  # majority reward of the tab's visible rows
+    # userscript @version. A browser tab keeps running the script it loaded
+    # with until it is reloaded, so "which version is actually live" is not
+    # otherwise answerable from the logs when diagnosing a missed snipe.
+    version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -92,10 +96,12 @@ def parse_frame(msg: object) -> Frame:
         if errors:
             return FrameError(reason="; ".join(errors), raw=msg)
         reward = msg.get("search_reward")
+        version = msg.get("version")
         return Hello(
             search_id=search_id,
             tab_id=tab_id,
             search_reward=reward if isinstance(reward, str) and reward else None,
+            version=version if isinstance(version, str) and version else None,
         )
 
     if mtype == "click_result":

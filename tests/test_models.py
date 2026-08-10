@@ -58,3 +58,19 @@ def test_unknown_and_garbage():
     assert isinstance(parse_frame({"type": "warp_drive"}), FrameError)
     assert isinstance(parse_frame("not a dict"), FrameError)
     assert isinstance(parse_frame({"type": "hello"}), FrameError)
+
+
+def test_hello_carries_userscript_version():
+    frame = parse_frame({"type": "hello", "search_id": "s", "tab_id": "t", "version": "0.6.0"})
+    assert frame.version == "0.6.0"
+
+
+def test_hello_without_version_is_still_valid():
+    """Older tabs predate the field; they must still connect."""
+    frame = parse_frame({"type": "hello", "search_id": "s", "tab_id": "t"})
+    assert frame.version is None
+
+
+def test_hello_rejects_non_string_version():
+    frame = parse_frame({"type": "hello", "search_id": "s", "tab_id": "t", "version": 6})
+    assert frame.version is None

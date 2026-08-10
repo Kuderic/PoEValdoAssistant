@@ -99,3 +99,79 @@ def test_consume_specific_leaves_others():
     assert store.consume("one") is None  # already consumed
     assert len(store) == 1  # "two" untouched even in consume_mode=all
     assert store.consume_best().decision.listing.listing_id == "two"
+
+
+# ------------------------------------------------- re-listing at a new price
+# A re-listed item keeps its trade listing id but carries a new price. The
+# userscript forwards it again (dedup keys on id + price); the store must
+# treat it as news rather than as a duplicate.
+
+
+def test_relisted_at_new_price_replaces_active_alert():
+    store = AlertStore(expiry_s=10)
+    assert store.insert(alert_decision("relist", 100))
+    assert store.insert(alert_decision("relist", 80))  # price dropped
+    assert len(store) == 1  # replaced, not duplicated
+    view = store.views()[0]
+    assert view.amount == 80  # the overlay shows the CURRENT price
+
+
+def test_relisted_at_higher_price_also_realerts():
+    """Any price change re-alerts - a raise is still a changed listing."""
+    store = AlertStore(expiry_s=10)
+    assert store.insert(alert_decision("relist", 80))
+    assert store.insert(alert_decision("relist", 100))
+    assert store.views()[0].amount == 100
+
+
+def test_same_price_repush_is_still_a_duplicate():
+    store = AlertStore(expiry_s=10)
+    assert store.insert(alert_decision("dup", 100))
+    assert not store.insert(alert_decision("dup", 100))
+
+
+def test_relisting_never_resurrects_a_consumed_listing():
+    """Single consumption is a hard guarantee: a re-price must not undo it."""
+    store = AlertStore(expiry_s=10)
+    store.insert(alert_decision("gone", 100))
+    assert store.consume_best() is not None
+    assert not store.insert(alert_decision("gone", 50))  # re-listed cheaper
+    assert len(store) == 0
+
+
+# ----------------------------------------------- ranking by profit/difficulty
+# The hotkey takes the best VALUE (profit per 100 difficulty), not the
+# biggest absolute profit: a hard map's larger surplus is not worth more.
+
+
+def scored_decision(listing_id: str, amount: float, difficulty: float):
+    """An alert-verdict decision with an explicit difficulty score."""
+    from dataclasses import replace
+
+    d = alert_decision(listing_id, amount)
+    return replace(d, difficulty=difficulty)
+
+
+def test_best_is_highest_profit_per_difficulty_not_biggest_profit():
+    store = AlertStore(expiry_s=10)
+    # hard map: +100 div profit but difficulty 1000 -> 10 per 100D
+    store.insert(scored_decision("hard", 100, difficulty=1000))
+    # easy map: +50 div profit at difficulty 25 -> 200 per 100D
+    store.insert(scored_decision("easy", 150, difficulty=25))
+    best = store.consume_best()
+    assert best.decision.listing.listing_id == "easy"
+
+
+def test_views_ranked_by_profit_per_difficulty():
+    store = AlertStore(expiry_s=10, max_display=3)
+    store.insert(scored_decision("mid", 100, difficulty=200))  # 50 per 100D
+    store.insert(scored_decision("worst", 100, difficulty=1000))  # 10 per 100D
+    store.insert(scored_decision("top", 100, difficulty=50))  # 200 per 100D
+    assert [v.listing_id for v in store.views()] == ["top", "mid", "worst"]
+
+
+def test_zero_difficulty_ranks_last_without_crashing():
+    store = AlertStore(expiry_s=10)
+    store.insert(scored_decision("nodiff", 100, difficulty=0))
+    store.insert(scored_decision("normal", 100, difficulty=25))
+    assert store.consume_best().decision.listing.listing_id == "normal"

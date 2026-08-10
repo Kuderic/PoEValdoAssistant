@@ -165,5 +165,5 @@ rules:
   ULTIMATUM:
     min_base: null
     multiplier: 1.0
-global_profit_div: 4.0
+global_profit_div: 3.5
 hotkey_combo: '`'

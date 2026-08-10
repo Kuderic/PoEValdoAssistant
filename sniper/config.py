@@ -48,9 +48,10 @@ def save_scoring_overrides(
     path: Path,
     global_profit_div: float | None = None,
     hotkey_combo: str | None = None,
+    alert_volume: float | None = None,
 ) -> None:
-    """Persist tuning-panel values (numbers + hotkey combo; match patterns
-    stay in config.yaml)."""
+    """Persist tuning-panel values (numbers, hotkey combo, alert volume;
+    match patterns stay in config.yaml)."""
     data = {
         "base_default": scoring.base_default,
         "rules": {
@@ -61,15 +62,19 @@ def save_scoring_overrides(
         data["global_profit_div"] = global_profit_div
     if hotkey_combo is not None:
         data["hotkey_combo"] = hotkey_combo
+    if alert_volume is not None:
+        data["alert_volume"] = alert_volume
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 def load_extra_overrides(path: Path) -> dict:
-    """Non-scoring values saved by the settings panel (threshold, hotkey)."""
+    """Non-scoring values saved by the settings panel (threshold, hotkey,
+    alert volume)."""
     if not path.exists():
         return {}
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return {k: raw[k] for k in ("global_profit_div", "hotkey_combo") if raw.get(k) is not None}
+    keys = ("global_profit_div", "hotkey_combo", "alert_volume")
+    return {k: raw[k] for k in keys if raw.get(k) is not None}
 
 
 @dataclass(frozen=True)
@@ -91,8 +96,9 @@ class AlertsConfig:
     expiry_seconds: float = 12.0
     max_display: int = 3
     sound: str = ""
+    volume: float = 0.5  # 0.0-1.0; scales the alert WAV (see sniper/sound.py)
     traveled_display_seconds: float = 10.0  # keep the traveled map's mods readable
-    feed_rows: int = 12  # live-feed rows shown at the bottom of the overlay
+    feed_rows: int = 40  # live-feed history rows (the area scrolls)
 
 
 @dataclass(frozen=True)
@@ -249,6 +255,8 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         raise ConfigError("alerts.expiry_seconds must be > 0")
     if alerts.max_display < 1:
         raise ConfigError("alerts.max_display must be >= 1")
+    if not 0.0 <= alerts.volume <= 1.0:
+        raise ConfigError(f"alerts.volume must be between 0 and 1, got {alerts.volume}")
 
     ninja = build(NinjaConfig, "ninja")
     if ninja.enabled and ninja.refresh_minutes < 1:
@@ -347,6 +355,9 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         thresholds = replace(thresholds, global_profit_div=float(extra["global_profit_div"]))
     if "hotkey_combo" in extra:
         hotkey = replace(hotkey, combo=str(extra["hotkey_combo"]))
+    if "alert_volume" in extra:
+        volume = min(1.0, max(0.0, float(extra["alert_volume"])))
+        alerts = replace(alerts, volume=volume)
 
     game_raw = section("game")
     return Config(

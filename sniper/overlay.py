@@ -16,7 +16,6 @@ import threading
 import time
 import tkinter as tk
 from collections import deque
-from pathlib import Path
 from tkinter import font as tkfont
 
 from sniper.alerts import AlertView
@@ -33,6 +32,8 @@ from sniper.bus import (
 )
 from sniper.config import Config
 from sniper.logging_setup import event
+from sniper.margin import profit_per_100_difficulty
+from sniper.sound import load_wav, scale_wav
 
 try:
     import winsound
@@ -41,6 +42,21 @@ except ImportError:  # non-Windows dev machine
 
 DRAIN_MS = 50  # fallback poll only; <<BusWake>> makes the drain event-driven
 TICK_MS = 100
+FEED_MIN_HEIGHT = 150  # px floor for the scrollable history area
+SCROLLBAR_HIDE_MS = 900  # overlay scrollbar lingers this long after scrolling
+
+# The headline numbers, left to right. The price caption is rewritten per
+# listing to name the currency (a hard requirement: price AND currency must
+# be prominent), the rest are fixed.
+STAT_COLUMNS = (
+    ("price", "PRICE"),
+    ("profit", "PROFIT DIV"),
+    ("ratio", "P/100D"),
+    ("difficulty", "DIFFICULTY"),
+)
+# Difficulty colouring, tiered off the reference difficulty of 100 that the
+# threshold is calibrated for: at or under it is an easy map, 3x it is brutal.
+DIFF_WARN, DIFF_BAD = 100.0, 300.0
 
 
 def _fmt(value) -> str:
@@ -58,9 +74,9 @@ def _display_name(key: str) -> str:
 
 
 BG = "#101418"
-FG = "#d8dee5"
-DIM = "#7a8590"
-FAINT = "#48525c"  # diminished: feed rows that did not reach the threshold
+FG = "#e4e9ef"
+DIM = "#a8b3bf"
+FAINT = "#7b8794"  # diminished: feed rows that did not reach the threshold
 GOOD = "#5fd069"
 WARN = "#e0b341"
 BAD = "#e05555"
@@ -92,6 +108,9 @@ class Overlay:
         self._tooltip: tk.Toplevel | None = None
         self._alerts: tuple[AlertView, ...] = ()
         self._muted = False
+        self._volume = config.alerts.volume
+        # ((sound path, volume), scaled WAV bytes | None); see _alert_wav
+        self._wav_cache: tuple[tuple[str, float], bytes | None] | None = None
         # after a travel, the traveled listing stays pinned in the top slot
         # for traveled_display_seconds instead of vanishing instantly
         self._pinned_top: AlertView | None = None
@@ -105,8 +124,10 @@ class Overlay:
         root.title("Valdo Sniper")
         root.configure(bg=BG)
         root.attributes("-topmost", True)
-        root.geometry("410x760+40+40")
-        root.minsize(360, 320)
+        root.geometry("515x760+40+40")
+        # the four-column headline needs the width; below this the numbers
+        # and their unit captions start clipping
+        root.minsize(470, 380)
         # bind_all so the zoom keys work from the settings panel too
         root.bind_all("<Control-plus>", lambda e: self._zoom(+1))
         root.bind_all("<Control-equal>", lambda e: self._zoom(+1))
@@ -149,7 +170,7 @@ class Overlay:
             fg=DIM,
             font=self._font("Consolas", 10),
             anchor="w",
-            wraplength=390,
+            wraplength=495,
         )
         self._searches_label.pack(fill="x", padx=10)
         # hovering shows what the app currently thinks each reward is worth
@@ -171,10 +192,32 @@ class Overlay:
             anchor="w",
         )
         self._key_label.pack(fill="x", padx=10, pady=(6, 0))
-        self._price_big = tk.Label(
-            root, text="", bg=BG, fg=PRICE, font=self._font("Segoe UI", 26, "bold"), anchor="w"
-        )
-        self._price_big.pack(fill="x", padx=10)
+
+        # The four numbers that decide a snipe, in the order you read them:
+        # what you pay, what you make, what it is worth per unit of pain,
+        # and how much pain. Each column carries its own unit caption - the
+        # price one names the currency, which must stay prominent.
+        self._stats = tk.Frame(root, bg=BG)
+        self._stats.pack(fill="x", padx=10, pady=(2, 2))
+        self._stat_caps: dict[str, tk.Label] = {}
+        self._stat_vals: dict[str, tk.Label] = {}
+        for col, (key, caption) in enumerate(STAT_COLUMNS):
+            self._stats.grid_columnconfigure(col, weight=1, uniform="stat")
+            cap = tk.Label(
+                self._stats, text=caption, bg=BG, fg=DIM, font=self._font("Consolas", 9), anchor="w"
+            )
+            cap.grid(row=0, column=col, sticky="w")
+            val = tk.Label(
+                self._stats,
+                text="",
+                bg=BG,
+                fg=PRICE,
+                font=self._font("Segoe UI", 23, "bold"),
+                anchor="w",
+            )
+            val.grid(row=1, column=col, sticky="w")
+            self._stat_caps[key] = cap
+            self._stat_vals[key] = val
         self._detail = tk.Label(
             root,
             text="",
@@ -183,7 +226,7 @@ class Overlay:
             font=self._font("Segoe UI", 11),
             anchor="w",
             justify="left",
-            wraplength=380,
+            wraplength=485,
         )
         self._detail.pack(fill="x", padx=10)
         self._chips = tk.Frame(root, bg=BG)  # colored warning chips
@@ -198,11 +241,21 @@ class Overlay:
         self._runners = tk.Frame(root, bg=BG)  # one clickable row per runner-up
         self._runners.pack(fill="x", padx=10)
 
+        # Status line is packed BEFORE the feed so it wins the bottom slot:
+        # pack gives space in call order, and the expanding feed would
+        # otherwise squeeze travel results off-screen in a small window.
+        self._status_line = tk.Label(
+            root, text="", bg=BG, fg=DIM, font=self._font("Consolas", 10), anchor="w"
+        )
+        self._status_line.pack(side="bottom", fill="x", padx=10, pady=(0, 6))
+
         # live feed: every incoming listing, alerting or not; non-alerting
         # rows render diminished. Newest first. Hover a row for its mods.
         self._feed_entries: deque = deque(maxlen=max(config.alerts.feed_rows, 1))
         feed_box = tk.Frame(root, bg=BG)
-        feed_box.pack(side="bottom", fill="x", padx=10, pady=(2, 0))
+        # expand: the feed absorbs the window's spare vertical space instead
+        # of leaving a gap between the alert area and the status line
+        feed_box.pack(side="bottom", fill="both", expand=True, padx=10, pady=(2, 0))
         tk.Frame(feed_box, bg="#1d242c", height=1).pack(fill="x", pady=(0, 3))
         self._threshold_note = tk.Label(
             feed_box, text="", bg=BG, fg=DIM, font=self._font("Consolas", 10), anchor="w"
@@ -211,14 +264,60 @@ class Overlay:
         self._update_threshold_note()
         tk.Label(
             feed_box,
-            text=f"{'Price':<12}{'Profit':<9}{'Difficulty':<12}{'Time':<7}Reward",
+            # P/100D = profit per 100 difficulty: the same unit as the
+            # threshold noted directly above, and the alert ranking key
+            text=f"{'Price':<8}{'Profit':<9}{'P/100D':<9}{'Difficulty':<12}{'Time':<10}Reward",
             bg=BG,
             fg=DIM,
             font=self._font("Consolas", 10, "bold"),
             anchor="w",
         ).pack(fill="x")
-        self._feed = tk.Frame(feed_box, bg=BG)
-        self._feed.pack(fill="x")
+
+        # The history is longer than the window, so the rows live on a
+        # scrollable canvas while the note and column header above stay
+        # pinned in place.
+        scroll_area = tk.Frame(feed_box, bg=BG)
+        scroll_area.pack(fill="both", expand=True)
+        self._feed_canvas = tk.Canvas(
+            scroll_area, bg=BG, highlightthickness=0, height=FEED_MIN_HEIGHT
+        )
+        self._feed_canvas.pack(fill="both", expand=True)
+        # Overlay scrollbar: `place`d ON TOP of the canvas rather than packed
+        # beside it, so appearing and vanishing never reflows the rows. Flat
+        # dark styling instead of the native chrome, and it only shows while
+        # scrolling (see _flash_scrollbar).
+        self._feed_bar = tk.Scrollbar(
+            scroll_area,
+            orient="vertical",
+            command=self._feed_canvas.yview,
+            width=8,
+            borderwidth=0,
+            highlightthickness=0,
+            relief="flat",
+            troughcolor=BG,
+            bg="#46525f",
+            activebackground="#5d6b7a",
+            elementborderwidth=0,
+        )
+        self._bar_hide_id: str | None = None
+        self._feed_canvas.configure(yscrollcommand=self._feed_bar.set)
+        # keep it alive while the pointer is on it, so it can be dragged
+        self._feed_bar.bind("<Enter>", lambda e: self._cancel_bar_hide())
+        self._feed_bar.bind("<Leave>", lambda e: self._flash_scrollbar())
+        self._feed = tk.Frame(self._feed_canvas, bg=BG)
+        feed_window = self._feed_canvas.create_window((0, 0), window=self._feed, anchor="nw")
+        # keep the scrollable region in step with the rows, and the rows as
+        # wide as the canvas so a full-width row stays clickable
+        self._feed.bind(
+            "<Configure>",
+            lambda e: self._feed_canvas.configure(scrollregion=self._feed_canvas.bbox("all")),
+        )
+        self._feed_canvas.bind(
+            "<Configure>", lambda e: self._feed_canvas.itemconfigure(feed_window, width=e.width)
+        )
+        self._feed_canvas.bind("<MouseWheel>", self._feed_wheel)
+        self._feed.bind("<MouseWheel>", self._feed_wheel)
+
         # fixed pool of feed row labels updated in place: destroying and
         # recreating a dozen Labels per listing (widget + font layout) is
         # where render-time outliers came from. Rows are packed on first
@@ -236,19 +335,22 @@ class Overlay:
                 cursor="hand2",
             )
             row.bind("<Button-1>", lambda e, idx=i: self._feed_click(idx))
+            # rows sit above the canvas, so they need the wheel binding too
+            row.bind("<MouseWheel>", self._feed_wheel)
             self._bind_tooltip(row, lambda idx=i: self._feed_mods(idx))
             self._feed_rows.append(row)
 
         # the top alert is clickable too - click any listing to travel to it;
-        # hovering shows the map's full mod list
-        for widget in (self._key_label, self._price_big, self._detail):
+        # hovering shows the map's full mod list. Every headline number is
+        # part of the same target, so a click anywhere on it travels.
+        for widget in (self._key_label, self._detail, *self._stat_vals.values()):
             widget.bind("<Button-1>", lambda e: self._click_top())
             widget.configure(cursor="hand2")
             self._bind_tooltip(widget, lambda: self._alerts[0].mods if self._alerts else ())
-        self._status_line = tk.Label(
-            root, text="", bg=BG, fg=DIM, font=self._font("Consolas", 10), anchor="w"
-        )
-        self._status_line.pack(side="bottom", fill="x", padx=10, pady=(0, 6))
+
+        # Warm the (silent) audio cache off-thread so the first alert never
+        # pays for reading and rescaling the WAV.
+        threading.Thread(target=self._alert_wav, name="alert-sound-warmup", daemon=True).start()
 
         # Warm-up: realize the banner once so its first real appearance does
         # not pay font-load/relayout cost. (No startup sound: alert audio
@@ -395,9 +497,9 @@ class Overlay:
         )
 
     def _update_threshold_note(self) -> None:
-        self._threshold_note.config(
-            text=f"Threshold: +{self._current_threshold:g}d profit per 100 difficulty"
-        )
+        """Stated in the P/100D column's units so the cutoff can be read
+        straight off the feed."""
+        self._threshold_note.config(text=f"Alerting at P/100D ≥ {self._current_threshold:g}")
 
     def _clear_frame(self, frame: tk.Frame) -> None:
         self._hide_tooltip()  # a hovered row may be getting destroyed
@@ -426,14 +528,46 @@ class Overlay:
 
         self._root.after(int(self._config.alerts.traveled_display_seconds * 1000), unpin)
 
+    def _set_stats(self, top: AlertView) -> None:
+        """Fill the four headline numbers, each coloured by what it means:
+        profit by sign, P/100D against the alert threshold, difficulty
+        against the reference difficulty of 100."""
+        ratio = profit_per_100_difficulty(top.profit_div, top.difficulty)
+        self._stat_caps["price"].config(
+            text=f"PRICE {top.currency.upper()}",
+            # a mismatched currency is already bannered; flag it here too so
+            # the number is never read in the wrong unit
+            fg=BAD if top.mismatch else DIM,
+        )
+        self._stat_vals["price"].config(text=f"{top.amount:g}", fg=BAD if top.mismatch else PRICE)
+        self._stat_vals["profit"].config(
+            text=f"{top.profit_div:+.0f}", fg=GOOD if top.profit_div > 0 else BAD
+        )
+        if ratio is None:
+            ratio_text = "?"
+        else:  # a decimal matters at 3.8, not at 128
+            ratio_text = f"{ratio:+.0f}" if abs(ratio) >= 100 else f"{ratio:+.1f}"
+        self._stat_vals["ratio"].config(
+            text=ratio_text,
+            fg=GOOD if ratio is not None and ratio >= self._current_threshold else WARN,
+        )
+        self._stat_vals["difficulty"].config(
+            # whole numbers only: the fractional part is noise at this size
+            # (the feed's Difficulty column keeps the exact score)
+            text=f"{top.difficulty:.0f}",
+            fg=BAD if top.difficulty > DIFF_BAD else WARN if top.difficulty > DIFF_WARN else FG,
+        )
+
     def _render_alerts(self) -> None:
         pinned = self._pinned_top
-        top_widgets = (self._key_label, self._price_big, self._detail)
+        top_widgets = (self._key_label, self._detail, *self._stat_vals.values())
         if not self._alerts and pinned is None:
             self._banner.pack_forget()
             self._key_label.config(text="No active alert", fg=DIM)
-            self._price_big.config(text="")
             self._detail.config(text="")
+            for key, caption in STAT_COLUMNS:
+                self._stat_caps[key].config(text=caption, fg=DIM)
+                self._stat_vals[key].config(text="—", fg=FAINT)
             self._clear_frame(self._chips)
             self._clear_frame(self._top_mods)
             self._clear_frame(self._runners)
@@ -457,17 +591,14 @@ class Overlay:
             self._banner.pack_forget()
 
         prefix = "➜ " if pinned is not None else ""
-        self._key_label.config(
-            text=f"{prefix}{_display_name(top.key)}   +{top.profit_div:.0f} div ({top.margin:.0%})",
-            fg=GOOD,
-        )
-        self._price_big.config(text=f"{top.amount:g} {top.currency.upper()}")
+        self._key_label.config(text=f"{prefix}{_display_name(top.key)}", fg=GOOD)
+        self._set_stats(top)
         # source tag makes fallback pricing visible: (trade) is the unid
         # market average, (poe.ninja) the per-map median fallback
         source = {"trade": "trade", "manual": "manual"}.get(top.reference_source, "poe.ninja")
         self._detail.config(
-            text=f"Map asking price: {top.amount:g} {top.currency}   ·   "
-            f"Reward avg: {top.reference_amount:g} {top.reference_currency} ({source})"
+            text=f"Reward avg {top.reference_amount:g} {top.reference_currency} ({source})"
+            f"   ·   {top.margin:.0%} margin   ·   needs +{top.required_profit_div:.0f}d"
         )
         self._clear_frame(self._top_mods)
         for text, note, level in top.mods:
@@ -480,7 +611,7 @@ class Overlay:
                 font=self._font("Segoe UI", 10, "bold" if level != "none" else "normal"),
                 anchor="w",
                 justify="left",
-                wraplength=380,
+                wraplength=485,
             ).pack(fill="x")
         self._clear_frame(self._chips)
         for label, color in top.special_warnings:
@@ -531,7 +662,7 @@ class Overlay:
             remaining = max(0.0, self._alerts[0].expires_at_monotonic - time.monotonic())
         else:
             return
-        width = self._countdown.winfo_width() or 380
+        width = self._countdown.winfo_width() or 485
         frac = remaining / total if total else 0
         color = GOOD if frac > 0.5 else WARN if frac > 0.25 else BAD
         self._countdown.create_rectangle(0, 0, width * frac, 10, fill=color, width=0)
@@ -577,33 +708,58 @@ class Overlay:
         sc = self._scoring_config
         entries: dict[str, tk.Entry] = {}
 
-        # general settings above the scoring grid
-        general = tk.Frame(body, bg=BG)
-        general.grid(row=0, column=0, columnspan=3, sticky="we", padx=10, pady=(8, 6))
+        row_cursor = [0]
 
-        def general_row(r: int, label: str, value: str, width: int = 10) -> tk.Entry:
-            tk.Label(general, text=label, bg=BG, fg=FG, font=self._font("Consolas", 10)).grid(
-                row=r, column=0, sticky="w", pady=(0, 2)
-            )
-            entry = tk.Entry(general, width=width, bg="#1d242c", fg=FG, insertbackground=FG)
+        def heading(title: str, column_title: str = "") -> None:
+            r = row_cursor[0]
+            tk.Label(
+                body, text=title, bg=BG, fg=FG, font=self._font("Consolas", 10, "bold"), anchor="w"
+            ).grid(row=r, column=0, sticky="w", padx=(10, 6), pady=(10, 1))
+            if column_title:
+                tk.Label(
+                    body, text=column_title, bg=BG, fg=FG, font=self._font("Consolas", 10, "bold")
+                ).grid(row=r, column=1, padx=(2, 10), pady=(10, 1))
+            row_cursor[0] += 1
+
+        def field(label: str, value: str, width: int = 7) -> tk.Entry:
+            """One label + entry row in the body grid."""
+            r = row_cursor[0]
+            tk.Label(
+                body, text=label, bg=BG, fg=DIM, font=self._font("Consolas", 10), anchor="w"
+            ).grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
+            entry = tk.Entry(body, width=width, bg="#1d242c", fg=FG, insertbackground=FG)
             entry.insert(0, value)
-            entry.grid(row=r, column=1, padx=(6, 0), sticky="w", pady=(0, 2))
+            entry.grid(row=r, column=1, padx=(2, 10), sticky="w")
+            row_cursor[0] += 1
             return entry
 
-        thr_e = general_row(0, "Base margin alert threshold (divs)", _fmt(self._current_threshold))
-        combo_e = general_row(1, "Hotkey combo", self._current_combo, width=16)
-        base_e = general_row(2, "Base difficulty score (clean map)", _fmt(sc.base_default))
-        tk.Label(
-            general,
-            text="The threshold is what a 100-difficulty map must profit.\n"
-            "Required profit scales with difficulty:\n"
-            "  difficulty 200 → 2× threshold, 50 → ½ threshold",
-            bg=BG,
-            fg=DIM,
-            font=self._font("Consolas", 10),
-            anchor="w",
-            justify="left",
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        def caption(text: str) -> None:
+            tk.Label(
+                body,
+                text=text,
+                bg=BG,
+                fg=DIM,
+                font=self._font("Consolas", 9),
+                anchor="w",
+                justify="left",
+            ).grid(row=row_cursor[0], column=0, columnspan=2, sticky="w", padx=10, pady=(2, 0))
+            row_cursor[0] += 1
+
+        # --- alerting ------------------------------------------------------
+        # The threshold IS a P/100D value: alert when profit/difficulty*100
+        # reaches it, which is exactly the feed's P/100D column.
+        heading("Alerting", "Value")
+        thr_e = field("Alert at P/100D ≥", _fmt(self._current_threshold))
+        caption(
+            "P/100D = divine profit per 100 difficulty (feed column 3).\n"
+            "A clean 25-difficulty map at P/100D 14 profits ~3.5d;\n"
+            "a 200-difficulty map must profit 2× as much to match.\n"
+            "Highest P/100D is also what the hotkey travels to."
+        )
+
+        heading("Controls")
+        combo_e = field("Hotkey combo", self._current_combo, width=16)
+        vol_e = field("Alert volume (0 - 1)", _fmt(self._volume))
 
         # Rules split into two exclusive groups: a rule either raises the base
         # difficulty (min_base) or multiplies the final score (multiplier),
@@ -612,48 +768,23 @@ class Overlay:
         base_rules = [r for r in sc.rules if r.min_base is not None]
         mult_rules = [r for r in sc.rules if r.multiplier is not None]
 
-        row_cursor = [1]
-
-        def section(title: str, column_title: str, rules, values) -> None:
-            r = row_cursor[0]
-            tk.Label(
-                body, text=title, bg=BG, fg=FG, font=self._font("Consolas", 10, "bold"), anchor="w"
-            ).grid(row=r, column=0, sticky="w", padx=(10, 6), pady=(8, 1))
-            tk.Label(
-                body, text=column_title, bg=BG, fg=FG, font=self._font("Consolas", 10, "bold")
-            ).grid(row=r, column=1, padx=(2, 10), pady=(8, 1))
-            row_cursor[0] += 1
+        def rule_rows(rules, values) -> None:
             for rule, value in zip(rules, values, strict=True):
-                r = row_cursor[0]
-                tk.Label(
-                    body,
-                    text=rule.label,
-                    bg=BG,
-                    fg=DIM,
-                    font=self._font("Consolas", 10),
-                    anchor="w",
-                ).grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
-                e = tk.Entry(body, width=7, bg="#1d242c", fg=FG, insertbackground=FG)
-                e.insert(0, value)
-                e.grid(row=r, column=1, padx=(2, 10))
-                entries[rule.label] = e
-                row_cursor[0] += 1
+                entries[rule.label] = field(rule.label, value)
 
-        section(
-            "Base difficulty mods",
-            "Base",
-            base_rules,
-            [_fmt(r.min_base) for r in base_rules],
-        )
-        section(
-            "Difficulty multipliers",
-            "Mult",
-            mult_rules,
-            [_fmt(r.multiplier) for r in mult_rules],
-        )
+        # base_default belongs here, not in a separate block: it is the same
+        # kind of number as every min_base below it, and they combine as
+        # max(base_default, matched min_bases).
+        heading("Base difficulty", "Base")
+        base_e = field("Clean map (no mods)", _fmt(sc.base_default))
+        rule_rows(base_rules, [_fmt(r.min_base) for r in base_rules])
+        caption("The highest base wins; multipliers below then scale it.")
+
+        heading("Difficulty multipliers", "Mult")
+        rule_rows(mult_rules, [_fmt(r.multiplier) for r in mult_rules])
 
         note = tk.Label(body, text="", bg=BG, fg=BAD, font=self._font("Consolas", 10))
-        note.grid(row=row_cursor[0], column=0, columnspan=2, pady=(4, 0))
+        note.grid(row=row_cursor[0], column=0, columnspan=2, pady=(6, 4))
         row_cursor[0] += 1
 
         def collect(save: bool) -> None:
@@ -679,12 +810,16 @@ class Overlay:
                     rules=tuple(new_rules),
                 )
                 new_threshold = float(thr_e.get())
+                new_volume = float(vol_e.get())
             except ValueError as exc:
                 note.config(text=f"Bad number: {exc}", fg=BAD)
                 return
             new_combo = combo_e.get().strip()
             if not new_combo:
                 note.config(text="Hotkey combo must not be empty", fg=BAD)
+                return
+            if not 0.0 <= new_volume <= 1.0:
+                note.config(text="Volume must be between 0 and 1", fg=BAD)
                 return
 
             error = None
@@ -696,6 +831,13 @@ class Overlay:
             self._scoring_config = new_config
             self._current_threshold = new_threshold
             self._current_combo = new_combo
+            if new_volume != self._volume:
+                self._volume = new_volume
+                # rescale off-thread; the cache keys on volume so this both
+                # invalidates and re-warms in one step
+                threading.Thread(
+                    target=self._alert_wav, name="alert-sound-warmup", daemon=True
+                ).start()
             self._update_threshold_note()
             if save and self._overrides_path is not None:
                 save_scoring_overrides(
@@ -703,6 +845,7 @@ class Overlay:
                     self._overrides_path,
                     global_profit_div=new_threshold,
                     hotkey_combo=new_combo,
+                    alert_volume=new_volume,
                 )
             note.config(text="Saved ✓", fg=GOOD)
 
@@ -716,10 +859,35 @@ class Overlay:
                 win.after_cancel(pending.pop())
             pending.append(win.after(600, lambda: win.winfo_exists() and collect(save=True)))
 
-        for widget in [thr_e, combo_e, base_e, *entries.values()]:
+        for widget in [thr_e, combo_e, base_e, vol_e, *entries.values()]:
             widget.bind("<KeyRelease>", schedule_apply)
 
     # ------------------------------------------------------------- live feed
+
+    def _feed_wheel(self, event) -> None:
+        """Wheel scrolling over any part of the history area."""
+        self._feed_canvas.yview_scroll(int(-event.delta / 120), "units")
+        self._flash_scrollbar()
+
+    def _cancel_bar_hide(self) -> None:
+        if self._bar_hide_id is not None:
+            self._root.after_cancel(self._bar_hide_id)
+            self._bar_hide_id = None
+
+    def _flash_scrollbar(self) -> None:
+        """Show the overlay scrollbar, then fade it out again after a beat.
+        No-op when everything already fits."""
+        first, last = self._feed_canvas.yview()
+        if first <= 0.0 and last >= 1.0:
+            return
+        if not self._feed_bar.winfo_ismapped():
+            self._feed_bar.place(relx=1.0, rely=0.0, relheight=1.0, anchor="ne")
+        self._cancel_bar_hide()
+        self._bar_hide_id = self._root.after(SCROLLBAR_HIDE_MS, self._hide_scrollbar)
+
+    def _hide_scrollbar(self) -> None:
+        self._bar_hide_id = None
+        self._feed_bar.place_forget()
 
     def _feed_click(self, idx: int) -> None:
         if self._on_travel is not None and idx < len(self._feed_entries):
@@ -738,13 +906,15 @@ class Overlay:
                 "no_rate": "  [no rate]",
             }.get(e.verdict, "")
             price = f"{e.amount:g}d" if e.currency == "divine" else f"{e.amount:g} {e.currency}"
+            ratio = profit_per_100_difficulty(e.profit_div, e.difficulty)
+            per_100 = "?" if ratio is None else f"{ratio:+.1f}"
             if e.received_monotonic > 0:
-                age = f"{max(0, int((time.monotonic() - e.received_monotonic) / 60))}m"
+                age = f"{max(0, int((time.monotonic() - e.received_monotonic) / 60))}m ago"
             else:
                 age = "-"
             row = self._feed_rows[idx]
             row.config(
-                text=f"{price:<12}{profit:<9}{e.difficulty:<12g}{age:<7}"
+                text=f"{price:<8}{profit:<9}{per_100:<9}{e.difficulty:<12g}{age:<10}"
                 f"{_display_name(e.key)}{note}",
                 fg=FG if e.verdict == "alert" else FAINT,
             )
@@ -816,21 +986,37 @@ class Overlay:
         self._mute_btn.config(text="🔇" if self._muted else "🔊", fg=BAD if self._muted else DIM)
         event("mute_toggled", muted=self._muted)
 
+    def _alert_wav(self) -> bytes | None:
+        """Volume-scaled WAV bytes for the current sound + volume setting.
+
+        Cached: rescaling a ~240 KB WAV on every alert would be wasted work,
+        and the first call is warmed at startup so no alert pays for it.
+        None means no WAV was found - the caller uses the (unscalable)
+        system alias instead.
+        """
+        key = (self._config.alerts.sound, round(self._volume, 3))
+        cached = self._wav_cache
+        if cached is None or cached[0] != key:
+            raw = load_wav(key[0])
+            cached = (key, None if raw is None else scale_wav(raw, self._volume))
+            self._wav_cache = cached
+        return cached[1]
+
     def _play_sound(self) -> None:
-        if self._muted:
+        if self._muted or self._volume <= 0:
             return
         if winsound is None:
             self._root.bell()
             return
 
-        # PlaySound loads the audio file synchronously even with SND_ASYNC
+        # PlaySound loads the audio synchronously even with SND_ASYNC
         # (~100-500ms when interrupting a playing sound), so it must never
         # run on the UI thread - burst alerts would delay rendering.
         def play() -> None:
-            sound = self._config.alerts.sound
-            if sound and Path(sound).exists():
-                winsound.PlaySound(sound, winsound.SND_FILENAME | winsound.SND_ASYNC)
-            else:
+            data = self._alert_wav()
+            if data is not None:
+                winsound.PlaySound(data, winsound.SND_MEMORY | winsound.SND_ASYNC)
+            else:  # no WAV available: alias playback ignores volume
                 winsound.PlaySound(
                     "SystemExclamation",
                     winsound.SND_ALIAS | winsound.SND_ASYNC | winsound.SND_NODEFAULT,

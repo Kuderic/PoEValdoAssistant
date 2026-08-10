@@ -30,6 +30,7 @@ class TabState:
     search_id: str
     last_hello_monotonic: float
     search_reward: str | None = None
+    version: str | None = None  # userscript @version this tab is running
 
 
 class SniperServer:
@@ -100,6 +101,7 @@ class SniperServer:
                         search_id=frame.search_id,
                         last_hello_monotonic=time.monotonic(),
                         search_reward=frame.search_reward,
+                        version=frame.version,
                     )
                     if not known:
                         event(
@@ -107,6 +109,10 @@ class SniperServer:
                             tab_id=tab_id,
                             search_id=frame.search_id,
                             search_reward=frame.search_reward,
+                            # a tab runs the script it loaded with until it is
+                            # reloaded; logged so a missed snipe can be traced
+                            # to a stale userscript
+                            userscript_version=frame.version,
                         )
                         self._notify_tabs()
                 elif isinstance(frame, Listing):
@@ -228,6 +234,7 @@ class SniperServer:
                 "tab_id": tid,
                 "search_id": t.search_id,
                 "search_reward": t.search_reward,
+                "version": t.version,
                 "hello_age_s": round(now - t.last_hello_monotonic, 1),
             }
             for tid, t in self.tabs.items()

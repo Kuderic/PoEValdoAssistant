@@ -1,8 +1,9 @@
 """AlertStore: the set of currently-actionable alerts.
 
 ToS-critical semantics (DESIGN.md):
-- best-profit-wins: the hotkey consumes the non-expired alert with the
-  highest absolute divine profit;
+- best-value-wins: the hotkey consumes the non-expired alert with the
+  highest profit per 100 difficulty (see _rank), not the biggest absolute
+  profit;
 - expiry: a stale listing can never be traveled to by reflex;
 - single consumption: a consumed listing id can never alert or be clicked
   again, even if the tab re-pushes it;
@@ -18,6 +19,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from sniper.margin import profit_per_100_difficulty
 from sniper.models import Decision
 
 _CONSUMED_CAP = 200
@@ -92,10 +94,20 @@ class AlertStore:
 
     def insert(self, decision: Decision) -> bool:
         """Add an alert-verdict decision. Returns False for duplicates and
-        already-consumed listings (tab re-renders re-push rows)."""
+        already-consumed listings (tab re-renders re-push rows).
+
+        A re-listed item keeps its listing id but carries a new price. That
+        is a genuinely new alert, so it REPLACES an active alert for the
+        same id (otherwise the overlay would keep showing the stale price
+        for the rest of the expiry window). A consumed listing still never
+        re-alerts - single consumption is a hard guarantee.
+        """
         lid = decision.listing.listing_id
-        if decision.verdict != "alert" or lid in self._alerts or lid in self._consumed:
+        if decision.verdict != "alert" or lid in self._consumed:
             return False
+        active = self._alerts.get(lid)
+        if active is not None and active.decision.listing.price == decision.listing.price:
+            return False  # same price re-pushed: not news
         now = time.monotonic()
         self._alerts[lid] = Alert(
             decision=decision,
@@ -138,14 +150,21 @@ class AlertStore:
     # --------------------------------------------------------------- queries
 
     @staticmethod
-    def _surplus(a: Alert) -> float:
-        """Ranking key: divine profit above the difficulty-adjusted
-        requirement, so an easy 30-div-over map beats a hard 5-div-over one."""
+    def _rank(a: Alert) -> float:
+        """Ranking key: divine profit per 100 difficulty (the overlay's
+        P/100D column, and the same unit as the threshold).
+
+        Ranking on efficiency rather than absolute surplus means the hotkey
+        takes the map that pays best for what it costs to run: a clean 25-
+        difficulty map at +20 div (80/100D) outranks a Feared+VOID monster
+        at +50 div (4/100D), even though the latter's absolute surplus is
+        larger.
+        """
         d = a.decision
-        return (d.profit_div or 0.0) - (d.required_profit_div or 0.0)
+        return profit_per_100_difficulty(d.profit_div, d.difficulty) or 0.0
 
     def _best(self) -> Alert | None:
-        return max(self._alerts.values(), key=self._surplus, default=None)
+        return max(self._alerts.values(), key=self._rank, default=None)
 
     def view_of(self, listing_id: str) -> AlertView | None:
         alert = self._alerts.get(listing_id)
@@ -153,7 +172,7 @@ class AlertStore:
 
     def views(self) -> tuple[AlertView, ...]:
         """Top alerts by profit surplus, best first, capped for display."""
-        ranked = sorted(self._alerts.values(), key=self._surplus, reverse=True)
+        ranked = sorted(self._alerts.values(), key=self._rank, reverse=True)
         return tuple(a.view() for a in ranked[: self._max_display])
 
     def __len__(self) -> int:
