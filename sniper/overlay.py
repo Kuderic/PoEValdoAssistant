@@ -113,6 +113,7 @@ class Overlay:
         self._overrides_path = overrides_path
         self._scoring_config = config.mod_scoring
         self._current_threshold = config.thresholds.global_profit_div
+        self._current_flat_reduction = config.thresholds.flat_profit_reduction
         self._current_combo = config.hotkey.combo
         self._tune_window: tk.Toplevel | None = None
         self._tooltip: tk.Toplevel | None = None
@@ -589,8 +590,11 @@ class Overlay:
                     bg=bg,
                     fg=fg,
                     font=self._font("Consolas", 10, weight, underline=True),
-                    anchor="e",
-                ).pack(side="right", padx=(10, 0))
+                    anchor="ne",
+                    # top-aligned: a combo mod's rows are multi-line, and the
+                    # modifier reads as belonging to the block, not floating
+                    # in its vertical middle
+                ).pack(side="right", padx=(10, 0), anchor="n")
             tk.Label(
                 row,
                 text=text,
@@ -822,12 +826,22 @@ class Overlay:
                 ).grid(row=r, column=1, padx=(2, 10), pady=(10, 1))
             row_cursor[0] += 1
 
-        def field(label: str, value: str, width: int = 7) -> tk.Entry:
-            """One label + entry row in the body grid."""
+        def field(label: str, value: str, width: int = 7, hint: str = "") -> tk.Entry:
+            """One label + entry row in the body grid. `hint` becomes a hover
+            tooltip on the label (marked with a trailing ⓘ)."""
             r = row_cursor[0]
-            tk.Label(
-                body, text=label, bg=BG, fg=DIM, font=self._font("Consolas", 10), anchor="w"
-            ).grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
+            name = tk.Label(
+                body,
+                text=f"{label} ⓘ" if hint else label,
+                bg=BG,
+                fg=DIM,
+                font=self._font("Consolas", 10),
+                anchor="w",
+                cursor="question_arrow" if hint else "",
+            )
+            name.grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
+            if hint:
+                self._bind_tooltip(name, ((hint, "", "none"),))
             entry = tk.Entry(body, width=width, bg="#1d242c", fg=FG, insertbackground=FG)
             entry.insert(0, value)
             entry.grid(row=r, column=1, padx=(2, 10), sticky="w")
@@ -851,6 +865,12 @@ class Overlay:
         # reaches it, which is exactly the feed's P/100D column.
         heading("Alerting", "Value")
         thr_e = field("Alert at P/100D ≥", _fmt(self._current_threshold))
+        flat_e = field(
+            "Flat profit reduction",
+            _fmt(self._current_flat_reduction),
+            hint="This accounts for profit loss from selling items and time spent running the map."
+            "Recommended value is 1.",
+        )
         caption(
             "P/100D = divine profit per 100 difficulty (feed column 3).\n"
             "A clean 25-difficulty map at P/100D 14 profits ~3.5d;\n"
@@ -911,6 +931,7 @@ class Overlay:
                     rules=tuple(new_rules),
                 )
                 new_threshold = float(thr_e.get())
+                new_flat = float(flat_e.get())
                 new_volume = float(vol_e.get())
             except ValueError as exc:
                 note.config(text=f"Bad number: {exc}", fg=BAD)
@@ -925,12 +946,13 @@ class Overlay:
 
             error = None
             if self._on_settings_change:
-                error = self._on_settings_change(new_config, new_threshold, new_combo)
+                error = self._on_settings_change(new_config, new_threshold, new_combo, new_flat)
             if error:  # e.g. invalid hotkey combo - old combo stays active
                 note.config(text=error, fg=BAD)
                 return
             self._scoring_config = new_config
             self._current_threshold = new_threshold
+            self._current_flat_reduction = new_flat
             self._current_combo = new_combo
             if new_volume != self._volume:
                 self._volume = new_volume
@@ -948,6 +970,7 @@ class Overlay:
                     global_profit_div=new_threshold,
                     hotkey_combo=new_combo,
                     alert_volume=new_volume,
+                    flat_profit_reduction=new_flat,
                 )
             note.config(text="Saved ✓", fg=GOOD)
 
@@ -961,7 +984,7 @@ class Overlay:
                 win.after_cancel(pending.pop())
             pending.append(win.after(600, lambda: win.winfo_exists() and collect(save=True)))
 
-        for widget in [thr_e, combo_e, base_e, vol_e, *entries.values()]:
+        for widget in [thr_e, flat_e, combo_e, base_e, vol_e, *entries.values()]:
             widget.bind("<KeyRelease>", schedule_apply)
 
     # ------------------------------------------------------------- live feed

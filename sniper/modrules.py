@@ -145,9 +145,13 @@ class ModScoring:
                     level = self._rule_level(rule)
                 if rule.warning and (warn_color != "red"):
                     warn_color = rule.warning
+            # A combo rule's lines stay on separate lines: they are one
+            # modifier sharing one multiplier, but they are still distinct
+            # mod texts and run them together is unreadable. The UI renders
+            # the newline and shows the modifier once for the group.
             # warning rules stamp their emoji on the row itself, so
             # VOID/ULTIMATUM/etc. are marked wherever mods are listed
-            text = " + ".join(lines)
+            text = "\n".join(lines)
             text = {"red": f"❗ {text}", "yellow": f"⚠️ {text}"}.get(warn_color, text)
             return (text, " · ".join(dict.fromkeys(notes)), level)
 

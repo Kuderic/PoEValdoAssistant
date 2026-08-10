@@ -1,5 +1,6 @@
 """Difficulty scoring engine + its effect on the alert cutoff."""
 
+import pytest
 from conftest import make_config, make_listing_frame
 
 from sniper import margin
@@ -256,7 +257,9 @@ def test_combo_pair_merges_into_one_display_row():
     # pair merged into ONE row, ×2.3 shown once; unrelated line untouched
     assert rows == (
         (
-            "Players deal 10% less Damage per Equipped Item + "
+            # one row, one multiplier - but the two mod texts keep their
+            # own lines rather than running together
+            "Players deal 10% less Damage per Equipped Item\n"
             "Players' Minions deal 10% less Damage per Item Equipped by their Master",
             "×2.3",
             "red",
@@ -300,18 +303,27 @@ def _shipped_scoring():
     return ModScoring(config.mod_scoring)
 
 
+def _rule(scoring, label):
+    """The shipped rule with this label - values are user-tuned, so tests
+    read them rather than hard-coding a number that drifts."""
+    return next(c.rule for c in scoring._rules if c.rule.label == label)
+
+
 def test_shipped_config_breach_is_one_merged_row():
-    """All three breach lines always ship together: one rule, one ×1.5, one row."""
+    """All three breach lines always ship together: one rule, one multiplier,
+    one row - with the three texts still on their own lines."""
     scoring = _shipped_scoring()
+    rule = _rule(scoring, "BREACH")
     result = scoring.evaluate(BREACH_LINES)
     assert ("BREACH", "yellow") in result.warnings
-    assert result.score == 25 * 1.5
+    assert result.score == scoring._config.base_default * rule.multiplier
     rows = [r for r in scoring.annotate(BREACH_LINES) if "Breach" in r[0]]
     assert len(rows) == 1  # merged, not three separate rows
     text, note, level = rows[0]
-    assert note == "×1.5"
+    assert note == f"×{rule.multiplier:g}"
     assert level == "yellow"  # warning rules color the row, not just the chip
     assert text.startswith("⚠️ ")
+    assert text.count("\n") == 2  # three lines, not one run-on string
 
 
 def test_shipped_config_breach_variants_all_match():
@@ -330,16 +342,52 @@ def test_shipped_config_shroud_walker():
     scoring = _shipped_scoring()
     result = scoring.evaluate(["Players have Shroud Walker"])
     assert "Shroud Walker" in result.matched
-    assert result.score == 25 * 2.5
+    expected = scoring._config.base_default * _rule(scoring, "Shroud Walker").multiplier
+    assert result.score == pytest.approx(expected)
 
 
 def test_shipped_config_feared_is_red():
     scoring = _shipped_scoring()
+    base = _rule(scoring, "The Feared").min_base
     rows = scoring.annotate(["Area contains The Feared"])
-    assert rows == (("Area contains The Feared", "base 100", "red"),)
+    assert rows == (("Area contains The Feared", f"base {base:g}", "red"),)
 
 
 def test_shipped_config_lesser_base_mods_stay_yellow():
     scoring = _shipped_scoring()
     (_, _, level) = scoring.annotate(["Area contains Einhar, Beastmaster"])[0]
     assert level == "yellow"
+
+
+THORNS_LINES = [
+    "Rare Monsters have Physical Thorns reflecting 4000 Physical Damage",
+    "Rare Monsters have Elemental Thorns reflecting 4000 Elemental Damage",
+]
+
+
+def test_shipped_config_thorns_is_one_modifier_on_two_lines():
+    """The physical/elemental thorns pair always ships together: one rule,
+    one multiplier, one row - but each line keeps its own line."""
+    scoring = _shipped_scoring()
+    rule = _rule(scoring, "Thorns")
+    result = scoring.evaluate(THORNS_LINES)
+    assert result.matched == ("Thorns",)  # NOT also 'Reflect'
+    assert result.score == pytest.approx(scoring._config.base_default * rule.multiplier)
+    rows = scoring.annotate(THORNS_LINES)
+    assert len(rows) == 1
+    text, note, _level = rows[0]
+    assert note == f"×{rule.multiplier:g}"
+    assert text.split("\n") == THORNS_LINES
+
+
+def test_shipped_config_reflect_no_longer_double_counts_thorns():
+    """'reflecting' inside the thorns text must not also trip the Reflect
+    rule - that would apply two multipliers for one mod."""
+    scoring = _shipped_scoring()
+    assert "Reflect" not in scoring.evaluate(THORNS_LINES).matched
+
+
+def test_shipped_config_reflect_still_matches_the_real_reflect_mod():
+    scoring = _shipped_scoring()
+    mods = ["Players reflect 1000% of Melee Physical Damage taken"]
+    assert "Reflect" in scoring.evaluate(mods).matched

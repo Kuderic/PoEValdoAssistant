@@ -49,6 +49,7 @@ def save_scoring_overrides(
     global_profit_div: float | None = None,
     hotkey_combo: str | None = None,
     alert_volume: float | None = None,
+    flat_profit_reduction: float | None = None,
 ) -> None:
     """Persist tuning-panel values (numbers, hotkey combo, alert volume;
     match patterns stay in config.yaml)."""
@@ -64,6 +65,8 @@ def save_scoring_overrides(
         data["hotkey_combo"] = hotkey_combo
     if alert_volume is not None:
         data["alert_volume"] = alert_volume
+    if flat_profit_reduction is not None:
+        data["flat_profit_reduction"] = flat_profit_reduction
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
@@ -73,7 +76,7 @@ def load_extra_overrides(path: Path) -> dict:
     if not path.exists():
         return {}
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    keys = ("global_profit_div", "hotkey_combo", "alert_volume")
+    keys = ("global_profit_div", "hotkey_combo", "alert_volume", "flat_profit_reduction")
     return {k: raw[k] for k in keys if raw.get(k) is not None}
 
 
@@ -89,6 +92,10 @@ class Thresholds:
 
     global_profit_div: float = 10.0
     per_map: dict[str, float] = field(default_factory=dict)
+    # Fixed divine toll subtracted from every listing's profit: running any
+    # map costs time, so an easy map with a tiny margin is not really worth
+    # it. Comes off before profit, P/100D and the alert cutoff are computed.
+    flat_profit_reduction: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -341,6 +348,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         thresholds = Thresholds(
             global_profit_div=float(section("thresholds").get("global_profit_div", 10.0)),
             per_map={k: float(v) for k, v in (section("thresholds").get("per_map") or {}).items()},
+            flat_profit_reduction=float(section("thresholds").get("flat_profit_reduction", 1.0)),
         )
         currency_rates = {k: float(v) for k, v in section("currency_rates").items()}
     except (TypeError, ValueError) as e:
@@ -355,6 +363,10 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         thresholds = replace(thresholds, global_profit_div=float(extra["global_profit_div"]))
     if "hotkey_combo" in extra:
         hotkey = replace(hotkey, combo=str(extra["hotkey_combo"]))
+    if "flat_profit_reduction" in extra:
+        thresholds = replace(
+            thresholds, flat_profit_reduction=float(extra["flat_profit_reduction"])
+        )
     if "alert_volume" in extra:
         volume = min(1.0, max(0.0, float(extra["alert_volume"])))
         alerts = replace(alerts, volume=volume)

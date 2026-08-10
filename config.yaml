@@ -15,6 +15,10 @@ thresholds:
   # Keyed by the map's Reward name (the value driver, e.g. "Foil Mageblood");
   # item_name is only the fallback key when a listing has no reward line.
   per_map: {}                  # e.g. "Foil Mageblood": 25
+  # Fixed divine toll taken off every listing's profit before profit, P/100D
+  # and the alert cutoff are computed: running any map costs time, so an easy
+  # map with a tiny margin is not really worth it. Editable in the ⚙ panel.
+  flat_profit_reduction: 1
 
 alerts:
   expiry_seconds: 16           # a stale alert can never be traveled to by reflex
@@ -109,7 +113,14 @@ mod_scoring:
     - { label: "Einhar", match: "einhar", min_base: 80 }
     - { label: "Increasingly lethal", match: "increasingly lethal", multiplier: 2.0 }
     - { label: "Fatal after time", match: "becomes fatal", multiplier: 2.5 }
-    - { label: "Reflect", match: "reflect", multiplier: 1.3 }
+    # "players reflect", not bare "reflect": the thorns two-liner below also
+    # says "reflecting", and both rules matching it would double-count
+    - { label: "Reflect", match: "players reflect", multiplier: 1.3 }
+    # two-liner: the physical and elemental thorns lines always appear
+    # together (256/256 in captures) - one mod, one multiplier
+    - label: "Thorns"
+      match_all: ["physical thorns", "elemental thorns"]
+      multiplier: 1.3
     - label: "Invitation boss"
       match: "area contains the (hidden|formed|forgotten)"
       regex: true

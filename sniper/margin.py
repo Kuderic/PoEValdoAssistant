@@ -79,7 +79,13 @@ def evaluate(
             required_profit_div=required,
         )
 
+    # Flat reduction: every map costs time to run regardless of how easy it
+    # is, so a fixed toll comes off the profit before anything else looks at
+    # it. Applied here rather than at the display layer so the shown profit,
+    # P/100D, the alert cutoff and the hotkey's ranking all agree - a map
+    # displaying less profit than it alerts on would be a bug.
     profit_div = (reference.chaos_value - listing_chaos) / divine_rate
+    profit_div -= thresholds.flat_profit_reduction
     margin = (reference.chaos_value - listing_chaos) / reference.chaos_value
     mismatch = listing.price.currency != reference.display_currency
 

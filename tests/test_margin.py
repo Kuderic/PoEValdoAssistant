@@ -1,3 +1,4 @@
+import pytest
 from conftest import make_config, make_listing_frame
 
 from sniper import margin
@@ -93,3 +94,43 @@ def test_per_map_threshold_override():
     d = decide(listing(price={"amount": 100, "currency": "divine"}), config=config)
     assert d.verdict == "below_threshold"  # 100 div profit < 120 div per-map bar
     assert d.threshold == 120
+
+
+# ------------------------------------------------------- flat profit reduction
+# A fixed divine toll off every listing: running any map costs time, so an
+# easy map with a razor-thin margin is not actually worth doing.
+
+
+def decide_with_reduction(amount: float, reduction: float):
+    config = make_config(flat_profit_reduction=reduction, global_profit_div=0.0)
+    listing = parse_frame(make_listing_frame(price={"amount": amount, "currency": "divine"}))
+    return margin.evaluate(listing, PriceBook(config), config.thresholds, ModRules([]))
+
+
+def test_flat_reduction_comes_off_the_profit():
+    """Reference is 200 div; a 150 div listing is +50 before the toll."""
+    assert decide_with_reduction(150, 0).profit_div == 50
+    assert decide_with_reduction(150, 1).profit_div == 49
+    assert decide_with_reduction(150, 5).profit_div == 45
+
+
+def test_flat_reduction_can_push_a_thin_margin_below_the_cutoff():
+    """The whole point: a barely-profitable map stops alerting."""
+    assert decide_with_reduction(199.5, 0).verdict == "alert"  # +0.5 div
+    assert decide_with_reduction(199.5, 1).verdict == "below_threshold"  # -0.5
+
+
+def test_flat_reduction_flows_into_p100d():
+    """Displayed P/100D is derived from the reduced profit, so the number on
+    screen and the number the cutoff uses can never disagree."""
+    from sniper.margin import profit_per_100_difficulty
+
+    d = decide_with_reduction(150, 1)
+    assert profit_per_100_difficulty(d.profit_div, d.difficulty) == pytest.approx(
+        49 / d.difficulty * 100
+    )
+
+
+def test_flat_reduction_leaves_margin_percent_alone():
+    """Margin is a pure price ratio; the time toll is not part of it."""
+    assert decide_with_reduction(150, 1).margin == pytest.approx(0.25)

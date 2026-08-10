@@ -240,8 +240,10 @@ class App:
 
     # ------------------------------------------------------------ live tuning
 
-    def apply_tuning(self, scoring_config, global_profit_div: float) -> None:
-        """Swap difficulty scoring + profit threshold live (settings panel).
+    def apply_tuning(
+        self, scoring_config, global_profit_div: float, flat_profit_reduction: float = 1.0
+    ) -> None:
+        """Swap difficulty scoring + profit numbers live (settings panel).
         Runs on the asyncio thread via call_soon_threadsafe; affects listings
         from now on."""
         from dataclasses import replace
@@ -250,11 +252,16 @@ class App:
 
         self.server.set_scoring(ModScoring(scoring_config))
         self.server.set_thresholds(
-            replace(self.config.thresholds, global_profit_div=global_profit_div)
+            replace(
+                self.config.thresholds,
+                global_profit_div=global_profit_div,
+                flat_profit_reduction=flat_profit_reduction,
+            )
         )
         event(
             "tuning_updated",
             global_profit_div=global_profit_div,
+            flat_profit_reduction=flat_profit_reduction,
             base_default=scoring_config.base_default,
             rules={
                 r.label: {"min_base": r.min_base, "multiplier": r.multiplier}
@@ -442,11 +449,15 @@ def run_with_overlay(config: Config, config_path: str) -> None:
     def on_travel(listing_id: str) -> None:
         asyncio.run_coroutine_threadsafe(app.travel_listing(listing_id), loop)
 
-    def on_settings_change(scoring_config, global_profit_div: float, combo: str) -> str | None:
+    def on_settings_change(
+        scoring_config, global_profit_div: float, combo: str, flat_profit_reduction: float
+    ) -> str | None:
         """Returns an error string (shown in the panel) or None. The hotkey
         rebinds on this (UI) thread; scoring/threshold swap on the loop."""
         error = hotkey.rebind(combo)
-        loop.call_soon_threadsafe(app.apply_tuning, scoring_config, global_profit_div)
+        loop.call_soon_threadsafe(
+            app.apply_tuning, scoring_config, global_profit_div, flat_profit_reduction
+        )
         return error
 
     root = tk.Tk()
