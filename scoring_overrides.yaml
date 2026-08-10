@@ -156,14 +156,21 @@ rules:
   Instability on Kill:
     min_base: null
     multiplier: 1.5
+  Shroud Walker:
+    min_base: null
+    multiplier: 2.5
   No recovery above 50% in Rituals:
     min_base: null
     multiplier: 1.2
   LEGION:
     min_base: null
     multiplier: 1.0
+  BREACH:
+    min_base: null
+    multiplier: 1.5
   ULTIMATUM:
     min_base: null
     multiplier: 1.0
-global_profit_div: 3.5
+global_profit_div: 3.0
 hotkey_combo: '`'
+alert_volume: 0.5

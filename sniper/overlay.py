@@ -29,6 +29,7 @@ from sniper.bus import (
     RewardPrices,
     TabsChanged,
     Traveled,
+    WarmupStatus,
 )
 from sniper.config import Config
 from sniper.logging_setup import event
@@ -54,6 +55,10 @@ STAT_COLUMNS = (
     ("ratio", "P/100D"),
     ("difficulty", "DIFFICULTY"),
 )
+# P/100D is the number the alert decision and the hotkey's pick both turn
+# on, so it gets an outline the other three do not.
+BOXED_STAT = "ratio"
+STAT_PAD = 6  # inner padding, so the outline never touches the digits
 # Difficulty colouring, tiered off the reference difficulty of 100 that the
 # threshold is calibrated for: at or under it is an easy map, 3x it is brutal.
 DIFF_WARN, DIFF_BAD = 100.0, 300.0
@@ -81,6 +86,11 @@ GOOD = "#5fd069"
 WARN = "#e0b341"
 BAD = "#e05555"
 PRICE = "#ffffff"
+BOX = "#46525f"  # outline around the headline P/100D stat
+GOOD_BRIGHT = "#7ee089"  # travel button, pressed
+BTN_FG = "#0b1a0e"  # dark text on the green travel button
+BTN_OFF = "#1d242c"  # travel button with nothing to travel to
+MODS_BG = "#080b0e"  # darker panel behind the mod list
 
 
 class Overlay:
@@ -118,8 +128,10 @@ class Overlay:
         self._pin_token = 0
         # shared Font objects, keyed by (family, base size, weight):
         # Ctrl+/Ctrl- rescale every widget through them (see _zoom)
-        self._fonts: dict[tuple[str, int, str], tkfont.Font] = {}
+        self._fonts: dict[tuple, tkfont.Font] = {}
         self._font_scale = 1.0
+        # (calculating, ready, total) from the startup price warm-up
+        self._warmup: tuple[bool, int, int] | None = None
 
         root.title("Valdo Sniper")
         root.configure(bg=BG)
@@ -182,59 +194,89 @@ class Overlay:
             root, text="", bg=BAD, fg="white", font=self._font("Segoe UI", 12, "bold")
         )
 
-        # main alert area
+        # main alert area: reward name on the left, travel button on the right
+        title_row = tk.Frame(root, bg=BG)
+        title_row.pack(fill="x", padx=10, pady=(6, 0))
         self._key_label = tk.Label(
-            root,
+            title_row,
             text="Waiting for listings…",
             bg=BG,
             fg=FG,
             font=self._font("Segoe UI", 16, "bold"),
             anchor="w",
         )
-        self._key_label.pack(fill="x", padx=10, pady=(6, 0))
+        self._key_label.pack(side="left", fill="x", expand=True)
+
+        # Travel button, right of the title. Pressing it is one user input
+        # driving one server action - the same contract as the hotkey and as
+        # clicking the alert text, routed through the identical _click_top
+        # path. takefocus=0 so it never steals keyboard focus from the game.
+        self._travel_btn = tk.Button(
+            title_row,
+            text="TELEPORT",
+            command=self._click_top,
+            font=self._font("Segoe UI", 14, "bold"),
+            bg=GOOD,
+            fg=BTN_FG,
+            activebackground=GOOD_BRIGHT,
+            activeforeground=BTN_FG,
+            disabledforeground=FAINT,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            takefocus=0,
+            cursor="hand2",
+            padx=14,
+            pady=7,
+        )
+        self._travel_btn.pack(side="right", padx=(10, 0))
+        self._set_travel_button(has_target=False, pinned=False)  # nothing yet at startup
 
         # The four numbers that decide a snipe, in the order you read them:
         # what you pay, what you make, what it is worth per unit of pain,
         # and how much pain. Each column carries its own unit caption - the
         # price one names the currency, which must stay prominent.
+        # each column is its own cell so BOXED_STAT can be outlined. A cell
+        # insets its contents by its 1px border plus STAT_PAD, so the frame's
+        # own padding drops by that much to keep the first number aligned
+        # with the reward name above it.
         self._stats = tk.Frame(root, bg=BG)
-        self._stats.pack(fill="x", padx=10, pady=(2, 2))
+        self._stats.pack(fill="x", padx=10 - STAT_PAD - 1, pady=(2, 2))
+        self._stat_cells: dict[str, tk.Frame] = {}
         self._stat_caps: dict[str, tk.Label] = {}
         self._stat_vals: dict[str, tk.Label] = {}
         for col, (key, caption) in enumerate(STAT_COLUMNS):
             self._stats.grid_columnconfigure(col, weight=1, uniform="stat")
-            cap = tk.Label(
-                self._stats, text=caption, bg=BG, fg=DIM, font=self._font("Consolas", 9), anchor="w"
-            )
-            cap.grid(row=0, column=col, sticky="w")
-            val = tk.Label(
+            boxed = key == BOXED_STAT
+            # every cell carries the 1px border; the unboxed ones paint it in
+            # the background colour so all four stay pixel-aligned
+            cell = tk.Frame(
                 self._stats,
-                text="",
                 bg=BG,
-                fg=PRICE,
-                font=self._font("Segoe UI", 23, "bold"),
-                anchor="w",
+                highlightthickness=1,
+                highlightbackground=BOX if boxed else BG,
+                highlightcolor=BOX if boxed else BG,
             )
-            val.grid(row=1, column=col, sticky="w")
+            cell.grid(row=0, column=col, sticky="nsew", padx=(0, 6))
+            cap = tk.Label(
+                cell, text=caption, bg=BG, fg=DIM, font=self._font("Consolas", 9), anchor="w"
+            )
+            cap.pack(fill="x", padx=STAT_PAD, pady=(1, 0))
+            val = tk.Label(
+                cell, text="", bg=BG, fg=PRICE, font=self._font("Segoe UI", 23, "bold"), anchor="w"
+            )
+            val.pack(fill="x", padx=STAT_PAD, pady=(0, 1))
+            self._stat_cells[key] = cell
             self._stat_caps[key] = cap
             self._stat_vals[key] = val
-        self._detail = tk.Label(
-            root,
-            text="",
-            bg=BG,
-            fg=DIM,
-            font=self._font("Segoe UI", 11),
-            anchor="w",
-            justify="left",
-            wraplength=485,
-        )
-        self._detail.pack(fill="x", padx=10)
         self._chips = tk.Frame(root, bg=BG)  # colored warning chips
         self._chips.pack(fill="x", padx=10)
+
         # the top listing's mods, always visible (no hover needed); scoring
-        # mods highlighted with their modifier
-        self._top_mods = tk.Frame(root, bg=BG)
-        self._top_mods.pack(fill="x", padx=10, pady=(2, 0))
+        # mods highlighted with their modifier. Its own darker panel so the
+        # mod list reads as a distinct block under the headline numbers.
+        self._top_mods = tk.Frame(root, bg=MODS_BG)
+        self._top_mods.pack(fill="x", padx=10, pady=(4, 0))
         self._countdown = tk.Canvas(root, height=8, bg="#1d242c", highlightthickness=0)
         self._countdown.pack(fill="x", padx=10, pady=(4, 6))
 
@@ -343,7 +385,14 @@ class Overlay:
         # the top alert is clickable too - click any listing to travel to it;
         # hovering shows the map's full mod list. Every headline number is
         # part of the same target, so a click anywhere on it travels.
-        for widget in (self._key_label, self._detail, *self._stat_vals.values()):
+        clickable = (
+            self._key_label,
+            *self._stat_vals.values(),
+            *self._stat_caps.values(),
+            *self._stat_cells.values(),  # the boxed cell's padding too
+        )
+        self._top_widgets = clickable
+        for widget in clickable:
             widget.bind("<Button-1>", lambda e: self._click_top())
             widget.configure(cursor="hand2")
             self._bind_tooltip(widget, lambda: self._alerts[0].mods if self._alerts else ())
@@ -449,6 +498,11 @@ class Overlay:
                 feed_dirty = True
             elif isinstance(ev, RewardPrices):
                 self._reward_prices = ev.entries
+            elif isinstance(ev, WarmupStatus):
+                warmup = (ev.calculating, ev.priced, ev.total)
+                if warmup != self._warmup:
+                    self._warmup = warmup
+                    alerts_dirty = True  # the idle headline shows the progress
         if alerts_dirty:
             self._render_alerts()
         if feed_dirty:
@@ -466,13 +520,17 @@ class Overlay:
 
     # ----------------------------------------------------------------- fonts
 
-    def _font(self, family: str, size: int, weight: str = "normal") -> tkfont.Font:
-        """Shared mutable Font per (family, base size, weight); every widget
-        - static, per-render, or tooltip - goes through here so _zoom can
-        rescale the whole overlay at once."""
-        key = (family, size, weight)
+    def _font(
+        self, family: str, size: int, weight: str = "normal", underline: bool = False
+    ) -> tkfont.Font:
+        """Shared mutable Font per (family, base size, weight, underline);
+        every widget - static, per-render, or tooltip - goes through here so
+        _zoom can rescale the whole overlay at once."""
+        key = (family, size, weight, underline)
         if key not in self._fonts:
-            self._fonts[key] = tkfont.Font(family=family, size=self._scaled(size), weight=weight)
+            self._fonts[key] = tkfont.Font(
+                family=family, size=self._scaled(size), weight=weight, underline=underline
+            )
         return self._fonts[key]
 
     def _scaled(self, size: int) -> int:
@@ -485,8 +543,8 @@ class Overlay:
         if scale == self._font_scale:
             return
         self._font_scale = scale
-        for (_family, size, _weight), f in self._fonts.items():
-            f.configure(size=self._scaled(size))
+        for key, f in self._fonts.items():
+            f.configure(size=self._scaled(key[1]))  # key[1] is the base size
 
     # ------------------------------------------------------------- rendering
 
@@ -500,6 +558,46 @@ class Overlay:
         """Stated in the P/100D column's units so the cutoff can be read
         straight off the feed."""
         self._threshold_note.config(text=f"Alerting at P/100D ≥ {self._current_threshold:g}")
+
+    def _idle_text(self) -> str:
+        """Headline when nothing is alerting. During the startup warm-up it
+        says so, because listings really are being withheld until their
+        reward has a trustworthy price."""
+        if self._warmup is not None:
+            calculating, ready, total = self._warmup
+            if calculating and total:
+                return f"Calculating prices…  ({ready}/{total})"
+        return "No active alert"
+
+    def _render_mods(self, parent: tk.Frame, mods, bg: str, wrap: int) -> None:
+        """One row per mod: text left, its scoring modifier pinned right and
+        underlined, so the modifiers line up as a scannable column instead of
+        trailing off after ragged mod text. Caller clears `parent` first."""
+        for text, note, level in mods:
+            fg = BAD if level == "red" else WARN if level == "yellow" else DIM
+            weight = "bold" if level != "none" else "normal"
+            row = tk.Frame(parent, bg=bg)
+            row.pack(fill="x", padx=6, pady=1)
+            if note:
+                # packed before the text so it reserves the right-hand column
+                tk.Label(
+                    row,
+                    text=note,
+                    bg=bg,
+                    fg=fg,
+                    font=self._font("Consolas", 10, weight, underline=True),
+                    anchor="e",
+                ).pack(side="right", padx=(10, 0))
+            tk.Label(
+                row,
+                text=text,
+                bg=bg,
+                fg=fg,
+                font=self._font("Segoe UI", 10, weight),
+                anchor="w",
+                justify="left",
+                wraplength=wrap,
+            ).pack(side="left", fill="x", expand=True)
 
     def _clear_frame(self, frame: tk.Frame) -> None:
         self._hide_tooltip()  # a hovered row may be getting destroyed
@@ -558,16 +656,33 @@ class Overlay:
             fg=BAD if top.difficulty > DIFF_BAD else WARN if top.difficulty > DIFF_WARN else FG,
         )
 
+    def _set_travel_button(self, has_target: bool, pinned: bool) -> None:
+        """Three states: armed (green, shows the hotkey that does the same
+        thing), already-traveled, and nothing to travel to."""
+        if pinned:
+            text, enabled = "➜  TRAVELING…", False
+        elif has_target:
+            text, enabled = f"⚡  TELEPORT     [ {self._current_combo} ]", True
+        else:
+            text, enabled = "TELEPORT", False
+        self._travel_btn.config(
+            text=text,
+            state="normal" if enabled else "disabled",
+            bg=GOOD if enabled else BTN_OFF,
+            activebackground=GOOD_BRIGHT if enabled else BTN_OFF,
+            cursor="hand2" if enabled else "",
+        )
+
     def _render_alerts(self) -> None:
         pinned = self._pinned_top
-        top_widgets = (self._key_label, self._detail, *self._stat_vals.values())
+        top_widgets = self._top_widgets
         if not self._alerts and pinned is None:
             self._banner.pack_forget()
-            self._key_label.config(text="No active alert", fg=DIM)
-            self._detail.config(text="")
+            self._key_label.config(text=self._idle_text(), fg=DIM)
             for key, caption in STAT_COLUMNS:
                 self._stat_caps[key].config(text=caption, fg=DIM)
                 self._stat_vals[key].config(text="—", fg=FAINT)
+            self._set_travel_button(has_target=False, pinned=False)
             self._clear_frame(self._chips)
             self._clear_frame(self._top_mods)
             self._clear_frame(self._runners)
@@ -593,26 +708,9 @@ class Overlay:
         prefix = "➜ " if pinned is not None else ""
         self._key_label.config(text=f"{prefix}{_display_name(top.key)}", fg=GOOD)
         self._set_stats(top)
-        # source tag makes fallback pricing visible: (trade) is the unid
-        # market average, (poe.ninja) the per-map median fallback
-        source = {"trade": "trade", "manual": "manual"}.get(top.reference_source, "poe.ninja")
-        self._detail.config(
-            text=f"Reward avg {top.reference_amount:g} {top.reference_currency} ({source})"
-            f"   ·   {top.margin:.0%} margin   ·   needs +{top.required_profit_div:.0f}d"
-        )
+        self._set_travel_button(has_target=True, pinned=pinned is not None)
         self._clear_frame(self._top_mods)
-        for text, note, level in top.mods:
-            fg = BAD if level == "red" else WARN if level == "yellow" else DIM
-            tk.Label(
-                self._top_mods,
-                text=f"{text}" + (f"   {note}" if note else ""),
-                bg=BG,
-                fg=fg,
-                font=self._font("Segoe UI", 10, "bold" if level != "none" else "normal"),
-                anchor="w",
-                justify="left",
-                wraplength=485,
-            ).pack(fill="x")
+        self._render_mods(self._top_mods, top.mods, MODS_BG, wrap=380)
         self._clear_frame(self._chips)
         for label, color in top.special_warnings:
             tk.Label(
@@ -839,6 +937,7 @@ class Overlay:
                     target=self._alert_wav, name="alert-sound-warmup", daemon=True
                 ).start()
             self._update_threshold_note()
+            self._render_alerts()  # button label carries the hotkey combo
             if save and self._overrides_path is not None:
                 save_scoring_overrides(
                     new_config,
@@ -942,31 +1041,11 @@ class Overlay:
         win = tk.Toplevel(self._root)
         win.wm_overrideredirect(True)
         win.attributes("-topmost", True)
-        frame = tk.Frame(win, bg="#0a0d10", highlightthickness=1, highlightbackground="#3a4550")
+        frame = tk.Frame(win, bg=MODS_BG, highlightthickness=1, highlightbackground="#3a4550")
         frame.pack()
-        for text, note, level in mods:
-            row = tk.Frame(frame, bg="#0a0d10")
-            row.pack(fill="x", padx=8, pady=1)
-            fg = BAD if level == "red" else WARN if level == "yellow" else DIM
-            tk.Label(
-                row,
-                text=text,
-                bg="#0a0d10",
-                fg=fg,
-                font=self._font("Segoe UI", 10, "bold" if level != "none" else "normal"),
-                anchor="w",
-                justify="left",
-                wraplength=320,
-            ).pack(side="left")
-            if note:
-                tk.Label(
-                    row,
-                    text=f"  {note}",
-                    bg="#0a0d10",
-                    fg=fg,  # note shares the mod's tier color
-                    font=self._font("Consolas", 10, "bold" if level != "none" else "normal"),
-                    anchor="e",
-                ).pack(side="right")
+        # same rows as the main alert's mod list: modifier right-aligned and
+        # underlined, note sharing the mod's tier colour
+        self._render_mods(frame, mods, MODS_BG, wrap=320)
         x = widget.winfo_rootx() + 16
         y = widget.winfo_rooty() + widget.winfo_height() + 2
         win.geometry(f"+{x}+{y}")

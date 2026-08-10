@@ -162,6 +162,16 @@ class PriceBook:
             source="trade",
         )
 
+    def has_primary_price(self, key: str) -> bool:
+        """True when this reward is priced from an authoritative source - a
+        manual override or a fresh trade-API average - as opposed to the
+        poe.ninja per-map median, which is only a fallback and is known to
+        be inaccurate for foil Valdo maps. The startup warm-up holds
+        listings until this is true (see __main__._hold_listing)."""
+        if self._config.prices.get(key) is not None:
+            return True
+        return self._trade_reference(key) is not None
+
     def reference_for(self, key: str) -> Reference | None:
         manual = self._config.prices.get(key)
         if manual is not None:

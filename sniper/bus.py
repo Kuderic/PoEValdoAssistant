@@ -73,6 +73,17 @@ class ListingSeen:
 
 
 @dataclass(frozen=True)
+class WarmupStatus:
+    """Startup price warm-up. Until a reward has a primary (trade/manual)
+    price, its listings are held back rather than judged against poe.ninja's
+    inaccurate median - the overlay shows 'Calculating prices…' meanwhile."""
+
+    calculating: bool
+    priced: int
+    total: int
+
+
+@dataclass(frozen=True)
 class RewardPrices:
     """Current reference price per active reward, for the Searching tooltip:
     (reward, amount, currency, source) tuples."""
@@ -89,6 +100,7 @@ UiEvent = (
     | Traveled
     | ListingSeen
     | RewardPrices
+    | WarmupStatus
 )
 
 

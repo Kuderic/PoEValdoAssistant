@@ -30,6 +30,7 @@ from sniper.bus import (
     RewardPrices,
     TabsChanged,
     Traveled,
+    WarmupStatus,
 )
 from sniper.config import Config, ConfigError, load_config
 from sniper.gamewindow import GameWatcher, focus_poe_window
@@ -39,6 +40,10 @@ from sniper.modrules import ModRules
 from sniper.ninja import NinjaBackoff, NinjaClient
 from sniper.prices import PriceBook
 from sniper.server import SniperServer
+
+# Longest the startup price warm-up may hold listings back. A reward the
+# trade API has no listings for would otherwise stall the app indefinitely.
+WARMUP_TIMEOUT_S = 120.0
 
 
 class App:
@@ -67,10 +72,54 @@ class App:
         # clickable too; _traveled_ids guards one-travel-per-listing
         self._recent: OrderedDict[str, Decision] = OrderedDict()
         self._traveled_ids: set[str] = set()
+        # Startup warm-up: until a reward has a primary (trade/manual) price,
+        # its listings are held rather than judged against poe.ninja's
+        # inaccurate per-map median. Disabled outright when trade pricing is
+        # off - then poe.ninja IS the intended source and there is nothing
+        # to wait for.
+        self._warmup_active = config.trade_pricing.enabled
+        self._warmup_deadline = time.monotonic() + WARMUP_TIMEOUT_S
+        # rewards the trade API answered for but had no listings of: they can
+        # never get a primary price, so they must not stall the warm-up
+        self._warmup_settled: set[str] = set()
 
     # ------------------------------------------------------------ callbacks
 
+    def _hold_listing(self, decision: Decision) -> bool:
+        """True when this listing must not surface yet: during the startup
+        warm-up a reward with no primary price would be judged against the
+        poe.ninja median (or nothing), producing exactly the inaccurate
+        profit figures the warm-up exists to avoid. The listing is still
+        logged, and its reward still registers with the server so the price
+        loop picks it up."""
+        if not self._warmup_active or self.book.has_primary_price(decision.key):
+            return False
+        event(
+            "listing_held",
+            listing_id=decision.listing.listing_id,
+            key=decision.key,
+            reason="awaiting_primary_price",
+        )
+        return True
+
+    def _update_warmup(self) -> None:
+        """Warm-up ends once every reward we know about has a primary price,
+        or the timeout expires (a reward the trade API has no listings for
+        must never stall the app forever)."""
+        if not self._warmup_active:
+            return
+        rewards = sorted(self.server.active_rewards())
+        ready = [r for r in rewards if self.book.has_primary_price(r) or r in self._warmup_settled]
+        timed_out = time.monotonic() >= self._warmup_deadline
+        if (rewards and len(ready) == len(rewards)) or timed_out:
+            self._warmup_active = False
+            event("warmup_done", ready=len(ready), total=len(rewards), timed_out=timed_out)
+        if self.bus:
+            self.bus.put(WarmupStatus(self._warmup_active, len(ready), len(rewards)))
+
     def _on_decision(self, decision: Decision) -> None:
+        if self._hold_listing(decision):
+            return
         self._recent[decision.listing.listing_id] = decision
         while len(self._recent) > 200:
             self._recent.popitem(last=False)
@@ -111,6 +160,8 @@ class App:
     def _on_tabs_changed(self) -> None:
         if self.bus:
             self.bus.put(TabsChanged(tuple(self.server.tab_snapshot())))
+        # a newly connected tab adds a reward to price before we are warm
+        self._update_warmup()
 
     def _push_alerts(self, new_alert: bool, new_view=None) -> None:
         if self.bus:
@@ -240,9 +291,12 @@ class App:
 
     async def trade_price_loop(self, pricer) -> None:
         """Average the cheapest unid listings of each active reward's unique
-        via the trade API (primary price source). Checks every 15s so a
-        NEWLY-opened live search gets priced within seconds; each reward is
-        re-priced every refresh_minutes."""
+        via the trade API (primary price source). Each reward is re-priced
+        every refresh_minutes.
+
+        The poll runs immediately and then fast while warming up, so the
+        startup hold (see _hold_listing) lifts as soon as prices land rather
+        than after a fixed delay; it relaxes once warm."""
         import time
 
         from sniper.tradeprice import TradeBackoff, select_representative
@@ -250,9 +304,10 @@ class App:
         interval_s = self.config.trade_pricing.refresh_minutes * 60
         last_priced: dict[str, float] = {}
         while True:
-            await asyncio.sleep(15)
             league = self.book.league  # resolves via the first ninja refresh
             if league is None or pricer.in_backoff:
+                self._update_warmup()  # keeps the timeout honest
+                await asyncio.sleep(2 if self._warmup_active else 15)
                 continue
             now = time.monotonic()
             due = [
@@ -301,8 +356,13 @@ class App:
                         mode=mode,
                         note="no listings at any filter stage; ninja/manual fallback applies",
                     )
+                    self._warmup_settled.add(reward)
+                # each price landing may be the one that ends the warm-up
+                self._update_warmup()
                 await pricer.pause_between_rewards()
             self._push_reward_prices()
+            self._update_warmup()
+            await asyncio.sleep(2 if self._warmup_active else 15)
 
     async def price_refresh_loop(self, ninja: NinjaClient) -> None:
         interval_s = self.config.ninja.refresh_minutes * 60
