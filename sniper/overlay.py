@@ -549,9 +549,12 @@ class Overlay:
     # ------------------------------------------------------------- rendering
 
     def _reward_price_rows(self):
+        """Searching-line tooltip. The price source is deliberately not
+        shown - the header's price pill already reports it - so these rows
+        carry no right-hand note."""
         return tuple(
-            (f"{_display_name(reward)}: {amount:g} {currency}", f"({source})", "none")
-            for reward, amount, currency, source in self._reward_prices
+            (f"{_display_name(reward)}: {amount:g} {currency}", "", "none")
+            for reward, amount, currency, _source in self._reward_prices
         )
 
     def _update_threshold_note(self) -> None:
