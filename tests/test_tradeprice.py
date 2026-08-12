@@ -12,7 +12,7 @@ import pytest
 from conftest import make_config
 
 from sniper.prices import PriceBook
-from sniper.tradeprice import TradeBackoff, TradePricer
+from sniper.tradeprice import TradeBackoff, TradePricer, rate_limit_delay
 
 FETCH_RESPONSE = {
     "result": [
@@ -175,3 +175,86 @@ def test_select_representative_edge_cases():
     assert select_representative([80.0], 3, 0.5) == (80.0, 0)
     # all-identical: nothing dropped
     assert select_representative([5.0, 5.0, 5.0], 3, 0.5) == (5.0, 0)
+
+
+# ------------------------------------------------------------- rate limiting
+# GGG publishes the live budget on every response; pacing off those headers
+# is what keeps us from earning a 429 in the first place.
+
+LIMIT_HEADERS = {
+    "X-Rate-Limit-Rules": "Ip,Account",
+    "X-Rate-Limit-Ip": "8:10:60,15:60:120",
+    "X-Rate-Limit-Ip-State": "1:10:0,1:60:0",
+    "X-Rate-Limit-Account": "5:10:60",
+    "X-Rate-Limit-Account-State": "1:10:0",
+}
+
+
+def test_rate_limit_delay_uses_the_tightest_sustained_rate():
+    """8/10s -> 1.25s, 15/60s -> 4s, 5/10s -> 2s; the worst one wins."""
+    assert rate_limit_delay(LIMIT_HEADERS) == pytest.approx(4.0)
+
+
+def test_rate_limit_delay_waits_out_a_full_bucket():
+    """A filled bucket must wait its whole window, not just the sustained
+    rate - that 10s beats the 4s the other buckets would allow."""
+    headers = dict(LIMIT_HEADERS, **{"X-Rate-Limit-Ip-State": "8:10:0,1:60:0"})
+    assert rate_limit_delay(headers) == pytest.approx(10.0)
+
+
+def test_rate_limit_delay_serves_an_active_restriction():
+    headers = {
+        "X-Rate-Limit-Rules": "Ip",
+        "X-Rate-Limit-Ip": "8:10:60",
+        "X-Rate-Limit-Ip-State": "9:10:47",  # restricted for 47s
+    }
+    assert rate_limit_delay(headers) == pytest.approx(47.0)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},  # no headers at all
+        {"X-Rate-Limit-Rules": "Ip"},  # rule named but no data
+        {"X-Rate-Limit-Rules": "Ip", "X-Rate-Limit-Ip": "garbage"},
+    ],
+)
+def test_rate_limit_delay_none_when_unparseable(headers):
+    """Caller then falls back to its fixed spacing rather than crashing."""
+    assert rate_limit_delay(headers) is None
+
+
+@pytest.mark.asyncio
+async def test_pricer_adopts_the_api_pacing():
+    def handler(request):
+        if "search" in request.url.path:
+            return httpx.Response(
+                200, json={"id": "q", "total": 30, "result": ["h1"]}, headers=LIMIT_HEADERS
+            )
+        return httpx.Response(200, json=FETCH_RESPONSE, headers=LIMIT_HEADERS)
+
+    pricer = pricer_with(handler)
+    assert pricer._api_spacing == 0.0  # nothing learned yet
+    await pricer.fetch_reward_listings("Allflame", "Foil Mageblood")
+    assert pricer._api_spacing == pytest.approx(4.0)  # taught by the headers
+
+
+@pytest.mark.asyncio
+async def test_429_restriction_headers_drive_the_backoff():
+    """No Retry-After, but the state header says how long we are locked out."""
+
+    def handler(request):
+        return httpx.Response(
+            429,
+            json={},
+            headers={
+                "X-Rate-Limit-Rules": "Ip",
+                "X-Rate-Limit-Ip": "8:10:60",
+                "X-Rate-Limit-Ip-State": "9:10:300",
+            },
+        )
+
+    pricer = pricer_with(handler)
+    with pytest.raises(TradeBackoff):
+        await pricer.fetch_reward_listings("Allflame", "Foil Mageblood")
+    assert pricer.backoff_remaining == pytest.approx(300, abs=2)

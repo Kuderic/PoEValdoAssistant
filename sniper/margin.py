@@ -58,6 +58,7 @@ def evaluate(
             difficulty=difficulty.score,
             difficulty_mods=difficulty.matched,
             special_warnings=difficulty.warnings,
+            pairings=difficulty.pairings,
             mods_annotated=annotated,
             required_profit_div=required,
         )
@@ -75,6 +76,7 @@ def evaluate(
             difficulty=difficulty.score,
             difficulty_mods=difficulty.matched,
             special_warnings=difficulty.warnings,
+            pairings=difficulty.pairings,
             mods_annotated=annotated,
             required_profit_div=required,
         )
@@ -110,6 +112,7 @@ def evaluate(
         difficulty=difficulty.score,
         difficulty_mods=difficulty.matched,
         special_warnings=difficulty.warnings,
+        pairings=difficulty.pairings,
         mods_annotated=annotated,
         required_profit_div=required,
     )

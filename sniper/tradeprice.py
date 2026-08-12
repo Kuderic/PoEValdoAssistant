@@ -42,6 +42,58 @@ def select_representative(
     return sum(sample) / len(sample), len(ordered) - len(kept)
 
 
+def _buckets(spec: str) -> list[tuple[int, int, int]]:
+    """Parse a rate-limit header value: comma-separated `a:b:c` triplets."""
+    out: list[tuple[int, int, int]] = []
+    for triplet in spec.split(","):
+        parts = triplet.strip().split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            out.append((int(parts[0]), int(parts[1]), int(parts[2])))
+        except ValueError:
+            continue
+    return out
+
+
+def rate_limit_delay(headers) -> float | None:
+    """Seconds to wait before the next request, from the API's OWN published
+    budget rather than a hard-coded guess.
+
+    GGG sends `X-Rate-Limit-Rules: Ip,Account`, then per rule a limit header
+    (`max_hits:period:restrict`) and a state header
+    (`current_hits:period:restricted_for`). We take the worst bucket:
+
+    - already restricted -> serve exactly that penalty;
+    - bucket full        -> wait out its window;
+    - otherwise          -> period/max_hits, the sustained rate that can
+                            never fill the bucket in the first place.
+
+    None when the headers are missing or unparseable, so the caller falls
+    back to its fixed spacing.
+    """
+    rules = headers.get("X-Rate-Limit-Rules")
+    if not rules:
+        return None
+    worst: float | None = None
+    for rule in (r.strip() for r in rules.split(",") if r.strip()):
+        limits = _buckets(headers.get(f"X-Rate-Limit-{rule}", ""))
+        state = _buckets(headers.get(f"X-Rate-Limit-{rule}-State", ""))
+        for (max_hits, period, _restrict), (hits, _p, restricted_for) in zip(
+            limits, state, strict=False
+        ):
+            if restricted_for > 0:
+                delay = float(restricted_for)
+            elif max_hits <= 0:
+                continue
+            elif hits >= max_hits:
+                delay = float(period)
+            else:
+                delay = period / max_hits
+            worst = delay if worst is None else max(worst, delay)
+    return worst
+
+
 USER_AGENT = "valdo-map-sniper/0.3 (personal snipe-margin tool; contact: easymccarthy@gmail.com)"
 
 BACKOFF_BASE_S = 60.0
@@ -74,6 +126,9 @@ class TradePricer:
         )
         self._max_listings = max_listings
         self._spacing_s = spacing_s
+        # pacing the API asked for via its rate-limit headers; 0 until
+        # the first response teaches us the real budget
+        self._api_spacing = 0.0
         self._fail_count = 0
         self._next_allowed = 0.0
 
@@ -92,6 +147,17 @@ class TradePricer:
             delay = max(delay, retry_after)
         self._next_allowed = time.monotonic() + delay
 
+    def _observe_limits(self, resp: httpx.Response) -> None:
+        """Adopt the pacing the API just told us it wants."""
+        delay = rate_limit_delay(resp.headers)
+        if delay is not None:
+            self._api_spacing = delay
+
+    async def _wait(self) -> None:
+        """Gap before the next call: whichever is longer, our configured
+        floor or what the API's own budget headers ask for."""
+        await asyncio.sleep(max(self._spacing_s, self._api_spacing))
+
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         if self.in_backoff:
             raise TradeBackoff(f"backoff active for {self.backoff_remaining:.0f}s more")
@@ -101,11 +167,16 @@ class TradePricer:
             self._enter_backoff(None)
             raise TradeBackoff(f"transport error: {e}") from e
         if resp.status_code == 429 or resp.status_code >= 500:
+            self._observe_limits(resp)  # the 429 itself carries the penalty
             raw = resp.headers.get("Retry-After")
-            self._enter_backoff(float(raw) if raw and raw.isdigit() else None)
+            retry_after = float(raw) if raw and raw.isdigit() else None
+            if retry_after is None:
+                retry_after = rate_limit_delay(resp.headers)
+            self._enter_backoff(retry_after)
             raise TradeBackoff(f"HTTP {resp.status_code}")
         resp.raise_for_status()
         self._fail_count = 0
+        self._observe_limits(resp)
         return resp
 
     @staticmethod
@@ -160,20 +231,20 @@ class TradePricer:
             )
             mode = "unid"
             if total < self._min_unid_listings:
-                await asyncio.sleep(self._spacing_s)
+                await self._wait()
                 query_id, hashes, total = await self._search(
                     league, name, identified=True, corrupted=False
                 )
                 mode = "identified"
                 if total == 0:
-                    await asyncio.sleep(self._spacing_s)
+                    await self._wait()
                     query_id, hashes, total = await self._search(
                         league, name, identified=True, corrupted=True
                     )
                     mode = "identified+corrupted"
         if not hashes:
             return [], mode
-        await asyncio.sleep(self._spacing_s)
+        await self._wait()
         resp = await self._request(
             "GET", f"/api/trade/fetch/{','.join(hashes)}", params={"query": query_id}
         )
@@ -187,7 +258,7 @@ class TradePricer:
         return prices, mode
 
     async def pause_between_rewards(self) -> None:
-        await asyncio.sleep(self._spacing_s)
+        await self._wait()
 
     async def aclose(self) -> None:
         await self._client.aclose()

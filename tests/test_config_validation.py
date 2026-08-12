@@ -120,3 +120,16 @@ def test_settings_panel_volume_round_trips(tmp_path):
         alert_volume=0.15,
     )
     assert load_config(cfg).alerts.volume == 0.15
+
+
+def test_duplicate_rule_label_rejected(tmp_path):
+    """Labels identify a rule to the tuning panel and the overrides file, so
+    a duplicate silently drops one row's edits - fail loudly instead."""
+    rules = '[{ label: "X", match: "a", min_base: 10 }, { label: "X", match: "b", min_base: 20 }]'
+    with pytest.raises(ConfigError, match="two rules labelled"):
+        load_config(write(tmp_path, scoring=rules))
+
+
+def test_distinct_labels_are_fine(tmp_path):
+    rules = '[{ label: "X", match: "a", min_base: 10 }, { label: "Y", match: "b", min_base: 20 }]'
+    assert len(load_config(write(tmp_path, scoring=rules)).mod_scoring.rules) == 2

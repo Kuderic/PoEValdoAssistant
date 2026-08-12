@@ -147,3 +147,55 @@ async def test_listing_reward_identifies_its_tab(running_server):
         await asyncio.sleep(0.3)
         assert server.tabs["tab-hh"].search_reward == "Foil Headhunter"
         assert "Foil Headhunter" in server.active_rewards()
+
+
+async def test_capture_stats_reach_the_log_once_per_change(running_server, monkeypatch):
+    """The userscript's capture counters are the only way to see WHY the
+    network path is or is not forwarding listings. They must reach the log -
+    but not on every 30s heartbeat."""
+    import sniper.server as srv
+
+    server, config, _decisions, _clicks = running_server
+    logged: list[dict] = []
+    real_event = srv.event
+    monkeypatch.setattr(
+        srv,
+        "event",
+        lambda name, **f: (
+            logged.append({"event": name, **f})
+            if name == "capture_stats"
+            else real_event(name, **f)
+        ),
+    )
+
+    stats = {"payloads": 3, "entries": 9, "sent": 0, "dedup": 9, "silent": 0, "unparsed": 0}
+    url = f"ws://127.0.0.1:{config.server.port}"
+    async with websockets.connect(url) as ws:
+        hello = {"type": "hello", "search_id": "s", "tab_id": "t1", "net_stats": stats}
+        await ws.send(json.dumps(hello))
+        await ws.send(json.dumps(hello))  # unchanged heartbeat: must not re-log
+        await asyncio.sleep(0.2)
+        assert len(logged) == 1, logged
+        assert logged[0]["dedup"] == 9 and logged[0]["sent"] == 0
+
+        moved = dict(stats, sent=2, dedup=7)
+        await ws.send(json.dumps({**hello, "net_stats": moved}))
+        await asyncio.sleep(0.2)
+        assert len(logged) == 2
+        assert logged[1]["sent"] == 2
+
+
+async def test_hello_without_net_stats_logs_nothing_extra(running_server, monkeypatch):
+    """Older userscripts must still connect cleanly."""
+    import sniper.server as srv
+
+    server, config, _d, _c = running_server
+    logged: list[str] = []
+    real_event = srv.event
+    monkeypatch.setattr(
+        srv, "event", lambda name, **f: (logged.append(name), real_event(name, **f))[1]
+    )
+    async with websockets.connect(f"ws://127.0.0.1:{config.server.port}") as ws:
+        await ws.send(json.dumps({"type": "hello", "search_id": "s", "tab_id": "old"}))
+        await asyncio.sleep(0.2)
+    assert "capture_stats" not in logged

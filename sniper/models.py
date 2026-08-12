@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 def fnv1a32(text: str) -> str:
@@ -16,6 +17,21 @@ def fnv1a32(text: str) -> str:
         h ^= b
         h = (h * 0x01000193) & 0xFFFFFFFF
     return format(h, "08x")
+
+
+def _iso_delta_ms(start: str | None, end: str | None) -> float | None:
+    """(end - start) in ms for two ISO-8601 stamps; None if either is
+    missing or unparseable."""
+    if not start or not end:
+        return None
+    try:
+        a = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        b = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if a.tzinfo is None or b.tzinfo is None:
+        return None
+    return (b - a).total_seconds() * 1000
 
 
 @dataclass(frozen=True)
@@ -36,6 +52,24 @@ class Listing:
     mods: tuple[str, ...]
     row_index: int
     detected_at: str
+    # GGG's own index time (network capture only; None from the DOM path)
+    indexed_at: str | None = None
+    # which capture path produced this: "net" (the page's own fetch payload,
+    # carries indexed_at) or "dom" (the rendered row). Logged so a silent
+    # regression in either path is visible instead of guessed at.
+    capture: str = ""
+
+    @property
+    def index_lag_ms(self) -> float | None:
+        """Milliseconds a listing was already live before the browser saw it
+        - the head start every other sniper had on it.
+
+        The two timestamps come from DIFFERENT clocks (GGG's server vs the
+        browser), so this carries any skew between them, and `indexed` is
+        only second-granular. Trustworthy for spotting multi-second lag,
+        not for sub-second precision.
+        """
+        return _iso_delta_ms(self.indexed_at, self.detected_at)
 
     @property
     def price_key(self) -> str:
@@ -53,6 +87,9 @@ class Hello:
     # with until it is reloaded, so "which version is actually live" is not
     # otherwise answerable from the logs when diagnosing a missed snipe.
     version: str | None = None
+    # network-capture counters (see the userscript's netStats): why the
+    # network path did or did not forward listings on this tab
+    net_stats: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -97,11 +134,13 @@ def parse_frame(msg: object) -> Frame:
             return FrameError(reason="; ".join(errors), raw=msg)
         reward = msg.get("search_reward")
         version = msg.get("version")
+        stats = msg.get("net_stats")
         return Hello(
             search_id=search_id,
             tab_id=tab_id,
             search_reward=reward if isinstance(reward, str) and reward else None,
             version=version if isinstance(version, str) and version else None,
+            net_stats=stats if isinstance(stats, dict) else None,
         )
 
     if mtype == "click_result":
@@ -150,6 +189,7 @@ def parse_frame(msg: object) -> Frame:
         if errors:
             return FrameError(reason="; ".join(errors), raw=msg)
         row_index = msg.get("row_index")
+        indexed_at = msg.get("indexed_at")
         return Listing(
             search_id=search_id,
             tab_id=tab_id,
@@ -161,6 +201,8 @@ def parse_frame(msg: object) -> Frame:
             mods=tuple(mods_raw),
             row_index=row_index if isinstance(row_index, int) else -1,
             detected_at=detected_at,
+            indexed_at=indexed_at if isinstance(indexed_at, str) and indexed_at else None,
+            capture=msg.get("capture") if msg.get("capture") in ("net", "dom") else "",
         )
 
     return FrameError(reason=f"unknown frame type {mtype!r}", raw=msg)
@@ -199,4 +241,6 @@ class Decision:
     # "none"|"yellow"|"red") per mod line
     mods_annotated: tuple[tuple[str, str, str], ...] = field(default_factory=tuple)
     special_warnings: tuple[tuple[str, str], ...] = field(default_factory=tuple)  # (label, color)
+    # deadly mod pairings present: (label, note, multiplier)
+    pairings: tuple[tuple[str, str, float], ...] = field(default_factory=tuple)
     required_profit_div: float | None = None  # threshold * difficulty / 100

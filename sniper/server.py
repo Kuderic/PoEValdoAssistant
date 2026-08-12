@@ -55,6 +55,7 @@ class SniperServer:
         self.tabs: dict[str, TabState] = {}
         self._listing_tab: OrderedDict[str, str] = OrderedDict()  # listing_id -> tab_id
         self._recent_rewards: dict[str, float] = {}  # reward -> last seen monotonic
+        self._net_stats: dict[str, dict] = {}  # tab_id -> last capture counters
 
     def set_scoring(self, scoring: ModScoring) -> None:
         """Swap the difficulty engine (tuning panel). Call from the asyncio
@@ -96,6 +97,12 @@ class SniperServer:
                 elif isinstance(frame, Hello):
                     tab_id = frame.tab_id
                     known = tab_id in self.tabs
+                    # capture counters change slowly; log only on change so
+                    # the reason the network path is (not) forwarding is in
+                    # the log without spamming it every heartbeat
+                    if frame.net_stats and self._net_stats.get(tab_id) != frame.net_stats:
+                        self._net_stats[tab_id] = frame.net_stats
+                        event("capture_stats", tab_id=tab_id, **frame.net_stats)
                     self.tabs[tab_id] = TabState(
                         ws=ws,
                         search_id=frame.search_id,
@@ -161,6 +168,11 @@ class SniperServer:
             seller=listing.seller,
             search_id=listing.search_id,
             detected_at=listing.detected_at,
+            indexed_at=listing.indexed_at,
+            capture=listing.capture,
+            # how long it was already live before we saw it: the head start
+            # every other sniper had. Null on DOM-captured listings.
+            index_lag_ms=None if listing.index_lag_ms is None else round(listing.index_lag_ms),
             mods=list(listing.mods),  # raw wording, for tuning match patterns
         )
 

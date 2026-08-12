@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.6.0
+// @version      0.7.4
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
@@ -60,7 +60,7 @@ const CONFIRM_WINDOW_MS = 3_000;
    script it loaded with until it is reloaded, so this is the only way to
    tell from logs/ whether a live tab is on a stale userscript.
    KEEP IN SYNC with the @version header above. */
-const SCRIPT_VERSION = '0.6.0';
+const SCRIPT_VERSION = '0.7.4';
 
 const WS_URL = 'ws://127.0.0.1:8765';
 const HEARTBEAT_MS = 30_000;
@@ -172,7 +172,11 @@ function listingId(rowEl, parsed) {
  *   click path resolves network-captured listings unchanged;
  * - the Reward is properties[type==76].values[0][0];
  * - explicitMods entries are {description} objects on the live site (plain
- *   strings on the public API - both accepted).
+ *   strings on the public API - both accepted);
+ * - listing.indexed is GGG's own index time. Forwarding it is the only way
+ *   to measure how long a listing was already live before we saw it, which
+ *   is the window in which somebody else can take it. The DOM path cannot
+ *   supply this (the row only says "listed 4 minutes ago").
  * Returns null when mandatory fields are missing.
  */
 function parseFetchItem(entry) {
@@ -203,6 +207,7 @@ function parseFetchItem(entry) {
     seller,
     reward: typeof reward === 'string' && reward ? reward : null,
     mods,
+    indexed: typeof listing.indexed === 'string' ? listing.indexed : null,
   };
 }
 
@@ -302,6 +307,7 @@ function main() {
       tab_id: tabId,
       search_reward: lastSentReward,
       version: SCRIPT_VERSION,
+      net_stats: { ...netStats },
     });
   }
 
@@ -374,6 +380,7 @@ function main() {
       tab_id: tabId,
       listing_id: id,
       ...parsed,
+      capture: 'dom',
       row_index: rows.indexOf(rowEl),
       detected_at: new Date().toISOString(),
     });
@@ -445,26 +452,62 @@ function main() {
 
   let networkSilentUntil = Date.now() + NETWORK_SILENT_MS;
 
+  /* Why the network path did or did not forward a listing, reported in
+     every hello and logged server-side. The two capture paths share the
+     `seen` dedup, so a silent regression in either is otherwise invisible:
+     "dedup" dominating means the DOM path is winning the race, "silent"
+     means the page-load window ate it, "unparsed" means the payload shape
+     moved. */
+  const netStats = {
+    payloads: 0, entries: 0, sent: 0, dedup: 0, silent: 0, unparsed: 0,
+    // which wrapper delivered the payload: tells apart "the page uses fetch
+    // and our extra clone().json() hop costs us the race" from "the page
+    // uses XHR and its handler runs before ours"
+    viaFetch: 0, viaXhr: 0,
+    // of the deduped entries, how many already had a rendered DOM row when
+    // we looked. High => the page really did render before our handler ran
+    // (an ordering problem). Low => the key reached `seen` some other way
+    // (silent init or the sweep), which is a different bug entirely.
+    domAlready: 0,
+  };
+
   function handleFetchEntry(entry) {
+    netStats.entries += 1;
     const parsed = parseFetchItem(entry);
-    if (!parsed) return;
+    if (!parsed) {
+      netStats.unparsed += 1;
+      return;
+    }
     const key = seenKey(parsed.id, parsed.price);
-    if (seen.has(key)) return;
+    if (seen.has(key)) {
+      netStats.dedup += 1;
+      const sel = `.row[${SELECTORS.rowIdAttr}="${parsed.id}"]`;
+      if (observedContainer && observedContainer.querySelector(sel)) netStats.domAlready += 1;
+      return;
+    }
     seen.add(key);
-    if (Date.now() < networkSilentUntil) return; // page-load fetch, not a push
-    const { id, ...fields } = parsed;
+    if (Date.now() < networkSilentUntil) {
+      netStats.silent += 1;
+      return; // page-load fetch, not a push
+    }
+    netStats.sent += 1;
+    const { id, indexed, ...fields } = parsed;
     send({
       type: 'new_listing',
       search_id: searchId,
       tab_id: tabId,
       listing_id: id,
       ...fields,
+      indexed_at: indexed, // GGG's index time; null on the DOM path
+      capture: 'net',
       row_index: -1, // no DOM row yet
       detected_at: new Date().toISOString(),
     });
   }
 
-  function handleFetchPayload(url, data) {
+  function handleFetchPayload(url, data, via) {
+    if (via === 'fetch') netStats.viaFetch += 1;
+    else if (via === 'xhr') netStats.viaXhr += 1;
     // live search pages only: fetches on static search pages come from the
     // user browsing, not from pushes - leave those to the DOM path
     if (!location.pathname.endsWith('/live')) return;
@@ -475,6 +518,7 @@ function main() {
       if (q && q !== searchId) searchId = q;
     } catch { /* malformed url: keep the current searchId */ }
     if (!data || !Array.isArray(data.result)) return;
+    netStats.payloads += 1;
     for (const entry of data.result) {
       try {
         handleFetchEntry(entry);
@@ -488,29 +532,63 @@ function main() {
     if (origFetch) {
       window.fetch = function (input, init) {
         const out = origFetch.call(this, input, init);
+        let url = '';
         try {
-          const url = typeof input === 'string' ? input : input?.url || '';
-          if (TRADE_FETCH_RE.test(url)) {
-            out
-              .then((resp) => resp.clone().json())
-              .then((data) => handleFetchPayload(url, data))
-              .catch(() => {});
+          url = typeof input === 'string' ? input : input?.url || '';
+        } catch { /* exotic input: leave it to the DOM path */ }
+        if (!url || !TRADE_FETCH_RE.test(url)) return out;
+
+        // Parse BEFORE the page gets the response.
+        //
+        // Chaining off the response and parsing "alongside" the page lost
+        // the dedup race 7 times out of 7 in measurement (domAlready ==
+        // dedup): the site's own await-continuation parsed and rendered the
+        // row while our clone was still buffering, so the DOM path always
+        // forwarded first and the index time was never sent. Returning a
+        // promise that settles only once WE have parsed makes us first by
+        // construction rather than by luck.
+        //
+        // The page still receives the ORIGINAL Response object with every
+        // property intact - we only delay it by our own JSON parse of a
+        // clone (sub-millisecond on these payloads), never substitute it.
+        return out.then((resp) => {
+          try {
+            return resp
+              .clone()
+              .json()
+              .then((data) => {
+                handleFetchPayload(url, data, 'fetch');
+                return resp;
+              })
+              .catch(() => resp); // not JSON, or body unreadable
+          } catch {
+            return resp; // clone() refused; never withhold the response
           }
-        } catch { /* never break the page */ }
-        return out;
+        });
       };
     }
     const origOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function (method, url, ...rest) {
       try {
         if (typeof url === 'string' && TRADE_FETCH_RE.test(url)) {
-          this.addEventListener('load', () => {
+          // Dormant in practice: the trade site fetches with `fetch`, not
+          // XHR (measured viaXhr == 0), so this branch exists only in case
+          // that changes. `readystatechange` at DONE fires before `load`
+          // and before the page's own onreadystatechange property handler
+          // (set after our open(), so it queues behind us); `load` is the
+          // fallback and `handled` keeps it to a single parse.
+          let handled = false;
+          const grab = () => {
+            if (handled || this.readyState !== 4) return;
+            handled = true;
             try {
               const data =
                 this.responseType === 'json' ? this.response : JSON.parse(this.responseText);
-              handleFetchPayload(url, data);
+              handleFetchPayload(url, data, 'xhr');
             } catch { /* non-JSON response; DOM path covers it */ }
-          });
+          };
+          this.addEventListener('readystatechange', grab);
+          this.addEventListener('load', grab);
         }
       } catch { /* never break the page */ }
       return origOpen.call(this, method, url, ...rest);

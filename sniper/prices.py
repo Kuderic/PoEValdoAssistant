@@ -48,8 +48,14 @@ class PriceBook:
         self._ninja_rewards: dict[str, float] = {}  # reward -> median chaosValue
         self._live_rates: dict[str, float] = {}  # trade short id -> chaos
         self._last_refresh_monotonic: float | None = None
-        # trade-API unid-unique averages: reward -> (chaos, monotonic set-time)
-        self._trade_rewards: dict[str, tuple[float, float]] = {}
+        # trade-API unid-unique averages:
+        #   reward -> (divine value, monotonic set-time, cached?, fetched-at)
+        # monotonic set-time drives the TTL; fetched-at is wall clock and
+        # survives a restart, so the UI can say "9m ago" truthfully.
+        # `cached` marks a price restored from the previous session: good
+        # enough to trade on immediately, but provisional until the refresh
+        # replaces it, and reported as source="cached" so the UI can say so.
+        self._trade_rewards: dict[str, tuple[float, float, bool, float]] = {}
         self._trade_ttl_s = max(config.trade_pricing.refresh_minutes * 60 * 2, 300)
 
     # ------------------------------------------------------------------ state
@@ -138,17 +144,52 @@ class PriceBook:
             return None
         return chaos / divine_rate
 
-    def set_trade_price(self, reward: str, divine_value: float) -> None:
+    def price_age_s(self, reward: str) -> float | None:
+        """Seconds since this reward's price was actually calculated, or None
+        if it has no trade price. Measured from the ORIGINAL fetch, so a
+        price restored from disk reports its true age rather than pretending
+        to be new."""
+        entry = self._trade_rewards.get(reward)
+        return None if entry is None else max(0.0, time.time() - entry[3])
+
+    def set_trade_price(
+        self,
+        reward: str,
+        divine_value: float,
+        cached: bool = False,
+        priced_at: float | None = None,
+    ) -> None:
         """Store a trade-API unid-unique average, in DIVINE natively (the
         listings are div-denominated; storing chaos let divine-rate drift
-        between fetch and display distort the shown average)."""
-        self._trade_rewards[reward] = (divine_value, time.monotonic())
+        between fetch and display distort the shown average).
+
+        `cached=True` seeds a price restored from the previous session so
+        listings can be judged from the first second; the background refresh
+        overwrites it with `cached=False` as soon as it lands. `priced_at`
+        carries the original fetch time through a restart so the UI can age
+        it honestly.
+        """
+        self._trade_rewards[reward] = (
+            divine_value,
+            time.monotonic(),
+            cached,
+            time.time() if priced_at is None else priced_at,
+        )
+
+    def trade_prices(self) -> dict[str, tuple[float, float]]:
+        """Everything worth persisting for the next start: reward ->
+        (divine, when it was fetched). Freshly fetched prices only, so a
+        cached value cannot be rewritten forever without the trade API ever
+        confirming it."""
+        return {
+            r: (v, at) for r, (v, _mono, cached, at) in self._trade_rewards.items() if not cached
+        }
 
     def _trade_reference(self, key: str) -> Reference | None:
         entry = self._trade_rewards.get(key)
         if entry is None:
             return None
-        divine_value, set_at = entry
+        divine_value, set_at, cached, _priced_at = entry
         if time.monotonic() - set_at > self._trade_ttl_s:
             return None  # too old - fall through to ninja
         divine_rate = self.rate_chaos("divine")
@@ -159,7 +200,7 @@ class PriceBook:
             display_amount=round(divine_value, 1),
             display_currency="divine",
             chaos_value=divine_value * divine_rate,
-            source="trade",
+            source="cached" if cached else "trade",
         )
 
     def has_primary_price(self, key: str) -> bool:

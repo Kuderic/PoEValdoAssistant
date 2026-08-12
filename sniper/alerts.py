@@ -42,11 +42,16 @@ class AlertView:
     mismatch: bool
     warn_labels: tuple[str, ...]
     special_warnings: tuple[tuple[str, str], ...]  # (label, color)
+    # deadly mod pairings: (label, note, multiplier)
+    pairings: tuple[tuple[str, str, float], ...]
     # (mod text, scoring note e.g. "×1.8"/""); tooltip + traveled panel
     mods: tuple[tuple[str, str], ...]
     reference_amount: float
     reference_currency: str
     reference_source: str
+    # ms the listing was already live before we saw it; None when unknown
+    # (DOM-captured, or an old userscript that does not send indexed_at)
+    index_lag_ms: float | None
     created_monotonic: float
     expires_at_monotonic: float
 
@@ -73,10 +78,12 @@ class Alert:
             mismatch=d.currency_mismatch,
             warn_labels=tuple(h.label for h in d.mod_hits if h.severity == "warn"),
             special_warnings=d.special_warnings,
+            pairings=d.pairings,
             mods=d.mods_annotated,
             reference_amount=d.reference.display_amount if d.reference else 0.0,
             reference_currency=d.reference.display_currency if d.reference else "",
             reference_source=d.reference.source if d.reference else "",
+            index_lag_ms=d.listing.index_lag_ms,
             created_monotonic=self.created_monotonic,
             expires_at_monotonic=self.expires_at_monotonic,
         )

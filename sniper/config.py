@@ -37,9 +37,15 @@ def apply_scoring_overrides(scoring: ModScoringConfig, path: Path) -> ModScoring
                 else r.multiplier,
             )
         )
+    saved_pairings = raw.get("pairings") or {}
+    pairings = tuple(
+        replace(p, multiplier=float(saved_pairings[p.label])) if p.label in saved_pairings else p
+        for p in scoring.pairings
+    )
     return ModScoringConfig(
         base_default=float(raw.get("base_default", scoring.base_default)),
         rules=tuple(rules),
+        pairings=pairings,
     )
 
 
@@ -58,6 +64,9 @@ def save_scoring_overrides(
         "rules": {
             r.label: {"min_base": r.min_base, "multiplier": r.multiplier} for r in scoring.rules
         },
+        # separate key: a pairing may share a label with nothing, but keeping
+        # the namespaces apart means neither can ever clobber the other
+        "pairings": {p.label: p.multiplier for p in scoring.pairings},
     }
     if global_profit_div is not None:
         data["global_profit_div"] = global_profit_div
@@ -134,6 +143,10 @@ class TradePricingConfig:
     # unid+uncorrupted needs at least this many listings, else fall back to
     # identified+uncorrupted (and to identified+corrupted if that has none)
     min_unid_listings: int = 10
+    # Reward prices are written to price_cache.json and reloaded at startup
+    # so listings can be judged immediately instead of waiting out a fetch.
+    # Anything older than this is ignored as too stale to trade on.
+    cache_max_age_minutes: float = 720.0
     base_url: str = "https://www.pathofexile.com"
     # Uniques that only exist corrupted - searched unid + corrupted: true
     # (skipping the fallback ladder).
@@ -170,12 +183,32 @@ class ModScoringRule:
 
 
 @dataclass(frozen=True)
+class ModPairing:
+    """Two mods that are far worse together than the product of their
+    individual multipliers suggests - e.g. a damage penalty plus a timer is
+    not 'harder', it is unrunnable without a specific build.
+
+    Kept separate from ModScoringRule because a pairing must NOT merge its
+    mod lines into one display row (the individual rules still own those
+    lines) and because it carries a `note` explaining what actually goes
+    wrong, which is the part worth reading.
+    """
+
+    label: str
+    match_all: tuple[str, ...]
+    multiplier: float
+    note: str = ""
+    regex: bool = False
+
+
+@dataclass(frozen=True)
 class ModScoringConfig:
     """required_profit = global_profit_div * score / 100: the base threshold
     is what a 100-difficulty map needs; 200 difficulty doubles it."""
 
     base_default: float = 25.0
     rules: tuple[ModScoringRule, ...] = ()
+    pairings: tuple[ModPairing, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -332,9 +365,51 @@ def load_config(path: str | Path = "config.yaml") -> Config:
                 warning=warning or None,
             )
         )
+    # Labels are the identity of a rule: the tuning panel keys its entry
+    # widgets by label and save_scoring_overrides writes a label->values
+    # dict, so a duplicate silently discards one row's edits and applies one
+    # value to both rules. Catch it here instead.
+    seen_labels = set()
+    for rule in scoring_rules:
+        if rule.label in seen_labels:
+            raise ConfigError(
+                f"mod_scoring.rules has two rules labelled {rule.label!r}; "
+                "labels must be unique (the settings panel keys on them)"
+            )
+        seen_labels.add(rule.label)
+
+    pairings = []
+    pairing_labels = set()
+    for i, entry in enumerate(raw.get("mod_pairings") or []):
+        if not isinstance(entry, dict) or "label" not in entry:
+            raise ConfigError(f"mod_pairings[{i}] needs 'label'")
+        patterns = entry.get("match_all") or []
+        if not isinstance(patterns, list) or len(patterns) < 2:
+            raise ConfigError(
+                f"mod_pairings[{i}] ({entry['label']}) needs 'match_all' with at least "
+                "two patterns - a pairing is about mods appearing TOGETHER"
+            )
+        if entry.get("multiplier") is None:
+            raise ConfigError(f"mod_pairings[{i}] ({entry['label']}) needs 'multiplier'")
+        if entry["label"] in pairing_labels:
+            raise ConfigError(f"mod_pairings has two entries labelled {entry['label']!r}")
+        pairing_labels.add(entry["label"])
+        for pattern in patterns:
+            check_pattern(f"mod_pairings[{i}]", pattern, bool(entry.get("regex")))
+        pairings.append(
+            ModPairing(
+                label=entry["label"],
+                match_all=tuple(patterns),
+                multiplier=float(entry["multiplier"]),
+                note=str(entry.get("note", "")),
+                regex=bool(entry.get("regex", False)),
+            )
+        )
+
     mod_scoring = ModScoringConfig(
         base_default=float(scoring_raw.get("base_default", 25.0)),
         rules=tuple(scoring_rules),
+        pairings=tuple(pairings),
     )
     mod_scoring = apply_scoring_overrides(mod_scoring, path.with_name(SCORING_OVERRIDES_NAME))
 

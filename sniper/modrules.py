@@ -65,6 +65,8 @@ class DifficultyResult:
     score: float
     matched: tuple[str, ...]  # labels of every matched scoring rule
     warnings: tuple[tuple[str, str], ...]  # (label, color) for warning rules
+    # (label, note, multiplier) for every deadly pairing present
+    pairings: tuple[tuple[str, str, float], ...] = ()
 
 
 class _CompiledScoringRule:
@@ -77,10 +79,22 @@ class _CompiledScoringRule:
         return all(any(m(mod) for mod in mods) for m in self._matchers)
 
 
+class _CompiledPairing:
+    def __init__(self, pairing):
+        self.pairing = pairing
+        self._matchers = [_matcher(p, pairing.regex) for p in pairing.match_all]
+
+    def hits(self, mods: list[str]) -> bool:
+        """Every pattern must find a line - that is what makes it a pairing
+        rather than two independent rules."""
+        return all(any(m(mod) for mod in mods) for m in self._matchers)
+
+
 class ModScoring:
     def __init__(self, config: ModScoringConfig):
         self._config = config
         self._rules = [_CompiledScoringRule(r) for r in config.rules]
+        self._pairings = [_CompiledPairing(p) for p in config.pairings]
 
     def evaluate(self, mods: Iterable[str]) -> DifficultyResult:
         mods = list(mods)
@@ -92,10 +106,16 @@ class ModScoring:
         for r in matched:
             if r.multiplier is not None:
                 score *= r.multiplier
+        # pairings stack ON TOP of the individual rules: the point is that
+        # the combination costs more than either mod does alone
+        pairings = [c.pairing for c in self._pairings if c.hits(mods)]
+        for p in pairings:
+            score *= p.multiplier
         return DifficultyResult(
             score=round(score, 2),
             matched=tuple(r.label for r in matched),
             warnings=tuple((r.label, r.warning) for r in matched if r.warning),
+            pairings=tuple((p.label, p.note, p.multiplier) for p in pairings),
         )
 
     @staticmethod

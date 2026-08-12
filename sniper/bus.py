@@ -65,6 +65,13 @@ class FeedEntry:
     # (mod text, scoring note e.g. "×1.8"/"") shown in the hover tooltip
     mods: tuple[tuple[str, str], ...] = ()
     received_monotonic: float = 0.0  # for the feed's minutes-ago column
+    # "trade" | "manual" | "live" | "stale" - the last two mean the price
+    # came from poe.ninja's fallback median, which the row flags as [est]
+    reference_source: str = ""
+    # deadly mod pairings: (label, note, multiplier), shown on hover
+    pairings: tuple[tuple[str, str, float], ...] = ()
+    # head start other snipers had on this listing; None when unknown
+    index_lag_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -81,14 +88,31 @@ class WarmupStatus:
     calculating: bool
     priced: int
     total: int
+    # per-reward progress for the startup panel:
+    # (reward, state, price text, age_seconds) where state is
+    # "done" | "working" | "pending" | "unpriced" and age_seconds is how
+    # long ago that price was calculated (None when there is no price)
+    rewards: tuple[tuple[str, str, str, float | None], ...] = ()
+
+
+@dataclass(frozen=True)
+class PricingHealth:
+    """Trade-API pricing health. `backoff_s` > 0 means we are rate limited
+    and every reward priced meanwhile falls back to poe.ninja's inaccurate
+    median, so the header says so instead of showing a healthy pill."""
+
+    backoff_s: float
+    unpriced: int
+    total: int
 
 
 @dataclass(frozen=True)
 class RewardPrices:
     """Current reference price per active reward, for the Searching tooltip:
-    (reward, amount, currency, source) tuples."""
+    (reward, amount, currency, source, age_seconds) tuples. age_seconds is
+    None when the price has no calculation time (manual or poe.ninja)."""
 
-    entries: tuple[tuple[str, float, str, str], ...]
+    entries: tuple[tuple[str, float, str, str, float | None], ...]
 
 
 UiEvent = (
@@ -101,6 +125,7 @@ UiEvent = (
     | ListingSeen
     | RewardPrices
     | WarmupStatus
+    | PricingHealth
 )
 
 

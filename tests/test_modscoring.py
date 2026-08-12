@@ -371,7 +371,9 @@ def test_shipped_config_thorns_is_one_modifier_on_two_lines():
     scoring = _shipped_scoring()
     rule = _rule(scoring, "Thorns")
     result = scoring.evaluate(THORNS_LINES)
-    assert result.matched == ("Thorns",)  # NOT also 'Reflect'
+    # exactly one rule: the lines say "...Thorns reflecting...", so a rule
+    # matching bare "reflect" would double up on the same mod
+    assert result.matched == ("Thorns",)
     assert result.score == pytest.approx(scoring._config.base_default * rule.multiplier)
     rows = scoring.annotate(THORNS_LINES)
     assert len(rows) == 1
@@ -380,14 +382,8 @@ def test_shipped_config_thorns_is_one_modifier_on_two_lines():
     assert text.split("\n") == THORNS_LINES
 
 
-def test_shipped_config_reflect_no_longer_double_counts_thorns():
-    """'reflecting' inside the thorns text must not also trip the Reflect
-    rule - that would apply two multipliers for one mod."""
+def test_shipped_config_has_no_reflect_rule():
+    """Thorns replaced the reflect mods; a leftover reflect rule would
+    double-count the thorns lines ("...Thorns reflecting...")."""
     scoring = _shipped_scoring()
-    assert "Reflect" not in scoring.evaluate(THORNS_LINES).matched
-
-
-def test_shipped_config_reflect_still_matches_the_real_reflect_mod():
-    scoring = _shipped_scoring()
-    mods = ["Players reflect 1000% of Melee Physical Damage taken"]
-    assert "Reflect" in scoring.evaluate(mods).matched
+    assert not [c for c in scoring._rules if "reflect" in c.rule.label.lower()]

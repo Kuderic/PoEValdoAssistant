@@ -16,8 +16,9 @@ import contextlib
 import threading
 import time
 from collections import OrderedDict
+from pathlib import Path
 
-from sniper import logging_setup
+from sniper import logging_setup, pricecache
 from sniper.alerts import AlertStore
 from sniper.bus import (
     AlertsChanged,
@@ -27,6 +28,7 @@ from sniper.bus import (
     GameStatus,
     ListingSeen,
     PriceStatus,
+    PricingHealth,
     RewardPrices,
     TabsChanged,
     Traveled,
@@ -41,19 +43,32 @@ from sniper.ninja import NinjaBackoff, NinjaClient
 from sniper.prices import PriceBook
 from sniper.server import SniperServer
 
-# Longest the startup price warm-up may hold listings back. A reward the
-# trade API has no listings for would otherwise stall the app indefinitely.
-WARMUP_TIMEOUT_S = 120.0
+# How long the startup warm-up will wait WITHOUT PROGRESS before giving up
+# and letting listings through on fallback prices. A stall timer, not a
+# total budget: pricing paces itself off the API's rate-limit headers, so a
+# large batch can legitimately take minutes, and a fixed deadline would
+# degrade a run that was working fine.
+WARMUP_STALL_S = 90.0
 
 
 class App:
     """Owns the asyncio-side objects; every method here runs on the asyncio
     thread unless noted."""
 
-    def __init__(self, config: Config, bus: Bus | None):
+    def __init__(self, config: Config, bus: Bus | None, cache_path: Path | None = None):
         self.config = config
         self.bus = bus
         self.book = PriceBook(config)
+        # Seed last session's reward prices so the very first listing can be
+        # judged instead of held (see _hold_listing). They are provisional -
+        # source="cached" - until the background refresh replaces them.
+        self._cache_path = cache_path
+        if cache_path is not None:
+            cached = pricecache.load(cache_path, config.trade_pricing.cache_max_age_minutes * 60)
+            for reward, (divine, priced_at) in cached.items():
+                self.book.set_trade_price(reward, divine, cached=True, priced_at=priced_at)
+            if cached:
+                event("price_cache_loaded", rewards=len(cached))
         self.store = AlertStore(
             expiry_s=config.alerts.expiry_seconds,
             consume_mode=config.hotkey.consume,
@@ -78,10 +93,12 @@ class App:
         # off - then poe.ninja IS the intended source and there is nothing
         # to wait for.
         self._warmup_active = config.trade_pricing.enabled
-        self._warmup_deadline = time.monotonic() + WARMUP_TIMEOUT_S
+        self._warmup_deadline = time.monotonic() + WARMUP_STALL_S
+        self._warmup_ready = 0  # rewards ready so far; progress resets the stall
         # rewards the trade API answered for but had no listings of: they can
         # never get a primary price, so they must not stall the warm-up
         self._warmup_settled: set[str] = set()
+        self._pricing_now: str | None = None  # reward being fetched right now
 
     # ------------------------------------------------------------ callbacks
 
@@ -103,19 +120,61 @@ class App:
         return True
 
     def _update_warmup(self) -> None:
-        """Warm-up ends once every reward we know about has a primary price,
-        or the timeout expires (a reward the trade API has no listings for
-        must never stall the app forever)."""
-        if not self._warmup_active:
-            return
+        """Advance the startup warm-up AND publish pricing progress.
+
+        Progress keeps publishing after the warm-up ends, so the same panel
+        covers the periodic re-price and a reward that appears when a new
+        live search is opened mid-session. Only the `calculating` flag -
+        which is what holds listings back - is warm-up specific.
+        """
         rewards = sorted(self.server.active_rewards())
         ready = [r for r in rewards if self.book.has_primary_price(r) or r in self._warmup_settled]
-        timed_out = time.monotonic() >= self._warmup_deadline
-        if (rewards and len(ready) == len(rewards)) or timed_out:
-            self._warmup_active = False
-            event("warmup_done", ready=len(ready), total=len(rewards), timed_out=timed_out)
+        if self._warmup_active:
+            if len(ready) > self._warmup_ready:  # progress: give it more rope
+                self._warmup_ready = len(ready)
+                self._warmup_deadline = time.monotonic() + WARMUP_STALL_S
+            timed_out = time.monotonic() >= self._warmup_deadline
+            if (rewards and len(ready) == len(rewards)) or timed_out:
+                self._warmup_active = False
+                event("warmup_done", ready=len(ready), total=len(rewards), stalled=timed_out)
         if self.bus:
-            self.bus.put(WarmupStatus(self._warmup_active, len(ready), len(rewards)))
+            self.bus.put(
+                WarmupStatus(
+                    self._warmup_active,
+                    len(ready),
+                    len(rewards),
+                    self._pricing_rows(rewards),
+                )
+            )
+
+    def _pricing_rows(self, rewards: list[str]) -> tuple[tuple[str, str, str, float | None], ...]:
+        """Per-reward progress for the panel: what is priced, what is being
+        fetched right now, and what is still queued - plus whatever
+        price we have so far. A '~' marks a poe.ninja estimate rather than a
+        settled trade-API average."""
+        rows = []
+        for reward in rewards:
+            ref = self.book.reference_for(reward)
+            primary = self.book.has_primary_price(reward)
+            # "working" outranks "done": a scheduled re-price happens to a
+            # reward that already HAS a price, and reporting it as done
+            # would hide every refresh after the first
+            if reward == self._pricing_now:
+                state = "working"
+            elif primary:
+                state = "done"
+            elif reward in self._warmup_settled:
+                state = "unpriced"
+            else:
+                state = "pending"
+            if ref is None:
+                price = ""
+            else:
+                price = f"{ref.display_amount:g} {ref.display_currency}"
+                if not primary:
+                    price = f"~{price}"  # fallback estimate, not settled yet
+            rows.append((reward, state, price, self.book.price_age_s(reward)))
+        return tuple(rows)
 
     def _on_decision(self, decision: Decision) -> None:
         if self._hold_listing(decision):
@@ -136,6 +195,9 @@ class App:
                         verdict=decision.verdict,
                         mods=decision.mods_annotated,
                         received_monotonic=time.monotonic(),
+                        pairings=decision.pairings,
+                        index_lag_ms=decision.listing.index_lag_ms,
+                        reference_source=(decision.reference.source if decision.reference else ""),
                     )
                 )
             )
@@ -277,6 +339,27 @@ class App:
                 self._push_alerts(new_alert=False)
             await asyncio.sleep(0.25)
 
+    def _save_price_cache(self) -> None:
+        """Persist freshly fetched prices so the next start is not blind."""
+        if self._cache_path is not None:
+            pricecache.save(self._cache_path, self.book.trade_prices())
+
+    def _push_pricing_health(self, pricer) -> None:
+        """Tell the overlay whether trade pricing is actually working, so a
+        rate-limited session never looks healthy while it quietly falls back
+        to poe.ninja medians."""
+        if not self.bus:
+            return
+        rewards = self.server.active_rewards()
+        unpriced = [r for r in rewards if not self.book.has_primary_price(r)]
+        self.bus.put(
+            PricingHealth(
+                backoff_s=round(pricer.backoff_remaining, 1),
+                unpriced=len(unpriced),
+                total=len(rewards),
+            )
+        )
+
     def _push_reward_prices(self) -> None:
         """Current reference per active reward -> Searching-line tooltip."""
         if not self.bus:
@@ -285,7 +368,15 @@ class App:
         for reward in sorted(self.server.active_rewards()):
             ref = self.book.reference_for(reward)
             if ref is not None:
-                entries.append((reward, ref.display_amount, ref.display_currency, ref.source))
+                entries.append(
+                    (
+                        reward,
+                        ref.display_amount,
+                        ref.display_currency,
+                        ref.source,
+                        self.book.price_age_s(reward),
+                    )
+                )
         self.bus.put(RewardPrices(tuple(entries)))
 
     async def tab_freshness_loop(self) -> None:
@@ -313,7 +404,8 @@ class App:
         while True:
             league = self.book.league  # resolves via the first ninja refresh
             if league is None or pricer.in_backoff:
-                self._update_warmup()  # keeps the timeout honest
+                self._update_warmup()  # keeps the stall timer honest
+                self._push_pricing_health(pricer)  # keep the pill counting down
                 await asyncio.sleep(2 if self._warmup_active else 15)
                 continue
             now = time.monotonic()
@@ -323,18 +415,27 @@ class App:
                 if now - last_priced.get(r, -interval_s) >= interval_s
             ]
             for reward in due:
+                self._pricing_now = reward  # so the startup panel can say so
+                self._update_warmup()
                 try:
                     listings, mode = await pricer.fetch_reward_listings(league, reward)
                 except TradeBackoff as e:
+                    # every further call would be refused locally until the
+                    # backoff lifts, so stop the batch rather than spin. The
+                    # unpriced rewards never got a last_priced stamp, so they
+                    # are still due and go first on the next pass.
                     event(
                         "trade_backoff",
                         reason=str(e),
                         retry_in_s=round(max(pricer.backoff_remaining, 1), 1),
+                        unpriced=len(due) - due.index(reward),
                     )
                     break
                 except Exception as e:  # pricing must never kill the app
+                    # only THIS reward is broken (bad payload, odd name);
+                    # the rest of the batch is still worth pricing
                     event("trade_price_error", reward=reward, error=repr(e))
-                    break
+                    continue
                 last_priced[reward] = time.monotonic()
                 div_prices = [
                     d
@@ -348,6 +449,7 @@ class App:
                 )
                 if avg_div is not None:
                     self.book.set_trade_price(reward, avg_div)
+                    self._save_price_cache()
                     event(
                         "trade_price",
                         reward=reward,
@@ -365,10 +467,15 @@ class App:
                     )
                     self._warmup_settled.add(reward)
                 # each price landing may be the one that ends the warm-up
+                self._pricing_now = None
                 self._update_warmup()
                 await pricer.pause_between_rewards()
+            # however the batch ended (done, backoff, bad reward), nothing is
+            # in flight now - a stale "working" marker would be a lie
+            self._pricing_now = None
             self._push_reward_prices()
             self._update_warmup()
+            self._push_pricing_health(pricer)
             await asyncio.sleep(2 if self._warmup_active else 15)
 
     async def price_refresh_loop(self, ninja: NinjaClient) -> None:
@@ -427,7 +534,8 @@ def run_with_overlay(config: Config, config_path: str) -> None:
     from sniper.overlay import Overlay
 
     bus = Bus()
-    app = App(config, bus)
+    # the cache lives beside config.yaml, like scoring_overrides.yaml
+    app = App(config, bus, cache_path=Path(config_path).with_name(pricecache.CACHE_NAME))
     loop = asyncio.new_event_loop()
 
     def asyncio_thread() -> None:
@@ -497,8 +605,9 @@ def main() -> None:
     )
     try:
         if args.headless:
+            cache = Path(args.config).with_name(pricecache.CACHE_NAME)
             with contextlib.suppress(KeyboardInterrupt):
-                asyncio.run(App(config, bus=None).run_async())
+                asyncio.run(App(config, bus=None, cache_path=cache).run_async())
         else:
             run_with_overlay(config, args.config)
     finally:

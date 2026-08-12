@@ -116,7 +116,7 @@ def test_trade_price_expires_to_ninja_fallback(config):
     book._ninja_rewards = {"Foil Sublime Vision": 18284.0}
     book.set_trade_price("Foil Sublime Vision", 82.0)
     assert book.reference_for("Foil Sublime Vision").source == "trade"
-    book._trade_rewards["Foil Sublime Vision"] = (82.0, -(10**9))  # force stale
+    book._trade_rewards["Foil Sublime Vision"] = (82.0, -(10**9), False, 0.0)  # force stale
     ref = book.reference_for("Foil Sublime Vision")
     assert ref.source in ("live", "stale")  # fell back to the ninja median
 

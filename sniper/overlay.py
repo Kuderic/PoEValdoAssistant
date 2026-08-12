@@ -26,6 +26,7 @@ from sniper.bus import (
     GameStatus,
     ListingSeen,
     PriceStatus,
+    PricingHealth,
     RewardPrices,
     TabsChanged,
     Traveled,
@@ -62,6 +63,26 @@ STAT_PAD = 6  # inner padding, so the outline never touches the digits
 # Difficulty colouring, tiered off the reference difficulty of 100 that the
 # threshold is calibrated for: at or under it is an easy map, 3x it is brutal.
 DIFF_WARN, DIFF_BAD = 100.0, 300.0
+# Head start (ms) other snipers had on a listing before it reached us. The
+# cutoffs come from this app's own logs: travels clicked within ~2s of
+# detection lost ~26% of the time, 4-10s lost ~52%.
+LAG_OK_MS, LAG_BAD_MS = 2000.0, 5000.0
+# Hover help for the latency readout, as a _render_mods row triple.
+LATENCY_HELP = (
+    "Latency: how long this listing had already been live before it "
+    "reached you — the head start every other sniper had on it. Measured "
+    "from the trade site's own index time. Low is worth racing; several "
+    "seconds means it is probably already gone.",
+    "",
+    "none",
+)
+# Reference sources that are poe.ninja's per-map median - the documented
+# INACCURATE fallback. Anything priced from these is flagged so a rate-limited
+# session can never look like a healthy one.
+FALLBACK_SOURCES = frozenset({"live", "stale"})
+# A price restored from the previous session: real trade data, but not yet
+# reconfirmed this run, so it is flagged more gently than the ninja fallback.
+CACHED_SOURCE = "cached"
 
 
 def _fmt(value) -> str:
@@ -71,6 +92,18 @@ def _fmt(value) -> str:
 def _parse(text: str) -> float | None:
     text = text.strip()
     return None if not text else float(text)
+
+
+def _ago(seconds: float | None) -> str:
+    """How long ago a price was calculated, at the coarsest useful unit.
+    Empty when unknown (manual overrides and poe.ninja have no fetch time)."""
+    if seconds is None:
+        return ""
+    if seconds < 60:
+        return f"{seconds:.0f}s ago"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m ago"
+    return f"{seconds / 3600:.0f}h ago"
 
 
 def _display_name(key: str) -> str:
@@ -131,8 +164,10 @@ class Overlay:
         # Ctrl+/Ctrl- rescale every widget through them (see _zoom)
         self._fonts: dict[tuple, tkfont.Font] = {}
         self._font_scale = 1.0
-        # (calculating, ready, total) from the startup price warm-up
-        self._warmup: tuple[bool, int, int] | None = None
+        # (calculating, ready, total, per-reward rows) from the price warm-up
+        self._warmup: tuple | None = None
+        self._ninja_status = "manual"
+        self._pricing_health = None  # PricingHealth | None
 
         root.title("Valdo Sniper")
         root.configure(bg=BG)
@@ -207,6 +242,14 @@ class Overlay:
             anchor="w",
         )
         self._key_label.pack(side="left", fill="x", expand=True)
+        # How stale the listing already was when we first saw it. Sits next
+        # to the travel button because it is a go/no-go signal: the longer it
+        # was live before reaching us, the more likely it is already sold.
+        self._age_label = tk.Label(
+            title_row, text="", bg=BG, fg=DIM, font=self._font("Consolas", 11, "bold")
+        )
+        self._age_label.pack(side="right", padx=(8, 0))
+        self._bind_tooltip(self._age_label, (LATENCY_HELP,))
 
         # Travel button, right of the title. Pressing it is one user input
         # driving one server action - the same contract as the hotkey and as
@@ -272,6 +315,16 @@ class Overlay:
             self._stat_vals[key] = val
         self._chips = tk.Frame(root, bg=BG)  # colored warning chips
         self._chips.pack(fill="x", padx=10)
+
+        # Deadly mod pairings get their own full-width rows rather than a
+        # chip: the note ("Impossible unless DPS-check build") is the part
+        # worth reading, and it does not fit in a chip.
+        self._pairings = tk.Frame(root, bg=BG)
+
+        # Startup pricing progress: which reward is being fetched, which are
+        # done and at what price. Only visible while warming up, so it costs
+        # nothing once sniping starts.
+        self._warmup_panel = tk.Frame(root, bg=MODS_BG)
 
         # the top listing's mods, always visible (no hover needed); scoring
         # mods highlighted with their modifier. Its own darker panel so the
@@ -466,9 +519,11 @@ class Overlay:
                     parts.append(f"+{unknown} unidentified")
                 self._searches_label.config(text=f"Searching: {' · '.join(parts)}" if parts else "")
             elif isinstance(ev, PriceStatus):
-                color = {"live": GOOD, "stale": WARN, "manual": DIM}.get(ev.status, DIM)
-                source = "poe.ninja" if ev.status in ("live", "stale") else "Prices"
-                self._price_label.config(text=f"{source}: {ev.status}", fg=color)
+                self._ninja_status = ev.status
+                self._render_price_pill()
+            elif isinstance(ev, PricingHealth):
+                self._pricing_health = ev
+                self._render_price_pill()
             elif isinstance(ev, ClickOutcome):
                 if ev.ok:
                     text = "Travel sent" + (f" ({ev.reason})" if ev.reason else "")
@@ -500,10 +555,10 @@ class Overlay:
             elif isinstance(ev, RewardPrices):
                 self._reward_prices = ev.entries
             elif isinstance(ev, WarmupStatus):
-                warmup = (ev.calculating, ev.priced, ev.total)
+                warmup = (ev.calculating, ev.priced, ev.total, ev.rewards)
                 if warmup != self._warmup:
                     self._warmup = warmup
-                    alerts_dirty = True  # the idle headline shows the progress
+                    alerts_dirty = True  # headline + progress panel both move
         if alerts_dirty:
             self._render_alerts()
         if feed_dirty:
@@ -554,8 +609,13 @@ class Overlay:
         shown - the header's price pill already reports it - so these rows
         carry no right-hand note."""
         return tuple(
-            (f"{_display_name(reward)}: {amount:g} {currency}", "", "none")
-            for reward, amount, currency, _source in self._reward_prices
+            (
+                f"{_display_name(reward)}: {amount:g} {currency}"
+                + (f"   ·   {_ago(age)}" if _ago(age) else ""),
+                "",
+                "none",
+            )
+            for reward, amount, currency, _source, age in self._reward_prices
         )
 
     def _update_threshold_note(self) -> None:
@@ -563,14 +623,93 @@ class Overlay:
         straight off the feed."""
         self._threshold_note.config(text=f"Alerting at P/100D ≥ {self._current_threshold:g}")
 
+    def _render_price_pill(self) -> None:
+        """The header's pricing pill reports the WORST current problem, so a
+        rate-limited or half-priced session is never mistaken for a healthy
+        one.
+
+        It names the source of REWARD prices only. poe.ninja is still
+        fetched for currency rates and the league, but it stopped being the
+        reward price source, so saying "poe.ninja" here would misreport
+        where the profit numbers come from.
+        """
+        health = self._pricing_health
+        if health is not None and health.backoff_s > 0:
+            self._price_label.config(text=f"RATE LIMITED {health.backoff_s:.0f}s", fg=BAD)
+            return
+        if health is not None and health.unpriced:
+            self._price_label.config(text=f"est. prices: {health.unpriced}/{health.total}", fg=WARN)
+            return
+        if self._config.trade_pricing.enabled:
+            self._price_label.config(text="Prices: trade", fg=GOOD)
+            return
+        status = self._ninja_status  # trade pricing off: ninja IS the source
+        color = {"live": GOOD, "stale": WARN, "manual": DIM}.get(status, DIM)
+        self._price_label.config(text=f"Prices: {status}", fg=color)
+
+    def _pricing_is_busy(self) -> bool:
+        """Warming up, or re-pricing a reward right now (a scheduled refresh,
+        or a search the user just opened)."""
+        if not self._warmup:
+            return False
+        return bool(self._warmup[0]) or any(row[1] == "working" for row in self._warmup[3])
+
+    def _render_warmup_panel(self) -> None:
+        """Show what is actually being priced, not just a counter: each
+        active reward with its state and whatever price we have so far.
+        Visible whenever pricing is working - startup, a scheduled re-price,
+        or a newly opened live search - and hidden when it is idle."""
+        rows = self._warmup[3] if self._warmup else ()
+        if not rows or not self._pricing_is_busy():
+            self._warmup_panel.pack_forget()
+            return
+        self._clear_frame(self._warmup_panel)
+        for reward, state, price, age in rows:
+            label, fg = {
+                "done": ("", GOOD),
+                "working": ("fetching…", WARN),
+                "pending": ("queued", FAINT),
+                "unpriced": ("no listings", DIM),
+            }.get(state, ("", DIM))
+            if state == "working" and price:
+                # a re-price keeps the old figure visible, marked as in flux
+                price = f"↻ {price}"
+            elif price and _ago(age):
+                # when the price was last actually calculated - the number
+                # alone cannot say whether it is a minute or six hours old
+                price = f"{price}  ·  {_ago(age)}"
+            line = tk.Frame(self._warmup_panel, bg=MODS_BG)
+            line.pack(fill="x", padx=6, pady=1)
+            tk.Label(
+                line,
+                text=price or label,
+                bg=MODS_BG,
+                fg=fg,
+                font=self._font("Consolas", 10, "bold" if state == "done" else "normal"),
+                anchor="e",
+            ).pack(side="right", padx=(10, 0))
+            tk.Label(
+                line,
+                text=_display_name(reward),
+                bg=MODS_BG,
+                fg=FG if state in ("done", "working") else DIM,
+                font=self._font("Consolas", 10),
+                anchor="w",
+            ).pack(side="left", fill="x", expand=True)
+        self._warmup_panel.pack(fill="x", padx=10, pady=(4, 0), before=self._runners)
+
     def _idle_text(self) -> str:
         """Headline when nothing is alerting. During the startup warm-up it
         says so, because listings really are being withheld until their
         reward has a trustworthy price."""
         if self._warmup is not None:
-            calculating, ready, total = self._warmup
+            calculating, ready, total = self._warmup[:3]
             if calculating and total:
                 return f"Calculating prices…  ({ready}/{total})"
+            # not holding listings any more, but a re-price is in flight
+            working = [r for r, state, _price, _age in self._warmup[3] if state == "working"]
+            if working:
+                return f"Updating price: {_display_name(working[0])}"
         return "No active alert"
 
     def _render_mods(self, parent: tk.Frame, mods, bg: str, wrap: int) -> None:
@@ -663,6 +802,42 @@ class Overlay:
             fg=BAD if top.difficulty > DIFF_BAD else WARN if top.difficulty > DIFF_WARN else FG,
         )
 
+    def _show_alert_body(self, chips: bool, mods: bool, countdown: bool) -> None:
+        """Pack/unpack the alert's lower blocks.
+
+        Emptying a frame is not enough: Tk keeps a container's requested
+        height after its children are destroyed, so the dark mod panel kept
+        reserving its full height with nothing in it. Unpacking releases the
+        space to the feed below, which expands into it.
+
+        Always repacked `before` the runner-up rows so the order survives a
+        hide/show cycle (a plain pack() would append to the end).
+        """
+        for frame in (self._chips, self._pairings, self._top_mods, self._countdown):
+            frame.pack_forget()
+        if chips:
+            self._chips.pack(fill="x", padx=10, before=self._runners)
+        if self._pairings.winfo_children():
+            self._pairings.pack(fill="x", padx=10, pady=(2, 0), before=self._runners)
+        if mods:
+            self._top_mods.pack(fill="x", padx=10, pady=(4, 0), before=self._runners)
+        if countdown:
+            self._countdown.pack(fill="x", padx=10, pady=(4, 6), before=self._runners)
+
+    def _set_age(self, lag_ms: float | None) -> None:
+        """Show the head start other snipers had. Green means we saw it
+        essentially as it was indexed; red means it had been sitting live
+        long enough that it is probably already gone."""
+        if lag_ms is None:
+            self._age_label.config(text="", fg=DIM)  # DOM capture: no index time
+            return
+        seconds = max(0.0, lag_ms) / 1000
+        amount = f"{lag_ms:.0f}ms" if seconds < 1 else f"{seconds:.1f}s"
+        self._age_label.config(
+            text=f"latency {amount}",
+            fg=BAD if lag_ms > LAG_BAD_MS else WARN if lag_ms > LAG_OK_MS else GOOD,
+        )
+
     def _set_travel_button(self, has_target: bool, pinned: bool) -> None:
         """Three states: armed (green, shows the hotkey that does the same
         thing), already-traveled, and nothing to travel to."""
@@ -689,11 +864,18 @@ class Overlay:
             for key, caption in STAT_COLUMNS:
                 self._stat_caps[key].config(text=caption, fg=DIM)
                 self._stat_vals[key].config(text="—", fg=FAINT)
+            self._set_age(None)
             self._set_travel_button(has_target=False, pinned=False)
             self._clear_frame(self._chips)
+            self._clear_frame(self._pairings)
             self._clear_frame(self._top_mods)
             self._clear_frame(self._runners)
             self._countdown.delete("all")
+            # collapse the whole alert body: with nothing to show, that space
+            # belongs to the history list below (or to the warm-up panel,
+            # which is the one thing worth showing while idle)
+            self._show_alert_body(chips=False, mods=False, countdown=False)
+            self._render_warmup_panel()
             for widget in top_widgets:  # nothing to click or hover
                 widget.configure(cursor="")
             return
@@ -714,11 +896,48 @@ class Overlay:
 
         prefix = "➜ " if pinned is not None else ""
         self._key_label.config(text=f"{prefix}{_display_name(top.key)}", fg=GOOD)
+        self._warmup_panel.pack_forget()  # a live alert outranks the progress list
         self._set_stats(top)
+        self._set_age(top.index_lag_ms)
         self._set_travel_button(has_target=True, pinned=pinned is not None)
+        self._clear_frame(self._pairings)
+        for label, note, mult in top.pairings:
+            row = tk.Frame(self._pairings, bg=BAD)
+            row.pack(fill="x", pady=(0, 2))
+            tk.Label(
+                row,
+                text=f"☠ {label.upper()}  ×{mult:g}",
+                bg=BAD,
+                fg="white",
+                font=self._font("Segoe UI", 10, "bold"),
+                anchor="w",
+                padx=6,
+            ).pack(side="left")
+            if note:
+                tk.Label(
+                    row,
+                    text=f"{note}  ",
+                    bg=BAD,
+                    fg="white",
+                    font=self._font("Segoe UI", 10),
+                    anchor="e",
+                ).pack(side="right")
+
         self._clear_frame(self._top_mods)
         self._render_mods(self._top_mods, top.mods, MODS_BG, wrap=380)
         self._clear_frame(self._chips)
+        if top.reference_source in (*FALLBACK_SOURCES, CACHED_SOURCE):
+            # this profit was NOT computed against a trade average confirmed
+            # this session - say so rather than let it read as solid
+            cached = top.reference_source == CACHED_SOURCE
+            tk.Label(
+                self._chips,
+                text="⏳ CACHED PRICE" if cached else "⚠️ ESTIMATED PRICE",
+                bg=WARN,
+                fg="#1a1a1a",
+                font=self._font("Segoe UI", 10, "bold"),
+                padx=6,
+            ).pack(side="left", padx=(0, 6))
         for label, color in top.special_warnings:
             tk.Label(
                 self._chips,
@@ -736,6 +955,12 @@ class Overlay:
                 fg=WARN,
                 font=self._font("Segoe UI", 10, "bold"),
             ).pack(side="left", padx=(0, 6))
+        # only reserve space for blocks that actually have something in them
+        self._show_alert_body(
+            chips=bool(self._chips.winfo_children()),
+            mods=bool(top.mods),
+            countdown=True,
+        )
 
         self._clear_frame(self._runners)
         for i, a in enumerate(runner_views):
@@ -904,6 +1129,18 @@ class Overlay:
         heading("Difficulty multipliers", "Mult")
         rule_rows(mult_rules, [_fmt(r.multiplier) for r in mult_rules])
 
+        # pairings live in their own dict: they share the entry-by-label
+        # mechanism but are a separate config section, so a pairing named
+        # like a rule cannot clobber it
+        pair_entries: dict[str, tk.Entry] = {}
+        if sc.pairings:
+            heading("Deadly pairings", "Mult")
+            caption("Mods that are far worse together than apart.")
+            for pairing in sc.pairings:
+                pair_entries[pairing.label] = field(
+                    pairing.label, _fmt(pairing.multiplier), hint=pairing.note
+                )
+
         note = tk.Label(body, text="", bg=BG, fg=BAD, font=self._font("Consolas", 10))
         note.grid(row=row_cursor[0], column=0, columnspan=2, pady=(6, 4))
         row_cursor[0] += 1
@@ -929,6 +1166,12 @@ class Overlay:
                 new_config = ModScoringConfig(
                     base_default=float(base_e.get()),
                     rules=tuple(new_rules),
+                    pairings=tuple(
+                        replace(p, multiplier=float(pair_entries[p.label].get()))
+                        if p.label in pair_entries
+                        else p
+                        for p in sc.pairings
+                    ),
                 )
                 new_threshold = float(thr_e.get())
                 new_flat = float(flat_e.get())
@@ -984,7 +1227,15 @@ class Overlay:
                 win.after_cancel(pending.pop())
             pending.append(win.after(600, lambda: win.winfo_exists() and collect(save=True)))
 
-        for widget in [thr_e, flat_e, combo_e, base_e, vol_e, *entries.values()]:
+        for widget in [
+            thr_e,
+            flat_e,
+            combo_e,
+            base_e,
+            vol_e,
+            *entries.values(),
+            *pair_entries.values(),
+        ]:
             widget.bind("<KeyRelease>", schedule_apply)
 
     # ------------------------------------------------------------- live feed
@@ -1019,7 +1270,22 @@ class Overlay:
             self._on_travel(self._feed_entries[idx].listing_id)
 
     def _feed_mods(self, idx: int):
-        return self._feed_entries[idx].mods if idx < len(self._feed_entries) else ()
+        """Hover content for a feed row: the deadly pairings first (they
+        decide whether the map is runnable at all), then how far behind we
+        saw it, then the mods."""
+        if idx >= len(self._feed_entries):
+            return ()
+        entry = self._feed_entries[idx]
+        rows = [
+            (f"☠ {label.upper()}  ×{mult:g}" + (f" — {note}" if note else ""), "", "red")
+            for label, note, mult in entry.pairings
+        ]
+        if entry.index_lag_ms is not None:
+            lag = entry.index_lag_ms
+            amount = f"{lag:.0f}ms" if lag < 1000 else f"{lag / 1000:.1f}s"
+            level = "red" if lag > LAG_BAD_MS else "yellow" if lag > LAG_OK_MS else "none"
+            rows.append((f"latency {amount} behind the trade site", "", level))
+        return tuple(rows) + entry.mods
 
     def _render_feed(self) -> None:
         """Update the pooled row labels in place (see __init__)."""
@@ -1030,6 +1296,10 @@ class Overlay:
                 "no_reference": "  [no ref]",
                 "no_rate": "  [no rate]",
             }.get(e.verdict, "")
+            if e.reference_source in FALLBACK_SOURCES:
+                note += "  [est]"  # priced off poe.ninja, not the trade API
+            elif e.reference_source == CACHED_SOURCE:
+                note += "  [cached]"  # last session's price, refresh pending
             price = f"{e.amount:g}d" if e.currency == "divine" else f"{e.amount:g} {e.currency}"
             ratio = profit_per_100_difficulty(e.profit_div, e.difficulty)
             per_100 = "?" if ratio is None else f"{ratio:+.1f}"

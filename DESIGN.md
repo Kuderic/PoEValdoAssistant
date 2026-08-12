@@ -43,9 +43,28 @@ Userscript -> Python:
   "reward": "string or null, e.g. \"Foil Mageblood\" from the Reward property",
   "mods": ["string, raw mod line texts; may be empty"],
   "row_index": 0,
-  "detected_at": "ISO-8601 timestamp, userscript clock"
+  "detected_at": "ISO-8601 timestamp, userscript clock",
+  "indexed_at": "ISO-8601 or null: GGG's own index time (network capture only)",
+  "capture": "\"net\" | \"dom\": which path produced this listing"
 }
 ```
+
+`capture` exists because the two paths are silently interchangeable: they
+share the `seen` dedup, so whichever fires first wins and the other is a
+no-op. Only `net` carries `indexed_at`, so if the DOM path starts winning
+the race, index lag quietly disappears from the UI with nothing to point at.
+Logging the source makes that visible: `grep capture logs/*.jsonl`.
+
+`indexed_at` comes from `listing.indexed` in the `/api/trade/fetch` payload and
+exists only on network-captured listings — the DOM shows nothing better than
+"listed 4 minutes ago". `detected_at - indexed_at` is the **index lag**: how
+long a listing was already live before it reached us, i.e. the head start every
+other sniper had. It is logged per listing as `index_lag_ms` and shown beside
+the travel button so a stale alert can be skipped rather than raced. The two
+timestamps come from different clocks (GGG's server vs the browser) and
+`indexed` is second-granular, so treat it as a multi-second signal, not a
+precise measurement; negative values mean the browser clock trails GGG's and
+are reported rather than clamped, so skew stays visible.
 
 `currency` is the short trade id from the currency image's `alt` attribute
 ("divine", "chaos"), falling back to the visible text ("Divine Orb") only
