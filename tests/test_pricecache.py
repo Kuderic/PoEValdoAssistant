@@ -169,3 +169,43 @@ def test_fresh_fetch_resets_the_age(tmp_path):
 
 def test_age_is_none_for_an_unpriced_reward(tmp_path):
     assert make_app(tmp_path).book.price_age_s("Foil Nothing") is None
+
+
+# ------------------------------------------------- age of the shown price
+# The panel prints this next to every figure, so it has to describe the price
+# reference_for would actually return - including while a refresh is running,
+# which is precisely when the number on screen is stale.
+
+
+def test_age_follows_reference_precedence(tmp_path):
+    import time as _t
+
+    from sniper.config import ManualPrice
+
+    config = make_config(prices={"Foil Manual": ManualPrice(currency="divine", amount=50)})
+    book = PriceBook(config)
+    book._live_rates = {"divine": 200.0}
+    book._last_refresh_monotonic = _t.monotonic() - 180  # ninja pulled 3m ago
+    book._ninja_rewards = {"Foil Ninja": 29 * 200.0}
+    book.set_trade_price("Foil Restored", 29.0, cached=True, priced_at=_t.time() - 5 * 3600)
+
+    # a restored price reports the age of the ORIGINAL fetch, not the restart
+    assert book.price_age_s("Foil Restored") == pytest.approx(5 * 3600, abs=5)
+    # a poe.ninja fallback reports when that dataset was pulled
+    assert book.price_age_s("Foil Ninja") == pytest.approx(180, abs=5)
+    # a manual override was never fetched, so it has no age to report
+    assert book.price_age_s("Foil Manual") is None
+    assert book.price_age_s("Foil Nothing") is None
+
+
+def test_a_reward_being_refetched_still_reports_its_current_age(tmp_path):
+    """Hiding the age while 'working' hid it for the whole startup sweep -
+    every reward passes through that state."""
+    write_cache(tmp_path / pricecache.CACHE_NAME, {"Foil Mageblood": 202.0}, age_s=5 * HOUR)
+    app = make_app(tmp_path)
+    app._pricing_now = "Foil Mageblood"
+    app.server._recent_rewards["Foil Mageblood"] = __import__("time").monotonic()
+    rows = {r: (state, age) for r, state, _price, age in app._pricing_rows(["Foil Mageblood"])}
+    state, age = rows["Foil Mageblood"]
+    assert state == "working"
+    assert age == pytest.approx(5 * HOUR, abs=10)

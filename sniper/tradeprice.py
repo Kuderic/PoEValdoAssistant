@@ -20,6 +20,8 @@ import time
 
 import httpx
 
+from sniper.logging_setup import event
+
 # fetch this many cheapest listings (trade API max per fetch); the average
 # uses max_listings of them after outlier rejection
 FETCH_LIMIT = 10
@@ -64,13 +66,22 @@ def rate_limit_delay(headers) -> float | None:
     (`max_hits:period:restrict`) and a state header
     (`current_hits:period:restricted_for`). We take the worst bucket:
 
-    - already restricted -> serve exactly that penalty;
-    - bucket full        -> wait out its window;
-    - otherwise          -> period/max_hits, the sustained rate that can
-                            never fill the bucket in the first place.
+    - actually restricted -> serve exactly that penalty, no argument;
+    - otherwise -> period/max_hits, the sustained rate that by construction
+      cannot fill the bucket;
+    - already at/over the limit -> twice sustained, to drain. NOT the full
+      period: these windows slide, so slots free continuously. Waiting a
+      whole window on a momentarily-full bucket is what made startup
+      pricing crawl at ~58s per reward.
+
+    Deliberately does NOT burst through spare headroom. Spending a long
+    window's budget up front leaves nothing for the rest of it: simulated
+    against an 8/10s + 15/60s server, bursting priced 4-7 of 8 rewards and
+    earned a 429 (60s+ of backoff) every time, while plain sustained pacing
+    priced 8 of 8 in 68s with none.
 
     None when the headers are missing or unparseable, so the caller falls
-    back to its fixed spacing.
+    back to its fixed blind spacing.
     """
     rules = headers.get("X-Rate-Limit-Rules")
     if not rules:
@@ -86,10 +97,9 @@ def rate_limit_delay(headers) -> float | None:
                 delay = float(restricted_for)
             elif max_hits <= 0:
                 continue
-            elif hits >= max_hits:
-                delay = float(period)
             else:
-                delay = period / max_hits
+                sustained = period / max_hits
+                delay = sustained * 2 if hits >= max_hits else sustained
             worst = delay if worst is None else max(worst, delay)
     return worst
 
@@ -98,7 +108,12 @@ USER_AGENT = "valdo-map-sniper/0.3 (personal snipe-margin tool; contact: easymcc
 
 BACKOFF_BASE_S = 60.0
 BACKOFF_CAP_S = 1800.0
-REQUEST_SPACING_S = 3.0  # between any two trade API calls (limits: 5/10s)
+# Blind spacing, used only until the API's rate-limit headers tell us the
+# real budget. Deliberately cautious because it is a guess.
+REQUEST_SPACING_S = 3.0
+# Floor once we ARE reading the headers: never hammer flat out, but do not
+# invent delay the API did not ask for.
+MIN_SPACING_S = 0.25
 
 
 class TradeBackoff(Exception):
@@ -129,6 +144,7 @@ class TradePricer:
         # pacing the API asked for via its rate-limit headers; 0 until
         # the first response teaches us the real budget
         self._api_spacing = 0.0
+        self._saw_limits = False
         self._fail_count = 0
         self._next_allowed = 0.0
 
@@ -148,15 +164,44 @@ class TradePricer:
         self._next_allowed = time.monotonic() + delay
 
     def _observe_limits(self, resp: httpx.Response) -> None:
-        """Adopt the pacing the API just told us it wants."""
+        """Adopt the pacing the API just told us it wants.
+
+        Logs the raw budget whenever the pace changes materially. Without
+        this the only evidence of a pacing problem is "startup feels slow",
+        which cost a whole debugging round to track down.
+        """
         delay = rate_limit_delay(resp.headers)
-        if delay is not None:
-            self._api_spacing = delay
+        if delay is None:
+            return
+        if not self._saw_limits or abs(delay - self._api_spacing) > 0.5:
+            rules = resp.headers.get("X-Rate-Limit-Rules", "")
+            event(
+                "trade_pacing",
+                spacing_s=round(delay, 2),
+                limits={
+                    rule.strip(): {
+                        "limit": resp.headers.get(f"X-Rate-Limit-{rule.strip()}"),
+                        "state": resp.headers.get(f"X-Rate-Limit-{rule.strip()}-State"),
+                    }
+                    for rule in rules.split(",")
+                    if rule.strip()
+                },
+            )
+        self._api_spacing = delay
+        self._saw_limits = True
 
     async def _wait(self) -> None:
-        """Gap before the next call: whichever is longer, our configured
-        floor or what the API's own budget headers ask for."""
-        await asyncio.sleep(max(self._spacing_s, self._api_spacing))
+        """Gap before the next call.
+
+        Once the API has published its budget we pace off THAT, not the
+        blind `spacing_s` guess - keeping a 3s floor after being told we may
+        go faster just makes every reward take 6s longer than it needs to.
+        MIN_SPACING_S remains so we never hammer flat out.
+        """
+        if self._saw_limits:
+            await asyncio.sleep(max(MIN_SPACING_S, self._api_spacing))
+        else:
+            await asyncio.sleep(self._spacing_s)
 
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         if self.in_backoff:

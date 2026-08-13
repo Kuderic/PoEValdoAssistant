@@ -671,13 +671,15 @@ class Overlay:
                 "pending": ("queued", FAINT),
                 "unpriced": ("no listings", DIM),
             }.get(state, ("", DIM))
+            if price and _ago(age):
+                # How old the shown figure is. Needed most while a reward is
+                # being re-fetched: that is exactly when you are looking at a
+                # stale number, and an app reopened after five hours shows
+                # its restored prices as "5h ago" rather than looking current.
+                price = f"{price}  ·  {_ago(age)}"
             if state == "working" and price:
                 # a re-price keeps the old figure visible, marked as in flux
                 price = f"↻ {price}"
-            elif price and _ago(age):
-                # when the price was last actually calculated - the number
-                # alone cannot say whether it is a minute or six hours old
-                price = f"{price}  ·  {_ago(age)}"
             line = tk.Frame(self._warmup_panel, bg=MODS_BG)
             line.pack(fill="x", padx=6, pady=1)
             tk.Label(
@@ -706,10 +708,10 @@ class Overlay:
             calculating, ready, total = self._warmup[:3]
             if calculating and total:
                 return f"Calculating prices…  ({ready}/{total})"
-            # not holding listings any more, but a re-price is in flight
-            working = [r for r, state, _price, _age in self._warmup[3] if state == "working"]
-            if working:
-                return f"Updating price: {_display_name(working[0])}"
+            # A re-price in flight deliberately does NOT rewrite this line:
+            # the pricing panel below already names the reward and marks it
+            # with ↻, and the headline should keep saying what it means for
+            # sniping - that there is nothing to travel to.
         return "No active alert"
 
     def _render_mods(self, parent: tk.Frame, mods, bg: str, wrap: int) -> None:
@@ -1296,10 +1298,6 @@ class Overlay:
                 "no_reference": "  [no ref]",
                 "no_rate": "  [no rate]",
             }.get(e.verdict, "")
-            if e.reference_source in FALLBACK_SOURCES:
-                note += "  [est]"  # priced off poe.ninja, not the trade API
-            elif e.reference_source == CACHED_SOURCE:
-                note += "  [cached]"  # last session's price, refresh pending
             price = f"{e.amount:g}d" if e.currency == "divine" else f"{e.amount:g} {e.currency}"
             ratio = profit_per_100_difficulty(e.profit_div, e.difficulty)
             per_100 = "?" if ratio is None else f"{ratio:+.1f}"

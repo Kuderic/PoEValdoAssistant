@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.7.4
+// @version      0.7.5
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
@@ -27,6 +27,10 @@
 //   item name is a random flavor name.
 // - Better Trading extension artifacts (bt-*) exist in the DOM; nothing
 //   below matches them.
+// - One page-structure assumption is deliberately NOT a selector: the
+//   search's own query state, read from `window.tradeOpts` in
+//   filterReward(). See that function for why and for the snapshot it was
+//   verified against.
 // ---------------------------------------------------------------------------
 const SELECTORS = {
   resultsContainer: '.results',
@@ -297,10 +301,57 @@ function main() {
     return best;
   }
 
+  /**
+   * The reward this tab's search targets, read from the page's own query
+   * state instead of from rendered rows.
+   *
+   * The trade site embeds the search it loaded with in `window.tradeOpts`
+   * (verified against the progenesis Ctrl+S snapshot, 2026-08-09):
+   *
+   *   window.tradeOpts = {..., "state": {"filters": {"map_filters":
+   *     {"filters": {"map_completion_reward": {"option": "Progenesis"}}}}},
+   *     "live": "d86aQa3oUJ"}
+   *
+   * This is what retires "+N unidentified" in the overlay: a live search
+   * that has not pushed a result yet has no rows to take a majority of, but
+   * it always knows what it is filtering for, so the Python side can price
+   * the reward before the first listing arrives rather than after.
+   * `@grant none` runs us in page context, so this is a plain read.
+   *
+   * `state` is a page-LOAD bootstrap. Editing filters in place mints a new
+   * live search and changes the URL without reloading, which would leave
+   * this describing the PREVIOUS search - so require `tradeOpts.live`, the
+   * id of the search that state belongs to, to still be in the path. That
+   * makes a stale bootstrap fall back to the rows on its own.
+   */
+  function filterReward() {
+    const opts = window.tradeOpts;
+    const live = opts && opts.live;
+    if (typeof live !== 'string' || !live || !location.pathname.includes(live)) return null;
+    const filters = opts.state && opts.state.filters && opts.state.filters.map_filters;
+    const reward = filters && filters.filters && filters.filters.map_completion_reward;
+    const option = reward && reward.option;
+    if (typeof option !== 'string' || !option) return null;
+    // Rows render this as "Foil Progenesis" while the filter stores the bare
+    // unique name. Both paths feed the same reward key on the Python side
+    // (which would otherwise price the two spellings as two rewards), and
+    // this tool only ever watches foil boxes, so the prefix is unconditional.
+    return option.startsWith('Foil ') ? option : `Foil ${option}`;
+  }
+
+  /**
+   * Rows win when there are any: they carry the exact string the capture
+   * path will send, so a search with results never depends on the filter's
+   * spelling. The filter answers for a search that has not rendered a row.
+   */
+  function searchReward() {
+    return majorityReward() || filterReward();
+  }
+
   let lastSentReward = null;
 
   function hello() {
-    lastSentReward = majorityReward();
+    lastSentReward = searchReward();
     send({
       type: 'hello',
       search_id: searchId,
@@ -314,9 +365,10 @@ function main() {
   /**
    * Re-hello immediately once the tab's reward becomes knowable (rows may
    * render after the first hello), instead of waiting for the heartbeat.
+   * Also corrects a filter-derived name once rows confirm the real spelling.
    */
   function refreshRewardIdentity() {
-    const reward = majorityReward();
+    const reward = searchReward();
     if (reward && reward !== lastSentReward) hello();
   }
 

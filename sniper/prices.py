@@ -145,12 +145,26 @@ class PriceBook:
         return chaos / divine_rate
 
     def price_age_s(self, reward: str) -> float | None:
-        """Seconds since this reward's price was actually calculated, or None
-        if it has no trade price. Measured from the ORIGINAL fetch, so a
-        price restored from disk reports its true age rather than pretending
-        to be new."""
+        """Seconds since the price `reference_for` would return was actually
+        fetched. None when there is no fetch time to report.
+
+        Mirrors reference_for's precedence so the age always describes the
+        figure on screen:
+        - manual override -> None, it was never fetched;
+        - trade average -> its own fetch time, taken from the ORIGINAL fetch
+          so a price restored from disk reports its true age (an app reopened
+          after five hours shows "5h ago", not "just now");
+        - poe.ninja fallback -> the age of the last ninja refresh, which is
+          when that median was pulled.
+        """
+        if self._config.prices.get(reward) is not None:
+            return None
         entry = self._trade_rewards.get(reward)
-        return None if entry is None else max(0.0, time.time() - entry[3])
+        if entry is not None:
+            return max(0.0, time.time() - entry[3])
+        if reward in self._ninja_rewards:
+            return self.age_s
+        return None
 
     def set_trade_price(
         self,

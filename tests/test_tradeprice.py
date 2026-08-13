@@ -195,11 +195,25 @@ def test_rate_limit_delay_uses_the_tightest_sustained_rate():
     assert rate_limit_delay(LIMIT_HEADERS) == pytest.approx(4.0)
 
 
-def test_rate_limit_delay_waits_out_a_full_bucket():
-    """A filled bucket must wait its whole window, not just the sustained
-    rate - that 10s beats the 4s the other buckets would allow."""
-    headers = dict(LIMIT_HEADERS, **{"X-Rate-Limit-Ip-State": "8:10:0,1:60:0"})
-    assert rate_limit_delay(headers) == pytest.approx(10.0)
+def test_full_bucket_drains_rather_than_stalling_a_whole_window():
+    """A momentarily-full bucket must NOT wait its entire period: the window
+    slides, so slots free continuously. Waiting the full 10s here (rather
+    than 2x the 1.25s sustained rate) is what made startup pricing crawl at
+    ~58s per reward."""
+    headers = {  # one bucket only, so nothing else can dominate the answer
+        "X-Rate-Limit-Rules": "Ip",
+        "X-Rate-Limit-Ip": "8:10:60",
+        "X-Rate-Limit-Ip-State": "8:10:0",
+    }
+    assert rate_limit_delay(headers) == pytest.approx(2 * 10 / 8)  # 2.5s, not 10s
+
+
+def test_no_bursting_through_spare_headroom():
+    """An almost-untouched bucket still paces at the sustained rate.
+    Bursting spends a long window's budget up front and leaves nothing for
+    the rest of it - measured as 429s and half the rewards unpriced."""
+    fresh = dict(LIMIT_HEADERS, **{"X-Rate-Limit-Ip-State": "1:10:0,1:60:0"})
+    assert rate_limit_delay(fresh) == pytest.approx(4.0)  # 60/15, the worst bucket
 
 
 def test_rate_limit_delay_serves_an_active_restriction():
