@@ -59,7 +59,7 @@ class FeedEntry:
     key: str
     amount: float
     currency: str
-    profit_div: float | None  # None when no reference/rate exists
+    net_div: float | None  # None when no reference/rate exists
     difficulty: float
     verdict: str  # alert | below_threshold | blocked | no_reference | no_rate
     # (mod text, scoring note e.g. "×1.8"/"") shown in the hover tooltip
@@ -72,6 +72,11 @@ class FeedEntry:
     pairings: tuple[tuple[str, str, float], ...] = ()
     # head start other snipers had on this listing; None when unknown
     index_lag_ms: float | None = None
+    # from a non-Valdo live search: profit/P100D/difficulty are meaningless
+    generic: bool = False
+    # an alerting row that was big net AND big yield; the feed keeps it
+    # highlighted so a missed one is unmistakable minutes later
+    jackpot: bool = False
 
 
 @dataclass(frozen=True)
@@ -107,12 +112,37 @@ class PricingHealth:
 
 
 @dataclass(frozen=True)
-class RewardPrices:
-    """Current reference price per active reward, for the Searching tooltip:
-    (reward, amount, currency, source, age_seconds) tuples. age_seconds is
-    None when the price has no calculation time (manual or poe.ninja)."""
+class RewardPrice:
+    """What the app currently thinks one active reward is worth.
 
-    entries: tuple[tuple[str, float, str, str, float | None], ...]
+    Carries both the price in force and, separately, the automatic one: the
+    settings panel lets the user override a reference that is plainly wrong,
+    and an override is only judgeable next to the figure it replaced.
+    """
+
+    reward: str
+    amount: float | None  # display amount of the reference actually in force
+    currency: str
+    source: str  # override | manual | trade | cached | live | stale | unpriced
+    age_s: float | None  # None when the price has no calculation time
+    # divine value of the session override in force, None when there is none
+    override_div: float | None = None
+    # the price that applies with no override - what clearing one returns to
+    auto_amount: float | None = None
+    auto_currency: str = ""
+
+
+@dataclass(frozen=True)
+class RewardPrices:
+    """Current reference price per active reward, for the Searching tooltip
+    and the settings panel's price editor.
+
+    There is one entry per ACTIVE reward, always - a reward with no price yet
+    carries amount None (and source "unpriced") rather than being left out.
+    Dropping them made the tooltip answer with silence for exactly the reward
+    the user was hovering to ask about."""
+
+    entries: tuple[RewardPrice, ...]
 
 
 UiEvent = (

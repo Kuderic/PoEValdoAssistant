@@ -125,3 +125,72 @@ def test_to_divine(config):
     book = PriceBook(config)
     assert book.to_divine(180, "chaos") == 1.0
     assert book.to_divine(82, "divine") == 82.0
+
+
+# ------------------------------------------------- session price overrides
+# The settings panel lets the user correct a reference price that is wrong.
+# It must beat every automatic source, be reversible, and never be written
+# anywhere - it is a fix for right now, not a new configuration.
+
+
+def test_override_beats_every_other_source(config):
+    book = PriceBook(config)
+    book._ninja_rewards = {"Foil Mageblood": 30_000.0}
+    book.set_trade_price("Foil Mageblood", 150.0)
+    # config.yaml already carries a manual 200 divine for this reward
+    assert book.reference_for("Foil Mageblood").source == "manual"
+
+    book.set_override("Foil Mageblood", 175.0)
+    ref = book.reference_for("Foil Mageblood")
+    assert (ref.source, ref.display_amount, ref.display_currency) == ("override", 175.0, "divine")
+    assert ref.chaos_value == 175.0 * 180  # divine rate from config
+
+
+def test_override_is_reversible(config):
+    book = PriceBook(config)
+    book.set_trade_price("Foil Sublime Vision", 82.0)
+    book.set_override("Foil Sublime Vision", 60.0)
+    assert book.reference_for("Foil Sublime Vision").display_amount == 60.0
+
+    book.set_override("Foil Sublime Vision", None)
+    ref = book.reference_for("Foil Sublime Vision")
+    assert (ref.source, ref.display_amount) == ("trade", 82.0)
+
+
+def test_auto_reference_reports_what_the_override_replaced(config):
+    """The panel shows the automatic price beside the field so a correction
+    is typed next to the number it replaces."""
+    book = PriceBook(config)
+    book.set_trade_price("Foil Sublime Vision", 82.0)
+    book.set_override("Foil Sublime Vision", 60.0)
+    assert book.auto_reference_for("Foil Sublime Vision").display_amount == 82.0
+    assert book.override_for("Foil Sublime Vision") == 60.0
+
+
+def test_override_counts_as_a_primary_price(config):
+    """A pinned price is authoritative, so the startup warm-up stops holding
+    that reward's listings (see __main__._hold_listing)."""
+    book = PriceBook(config)
+    assert not book.has_primary_price("Foil Nimis")
+    book.set_override("Foil Nimis", 40.0)
+    assert book.has_primary_price("Foil Nimis")
+    # nothing fetched it, so there is no age to report
+    assert book.price_age_s("Foil Nimis") is None
+
+
+def test_override_is_never_persisted(config):
+    """trade_prices() is what gets written to price_cache.json."""
+    book = PriceBook(config)
+    book.set_override("Foil Nimis", 40.0)
+    assert "Foil Nimis" not in book.trade_prices()
+
+
+def test_override_does_not_block_the_underlying_refresh(config):
+    """A trade refresh landing under an override is still recorded, so
+    clearing the pin returns to a current price rather than a frozen one."""
+    book = PriceBook(config)
+    book.set_override("Foil Nimis", 40.0)
+    book.set_trade_price("Foil Nimis", 51.0)
+    assert book.reference_for("Foil Nimis").display_amount == 40.0
+    book.set_override("Foil Nimis", None)
+    assert book.reference_for("Foil Nimis").display_amount == 51.0

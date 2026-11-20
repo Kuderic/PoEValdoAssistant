@@ -85,7 +85,7 @@ async def test_full_stream_end_to_end(running_server):
         assert [h.label for h in by_id["case6-warn-mod"].mod_hits] == ["no regen"]
         # difficulty scaling: Feared+Delirious -> diff 180 -> need 20*1.8 = 36 div
         assert by_id["case7-hard-but-cheap"].verdict == "alert"  # 120 div profit
-        assert by_id["case7-hard-but-cheap"].required_profit_div == 36
+        assert by_id["case7-hard-but-cheap"].required_net_div == 36
         assert by_id["case8-hard-too-pricey"].verdict == "below_threshold"  # 25 div
         assert by_id["case9-void-warning"].verdict == "alert"
         assert by_id["case9-void-warning"].special_warnings == (("VOID", "red"),)

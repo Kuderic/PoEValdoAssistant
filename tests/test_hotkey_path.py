@@ -142,6 +142,85 @@ async def test_travel_emits_traveled_view_with_mods(monkeypatch):
     assert traveled[0].view.mods == (("Monsters fire 2 additional Projectiles", "", "none"),)
 
 
+# ------------------------------------------------------- failed travels
+# The teleport can fail after the click: the item sold, or the row is gone.
+# The alert we cannot have must not take the runners-up down with it.
+
+
+def click_result(app, listing_id, ok, reason=""):
+    from sniper.models import ClickResult
+
+    app._on_click_result(ClickResult(listing_id=listing_id, ok=ok, reason=reason))
+
+
+async def test_failed_travel_promotes_the_next_alert(monkeypatch):
+    app, bus, clicks, focused = build_app(monkeypatch)
+    feed(app, "runner", 120)
+    feed(app, "best", 60)
+    await app.hotkey_pressed()
+    assert clicks == ["best"]
+    bus.drain()
+
+    # the userscript's optimistic ok, then the row turning up sold
+    click_result(app, "best", True)
+    click_result(app, "best", False, "item_no_longer_available")
+
+    views = [e for e in bus.drain() if isinstance(e, AlertsChanged)][-1].alerts
+    assert [v.listing_id for v in views] == ["runner"]
+    await app.hotkey_pressed()  # one more press takes it - still one per click
+    assert clicks == ["best", "runner"]
+
+
+async def test_successful_travel_still_clears_the_runners_up(monkeypatch):
+    """consume: all keeps meaning what it says when the travel works."""
+    app, bus, clicks, focused = build_app(monkeypatch)
+    feed(app, "runner", 120)
+    feed(app, "best", 60)
+    await app.hotkey_pressed()
+    click_result(app, "best", True)
+    await app.hotkey_pressed()
+    assert clicks == ["best"]
+
+
+async def test_failed_travel_does_not_re_alert_the_failed_listing(monkeypatch):
+    app, bus, clicks, focused = build_app(monkeypatch)
+    feed(app, "runner", 120)
+    feed(app, "sold", 60)
+    await app.hotkey_pressed()
+    click_result(app, "sold", False, "item_no_longer_available")
+    feed(app, "sold", 60)  # the tab re-pushes the row
+    await app.hotkey_pressed()
+    assert clicks == ["sold", "runner"]
+
+
+async def test_travel_not_sent_gives_the_runners_up_back(monkeypatch):
+    """A dead tab means the click never left the building; no click_result
+    is coming, so the send failure has to settle it."""
+    app, bus, clicks, focused = build_app(monkeypatch)
+
+    async def dead_tab(listing_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr(app.server, "send_click_travel", dead_tab)
+    feed(app, "runner", 120)
+    feed(app, "best", 60)
+    await app.hotkey_pressed()
+    views = [e for e in bus.drain() if isinstance(e, AlertsChanged)][-1].alerts
+    assert [v.listing_id for v in views] == ["runner"]
+
+
+async def test_overlay_click_failure_leaves_the_store_alone(monkeypatch):
+    """A click travels only what was clicked, so there is no collateral to
+    give back - and a stray result must not resurrect anything."""
+    app, bus, clicks, focused = build_app(monkeypatch)
+    app.watcher.running.set()
+    feed(app, "runner", 120)
+    feed(app, "clicked", 60)
+    await app.travel_listing("clicked")
+    click_result(app, "clicked", False, "item_no_longer_available")
+    assert [v.listing_id for v in app.store.views()] == ["runner"]
+
+
 async def test_every_decision_reaches_the_feed(monkeypatch):
     from sniper.bus import ListingSeen
 
@@ -153,5 +232,5 @@ async def test_every_decision_reaches_the_feed(monkeypatch):
         ("good", "alert"),
         ("meh", "below_threshold"),
     ]
-    assert seen[0].profit_div == 100
-    assert seen[1].profit_div == 5
+    assert seen[0].net_div == 100
+    assert seen[1].net_div == 5

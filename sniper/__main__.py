@@ -29,6 +29,7 @@ from sniper.bus import (
     ListingSeen,
     PriceStatus,
     PricingHealth,
+    RewardPrice,
     RewardPrices,
     TabsChanged,
     Traveled,
@@ -73,6 +74,8 @@ class App:
             expiry_s=config.alerts.expiry_seconds,
             consume_mode=config.hotkey.consume,
             max_display=config.alerts.max_display,
+            jackpot_min_net=config.alerts.jackpot_min_net,
+            jackpot_min_yield=config.alerts.jackpot_min_yield,
         )
         self.server = SniperServer(
             config,
@@ -109,6 +112,11 @@ class App:
         profit figures the warm-up exists to avoid. The listing is still
         logged, and its reward still registers with the server so the price
         loop picks it up."""
+        # A generic (non-Valdo) listing has no reward to price, so the
+        # warm-up has nothing to wait for - holding it would mean never
+        # showing it at all.
+        if decision.listing.generic:
+            return False
         if not self._warmup_active or self.book.has_primary_price(decision.key):
             return False
         event(
@@ -190,7 +198,7 @@ class App:
                         key=decision.key,
                         amount=decision.listing.price.amount,
                         currency=decision.listing.price.currency,
-                        profit_div=decision.profit_div,
+                        net_div=decision.net_div,
                         difficulty=decision.difficulty,
                         verdict=decision.verdict,
                         mods=decision.mods_annotated,
@@ -198,6 +206,10 @@ class App:
                         pairings=decision.pairings,
                         index_lag_ms=decision.listing.index_lag_ms,
                         reference_source=(decision.reference.source if decision.reference else ""),
+                        generic=decision.listing.generic,
+                        # verdict-gated: a blocked/below-threshold row must
+                        # never be painted as the one worth chasing
+                        jackpot=decision.verdict == "alert" and self.store.is_jackpot(decision),
                     )
                 )
             )
@@ -208,7 +220,8 @@ class App:
                 "alert_raised",
                 listing_id=decision.listing.listing_id,
                 key=decision.key,
-                profit_div=round(decision.profit_div or 0, 2),
+                net_div=round(decision.net_div or 0, 2),
+                jackpot=self.store.is_jackpot(decision),
                 active_alerts=len(self.store),
             )
             self._push_alerts(
@@ -216,6 +229,19 @@ class App:
             )
 
     def _on_click_result(self, result: ClickResult) -> None:
+        # A failed travel hands back the runners-up the press cleared, so the
+        # next-best alert takes the top slot instead of an empty overlay.
+        # Pushed before the outcome so both land in one overlay drain: the
+        # ClickOutcome is what drops the traveled pin, and the promoted alert
+        # should already be in place when it does.
+        if self.store.settle_travel(result.listing_id, result.ok):
+            event(
+                "travel_failed_alerts_restored",
+                listing_id=result.listing_id,
+                reason=result.reason,
+                active_alerts=len(self.store),
+            )
+            self._push_alerts(new_alert=False)
         if self.bus:
             self.bus.put(ClickOutcome(result.listing_id, result.ok, result.reason))
 
@@ -245,7 +271,7 @@ class App:
             "hotkey_press",
             listing_id=alert.decision.listing.listing_id,
             key=alert.decision.key,
-            profit_div=round(alert.decision.profit_div or 0, 2),
+            net_div=round(alert.decision.net_div or 0, 2),
         )
         await self._travel(alert)
 
@@ -284,7 +310,7 @@ class App:
             listing_id=listing_id,
             key=alert.decision.key,
             verdict=alert.decision.verdict,
-            profit_div=round(alert.decision.profit_div or 0, 2),
+            net_div=round(alert.decision.net_div or 0, 2),
         )
         await self._travel(alert)
 
@@ -293,8 +319,14 @@ class App:
         if self.bus:
             self.bus.put(Traveled(alert.view()))
         ok = await self.server.send_click_travel(lid)
-        if not ok and self.bus:
-            self.bus.put(ClickOutcome(lid, False, "tab gone - travel not sent"))
+        if not ok:
+            # the click never left the building, so no click_result is coming:
+            # settle it here or the runners-up would be lost to a travel that
+            # never happened
+            if self.store.settle_travel(lid, False):
+                self._push_alerts(new_alert=False)
+            if self.bus:
+                self.bus.put(ClickOutcome(lid, False, "tab gone - travel not sent"))
         # click first (latency-critical), then bring the game to front
         await asyncio.get_running_loop().run_in_executor(
             None, focus_poe_window, self.config.game.window_title
@@ -302,9 +334,7 @@ class App:
 
     # ------------------------------------------------------------ live tuning
 
-    def apply_tuning(
-        self, scoring_config, global_profit_div: float, flat_profit_reduction: float = 1.0
-    ) -> None:
+    def apply_tuning(self, scoring_config, min_yield: float, running_cost: float = 1.0) -> None:
         """Swap difficulty scoring + profit numbers live (settings panel).
         Runs on the asyncio thread via call_soon_threadsafe; affects listings
         from now on."""
@@ -316,20 +346,41 @@ class App:
         self.server.set_thresholds(
             replace(
                 self.config.thresholds,
-                global_profit_div=global_profit_div,
-                flat_profit_reduction=flat_profit_reduction,
+                min_yield=min_yield,
+                running_cost=running_cost,
             )
         )
         event(
             "tuning_updated",
-            global_profit_div=global_profit_div,
-            flat_profit_reduction=flat_profit_reduction,
+            min_yield=min_yield,
+            running_cost=running_cost,
             base_default=scoring_config.base_default,
             rules={
                 r.label: {"min_base": r.min_base, "multiplier": r.multiplier}
                 for r in scoring_config.rules
             },
         )
+
+    def set_jackpot_thresholds(self, min_net: float, min_yield: float) -> None:
+        """Settings panel jackpot bars; runs on the asyncio thread."""
+        self.store.set_jackpot_thresholds(min_net, min_yield)
+        event("jackpot_thresholds_updated", min_net=min_net, min_yield=min_yield)
+
+    def set_price_override(self, reward: str, divine: float | None) -> None:
+        """Pin (or unpin, with None) a reward's reference price for this
+        session - the settings panel's price editor.
+
+        Runs on the asyncio thread via call_soon_threadsafe. Like the scoring
+        panel it affects listings from now on; alerts already on the overlay
+        keep the profit they were judged with. Never persisted: a correction
+        for a momentarily wrong reference should not outlive the session.
+        """
+        self.book.set_override(reward, divine)
+        event("price_override", reward=reward, divine=divine)
+        # a pinned price counts as primary, so this can be what ends the
+        # warm-up for a reward the trade API has no listings for
+        self._update_warmup()
+        self._push_reward_prices()
 
     # ----------------------------------------------------------- long tasks
 
@@ -361,22 +412,32 @@ class App:
         )
 
     def _push_reward_prices(self) -> None:
-        """Current reference per active reward -> Searching-line tooltip."""
+        """Current reference per active reward -> Searching-line tooltip.
+
+        Every active reward gets a row even when it has no reference yet.
+        Skipping the unpriced ones meant hovering a reward named on the
+        Searching line could produce nothing at all (no row, and with no
+        reward priced, no tooltip whatsoever) - which reads as the hover
+        being broken rather than as the price being on its way.
+        """
         if not self.bus:
             return
         entries = []
         for reward in sorted(self.server.active_rewards()):
             ref = self.book.reference_for(reward)
-            if ref is not None:
-                entries.append(
-                    (
-                        reward,
-                        ref.display_amount,
-                        ref.display_currency,
-                        ref.source,
-                        self.book.price_age_s(reward),
-                    )
+            auto = self.book.auto_reference_for(reward)
+            entries.append(
+                RewardPrice(
+                    reward=reward,
+                    amount=None if ref is None else ref.display_amount,
+                    currency="" if ref is None else ref.display_currency,
+                    source="unpriced" if ref is None else ref.source,
+                    age_s=self.book.price_age_s(reward),
+                    override_div=self.book.override_for(reward),
+                    auto_amount=None if auto is None else auto.display_amount,
+                    auto_currency="" if auto is None else auto.display_currency,
                 )
+            )
         self.bus.put(RewardPrices(tuple(entries)))
 
     async def tab_freshness_loop(self) -> None:
@@ -406,6 +467,9 @@ class App:
             if league is None or pricer.in_backoff:
                 self._update_warmup()  # keeps the stall timer honest
                 self._push_pricing_health(pricer)  # keep the pill counting down
+                # a tab opened while we are stalled is still an active reward
+                # the user can hover; without this its row never appears
+                self._push_reward_prices()
                 await asyncio.sleep(2 if self._warmup_active else 15)
                 continue
             now = time.monotonic()
@@ -558,15 +622,19 @@ def run_with_overlay(config: Config, config_path: str) -> None:
         asyncio.run_coroutine_threadsafe(app.travel_listing(listing_id), loop)
 
     def on_settings_change(
-        scoring_config, global_profit_div: float, combo: str, flat_profit_reduction: float
+        scoring_config, min_yield: float, combo: str, running_cost: float
     ) -> str | None:
         """Returns an error string (shown in the panel) or None. The hotkey
         rebinds on this (UI) thread; scoring/threshold swap on the loop."""
         error = hotkey.rebind(combo)
-        loop.call_soon_threadsafe(
-            app.apply_tuning, scoring_config, global_profit_div, flat_profit_reduction
-        )
+        loop.call_soon_threadsafe(app.apply_tuning, scoring_config, min_yield, running_cost)
         return error
+
+    def on_price_override(reward: str, divine: float | None) -> None:
+        loop.call_soon_threadsafe(app.set_price_override, reward, divine)
+
+    def on_jackpot_change(min_net: float, min_yield: float) -> None:
+        loop.call_soon_threadsafe(app.set_jackpot_thresholds, min_net, min_yield)
 
     root = tk.Tk()
     Overlay(
@@ -575,6 +643,8 @@ def run_with_overlay(config: Config, config_path: str) -> None:
         config,
         on_travel=on_travel,
         on_settings_change=on_settings_change,
+        on_price_override=on_price_override,
+        on_jackpot_change=on_jackpot_change,
         overrides_path=Path(config_path).with_name(SCORING_OVERRIDES_NAME),
     )
     try:

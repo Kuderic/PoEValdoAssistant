@@ -134,3 +134,68 @@ def test_shipped_pairings_all_carry_a_note():
 
 def test_a_clean_map_trips_no_pairing():
     assert _shipped().evaluate(["Monsters fire 2 additional Projectiles"]).pairings == ()
+
+
+# ------------------------------------------------- the shipped Feared+Void
+
+# Exact wording from real captures (grep listing_received in logs/).
+FEARED = "Area contains The Feared"
+VOID = "Players who Die in area are sent to the Void"
+
+
+def shipped_scoring() -> ModScoring:
+    from pathlib import Path
+
+    from sniper.config import load_config
+
+    return ModScoring(load_config(Path("config.yaml")).mod_scoring)
+
+
+def test_feared_plus_void_is_configured_and_matches_the_real_wording():
+    """Void alone is survivable - you just do not die. The Feared is what
+    makes it lethal, so the penalty belongs on the COMBINATION, not on
+    either rule."""
+    scoring = shipped_scoring()
+    result = scoring.evaluate([FEARED, VOID])
+    assert [(label, mult) for label, _note, mult in result.pairings] == [("The Feared + void", 2.0)]
+
+
+@pytest.mark.parametrize(
+    "mods", [[FEARED], [VOID], [FEARED, "Monsters fire 2 additional Projectiles"]]
+)
+def test_neither_mod_alone_triggers_the_pairing(mods):
+    assert shipped_scoring().evaluate(mods).pairings == ()
+
+
+def test_the_pairing_multiplies_on_top_of_both_rules():
+    """The pairing contributes exactly its own factor above whatever the two
+    individual rules already score.
+
+    Asserted as a RELATIONSHIP, not as absolute numbers: shipped_scoring()
+    loads config.yaml with scoring_overrides.yaml merged in, so the VOID and
+    The Feared values track whatever has been tuned in the panel. Pinning
+    literals here would make this test fail every time a multiplier is
+    adjusted, which is a setting, not a regression.
+    """
+    from dataclasses import replace
+
+    scoring = shipped_scoring()
+    together = scoring.evaluate([FEARED, VOID])
+    (_label, _note, factor) = together.pairings[0]
+
+    without = ModScoring(replace(scoring._config, pairings=()))
+    assert together.score == pytest.approx(without.evaluate([FEARED, VOID]).score * factor)
+    # and it really is above BOTH rules acting alone
+    assert together.score > scoring.evaluate([FEARED]).score
+    assert together.score > scoring.evaluate([VOID]).score
+
+
+def test_the_pairing_does_not_merge_the_two_mod_lines():
+    """Both mods keep their own annotated row - the pairing is shown as its
+    own banner, not by collapsing the lines it matched."""
+    rows = shipped_scoring().annotate([FEARED, VOID])
+    assert len(rows) == 2  # two rows, not one combined line
+    # each mod keeps its own row and its own note (values are user-tunable,
+    # so assert the SHAPE of the note rather than the current number)
+    assert FEARED in rows[0][0] and rows[0][1].startswith("base ")
+    assert VOID in rows[1][0] and rows[1][1].startswith("×")

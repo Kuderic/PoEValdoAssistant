@@ -3,12 +3,15 @@
 ToS-critical semantics (DESIGN.md):
 - best-value-wins: the hotkey consumes the non-expired alert with the
   highest profit per 100 difficulty (see _rank), not the biggest absolute
-  profit;
+  profit - except that a jackpot (big net AND big yield) always outranks a
+  non-jackpot, because it is the one alert ringing until it is dealt with;
 - expiry: a stale listing can never be traveled to by reflex;
 - single consumption: a consumed listing id can never alert or be clicked
   again, even if the tab re-pushes it;
 - consume mode "all" clears runners-up too (a second press does nothing),
-  "top" leaves them targetable.
+  "top" leaves them targetable;
+- a travel that FAILED (item sold, row gone) gives the runners-up back, so
+  the next-best alert is immediately targetable - see settle_travel.
 
 Touched only from the asyncio thread -> needs no locks.
 """
@@ -19,7 +22,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from sniper.margin import profit_per_100_difficulty
+from sniper.margin import is_jackpot, net_yield
 from sniper.models import Decision
 
 _CONSUMED_CAP = 200
@@ -34,8 +37,8 @@ class AlertView:
     item_name: str
     amount: float
     currency: str
-    profit_div: float
-    required_profit_div: float
+    net_div: float
+    required_net_div: float
     difficulty: float
     margin: float
     seller: str
@@ -54,6 +57,10 @@ class AlertView:
     index_lag_ms: float | None
     created_monotonic: float
     expires_at_monotonic: float
+    # from a non-Valdo live search: no net/yield/difficulty to show
+    generic: bool = False
+    # big net AND big yield (margin.is_jackpot): its own colour + alarm
+    jackpot: bool = False
 
 
 @dataclass
@@ -61,6 +68,7 @@ class Alert:
     decision: Decision
     created_monotonic: float
     expires_at_monotonic: float
+    jackpot: bool = False
 
     def view(self) -> AlertView:
         d = self.decision
@@ -70,8 +78,8 @@ class Alert:
             item_name=d.listing.item_name,
             amount=d.listing.price.amount,
             currency=d.listing.price.currency,
-            profit_div=d.profit_div or 0.0,
-            required_profit_div=d.required_profit_div or 0.0,
+            net_div=d.net_div or 0.0,
+            required_net_div=d.required_net_div or 0.0,
             difficulty=d.difficulty,
             margin=d.margin or 0.0,
             seller=d.listing.seller,
@@ -86,16 +94,53 @@ class Alert:
             index_lag_ms=d.listing.index_lag_ms,
             created_monotonic=self.created_monotonic,
             expires_at_monotonic=self.expires_at_monotonic,
+            generic=d.listing.generic,
+            jackpot=self.jackpot,
         )
 
 
 class AlertStore:
-    def __init__(self, expiry_s: float, consume_mode: str = "all", max_display: int = 3):
+    def __init__(
+        self,
+        expiry_s: float,
+        consume_mode: str = "all",
+        max_display: int = 3,
+        # both None (the default) disables the jackpot tier entirely
+        jackpot_min_net: float | None = None,
+        jackpot_min_yield: float | None = None,
+    ):
         self._expiry_s = expiry_s
+        self._jackpot_min_net = jackpot_min_net
+        self._jackpot_min_yield = jackpot_min_yield
         self._consume_mode = consume_mode
         self._max_display = max_display
         self._alerts: dict[str, Alert] = {}
         self._consumed: OrderedDict[str, float] = OrderedDict()
+        # The last hotkey travel awaiting its click_result:
+        # (listing id, the runners-up that press cleared as collateral).
+        # Held so a FAILED travel can hand them back - see settle_travel.
+        self._in_flight: tuple[str, dict[str, Alert]] | None = None
+
+    def set_jackpot_thresholds(self, min_net: float, min_yield: float) -> None:
+        """Settings panel. Applies to alerts from now on; a live alert keeps
+        the flag it was raised with, so its alarm never flips mid-ring."""
+        self._jackpot_min_net = min_net
+        self._jackpot_min_yield = min_yield
+
+    def is_jackpot(self, decision: Decision) -> bool:
+        """Generic hits have no net/yield to judge. A currency mismatch is
+        the scam guard's case: an implausibly good price in an unexpected
+        currency is exactly the listing that must NOT be made louder and
+        pushed to the top of the hotkey - it still alerts normally, with its
+        mismatch banner."""
+        if decision.listing.generic or decision.currency_mismatch:
+            return False
+        return is_jackpot(
+            decision.net_div,
+            decision.difficulty,
+            self._jackpot_min_net,
+            self._jackpot_min_yield,
+        )
 
     # ------------------------------------------------------------- mutations
 
@@ -120,6 +165,7 @@ class AlertStore:
             decision=decision,
             created_monotonic=now,
             expires_at_monotonic=now + self._expiry_s,
+            jackpot=self.is_jackpot(decision),
         )
         return True
 
@@ -133,16 +179,66 @@ class AlertStore:
 
     def consume_best(self) -> Alert | None:
         """Pop the highest-profit live alert for the click path. One call per
-        hotkey press; a consumed id is permanently barred from re-alerting."""
+        hotkey press; a consumed id is permanently barred from re-alerting.
+
+        In "all" mode the runners-up cleared alongside it are remembered
+        (until a failure report or the next press) so a failed teleport can
+        give them back - see settle_travel. The store's visible state is
+        unchanged from before: while the travel is in flight they are gone,
+        and a second press still does nothing.
+        """
         self.prune()
         best = self._best()
         if best is None:
             return None
-        self._mark_consumed(best.decision.listing.listing_id)
+        lid = best.decision.listing.listing_id
+        self._mark_consumed(lid)
+        collateral: dict[str, Alert] = {}
         if self._consume_mode == "all":
-            for lid in list(self._alerts):
-                self._mark_consumed(lid)
+            collateral = dict(self._alerts)
+            for other in list(self._alerts):
+                self._mark_consumed(other)
+        self._in_flight = (lid, collateral)
         return best
+
+    def settle_travel(self, listing_id: str, ok: bool) -> bool:
+        """Resolve the travel a hotkey press started, from a click_result.
+        True when the store changed and the overlay needs a push.
+
+        A failed travel - the item sold out from under us, the row is gone -
+        must not leave the user staring at an empty overlay holding the one
+        alert they cannot have. The runners-up that press cleared as
+        collateral come back with their ORIGINAL expiry (the clock protects
+        against travelling to a stale row; a failed click does not make the
+        others any fresher), so the next-best becomes the top pick and one
+        further press can take it.
+
+        `ok=True` settles NOTHING, deliberately. The userscript replies
+        ok the moment it clicks the button, then keeps watching that row for
+        ~3s and follows up with `item_no_longer_available` if the sale lands
+        first - which is the exact case this exists for. Dropping the
+        collateral on the optimistic reply would throw the runners-up away
+        milliseconds before learning we needed them. They are held until a
+        failure arrives or the next press replaces them; nothing shows them
+        meanwhile, and they expire on their own clock regardless.
+
+        The listing actually travelled to is never restored: single
+        consumption stays a hard guarantee, and it is precisely the listing
+        we just learned is unavailable.
+        """
+        if ok or self._in_flight is None or self._in_flight[0] != listing_id:
+            return False
+        _lid, collateral = self._in_flight
+        self._in_flight = None
+        now = time.monotonic()
+        restored = False
+        for lid, alert in collateral.items():
+            if alert.expires_at_monotonic <= now:
+                continue  # expired while the travel was in flight
+            self._consumed.pop(lid, None)
+            self._alerts[lid] = alert
+            restored = True
+        return restored
 
     def consume(self, listing_id: str) -> Alert | None:
         """Pop one specific alert (overlay click-to-travel). Consumes only
@@ -156,22 +252,56 @@ class AlertStore:
 
     # --------------------------------------------------------------- queries
 
-    @staticmethod
-    def _rank(a: Alert) -> float:
-        """Ranking key: divine profit per 100 difficulty (the overlay's
-        P/100D column, and the same unit as the threshold).
+    def _generic_on_top(self) -> bool:
+        """Which KIND of alert holds the top slot: whichever produced the
+        most recent one.
 
-        Ranking on efficiency rather than absolute surplus means the hotkey
-        takes the map that pays best for what it costs to run: a clean 25-
-        difficulty map at +20 div (80/100D) outranks a Feared+VOID monster
-        at +50 div (4/100D), even though the latter's absolute surplus is
-        larger.
+        Generic (non-Valdo) alerts have no efficiency to rank on, so they
+        cannot be compared to Valdo alerts on yield. Recency is the honest
+        cross-type tiebreak and the predictable one for reflex pressing -
+        the thing that just made a sound is the thing the hotkey takes.
+        Within each kind the natural order still applies, so a session with
+        no generic tabs open ranks exactly as it always did.
         """
-        d = a.decision
-        return profit_per_100_difficulty(d.profit_div, d.difficulty) or 0.0
+        newest: dict[bool, float | None] = {True: None, False: None}
+        for a in self._alerts.values():
+            kind = a.decision.listing.generic
+            if newest[kind] is None or a.created_monotonic > newest[kind]:
+                newest[kind] = a.created_monotonic
+        if newest[True] is None:
+            return False
+        return newest[False] is None or newest[True] > newest[False]
+
+    def _rank_key(self, generic_first: bool):
+        """Sort key: (does this kind hold the top slot, order within kind).
+
+        Valdo alerts rank on divine profit per 100 difficulty (the overlay's
+        Yield column, same unit as the threshold) - efficiency rather than
+        absolute surplus, so the hotkey takes the map that pays best for
+        what it costs to run: a clean 25-difficulty map at +20 div
+        (80/100D) outranks a Feared+VOID monster at +50 div (4/100D).
+        Generic alerts have no such key and rank newest-first.
+
+        A jackpot outranks everything: it is the alert whose alarm keeps
+        ringing, so it must also be the one a reflex press takes - otherwise
+        a newer generic hit could quietly steal the press meant for it.
+        """
+
+        def key(a: Alert) -> tuple[bool, bool, float]:
+            d = a.decision
+            if d.listing.generic:
+                return (False, generic_first, a.created_monotonic)
+            ratio = net_yield(d.net_div, d.difficulty) or 0.0
+            return (a.jackpot, not generic_first, ratio)
+
+        return key
+
+    def _rank(self, a: Alert) -> tuple[bool, bool, float]:
+        return self._rank_key(self._generic_on_top())(a)
 
     def _best(self) -> Alert | None:
-        return max(self._alerts.values(), key=self._rank, default=None)
+        key = self._rank_key(self._generic_on_top())
+        return max(self._alerts.values(), key=key, default=None)
 
     def view_of(self, listing_id: str) -> AlertView | None:
         alert = self._alerts.get(listing_id)
@@ -179,7 +309,8 @@ class AlertStore:
 
     def views(self) -> tuple[AlertView, ...]:
         """Top alerts by profit surplus, best first, capped for display."""
-        ranked = sorted(self._alerts.values(), key=self._rank, reverse=True)
+        key = self._rank_key(self._generic_on_top())
+        ranked = sorted(self._alerts.values(), key=key, reverse=True)
         return tuple(a.view() for a in ranked[: self._max_display])
 
     def __len__(self) -> int:

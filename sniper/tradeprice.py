@@ -7,8 +7,9 @@ foil is deliberately not filtered, foils list at market parity) and average
 the cheapest listings.
 
 ToS note (DESIGN.md): these are supplementary PRICING queries - one search
-+ one fetch per active reward every ~10 minutes - not listing polling for
-snipes. Rate-limit headers are respected and 429/Retry-After backs off.
++ one fetch per active reward every trade_pricing.refresh_minutes (30 by
+default) - not listing polling for snipes. Rate-limit headers are respected
+and 429/Retry-After backs off.
 """
 
 from __future__ import annotations

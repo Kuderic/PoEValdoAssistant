@@ -21,11 +21,11 @@ from sniper.config import (
 
 def make_config(
     *,
-    global_profit_div: float = 20.0,
+    min_yield: float = 20.0,
     per_map: dict[str, float] | None = None,
     # 0 by default so profit assertions stay about the pricing maths; the
     # shipped default is 1 and is covered by its own tests
-    flat_profit_reduction: float = 0.0,
+    running_cost: float = 0.0,
     prices: dict[str, ManualPrice] | None = None,
     currency_rates: dict[str, float] | None = None,
     mod_warnings: tuple[ModWarningRule, ...] = (),
@@ -38,9 +38,9 @@ def make_config(
         league="Testleague",
         server=ServerConfig(host="127.0.0.1", port=port),
         thresholds=Thresholds(
-            global_profit_div=global_profit_div,
+            min_yield=min_yield,
             per_map=per_map or {},
-            flat_profit_reduction=flat_profit_reduction,
+            running_cost=running_cost,
         ),
         alerts=AlertsConfig(),
         hotkey=HotkeyConfig(),

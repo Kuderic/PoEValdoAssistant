@@ -11,8 +11,11 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 import websockets
+from websockets.datastructures import Headers
+from websockets.http11 import Request, Response
 
 from sniper import margin
 from sniper.config import Config
@@ -22,6 +25,56 @@ from sniper.modrules import ModRules, ModScoring
 from sniper.prices import PriceBook
 
 _ROUTE_CAP = 1000
+# The userscript version this build expects. A browser tab keeps running the
+# script it loaded with until it is re-pasted AND hard-reloaded, so a stale
+# tab silently loses whatever the new version added - new fields simply
+# arrive missing, which reads as a broken feature rather than an old script.
+# KEEP IN SYNC with @version in userscript/valdo-sniper.user.js.
+EXPECTED_USERSCRIPT_VERSION = "0.8.0"
+
+# The app serves its own userscript over plain HTTP on the websocket port, so
+# installing is one click (Tampermonkey intercepts any *.user.js URL) and the
+# script's @updateURL points back here: Tampermonkey then keeps every browser
+# on exactly the version this running app expects.
+INSTALL_PATH = "/valdo-sniper.user.js"
+USERSCRIPT_FILE = Path(__file__).resolve().parent.parent / "userscript" / "valdo-sniper.user.js"
+_LANDING = (
+    "<!doctype html><meta charset=utf-8><title>Valdo Sniper</title>"
+    "<body style='font:15px Segoe UI,sans-serif;background:#0f1216;color:#e6eaef;padding:32px'>"
+    "<h2>Valdo Sniper is running</h2>"
+    f"<p><a style='color:#5fd069' href='{INSTALL_PATH}'>Install the browser userscript</a>"
+    " (needs Tampermonkey)</p></body>"
+)
+
+
+def _http_response(status: int, reason: str, body: bytes, content_type: str) -> Response:
+    headers = Headers(
+        [
+            ("Content-Type", content_type),
+            ("Content-Length", str(len(body))),
+            ("Cache-Control", "no-store"),
+            ("Connection", "close"),
+        ]
+    )
+    return Response(status, reason, headers, body)
+
+
+def process_http(_connection, request: Request) -> Response | None:
+    """websockets `process_request` hook: plain-HTTP GETs for the installer
+    and a landing page. Websocket upgrades (the tabs) pass straight through."""
+    if request.headers.get("Upgrade", "").lower() == "websocket":
+        return None
+    path = request.path.split("?", 1)[0]
+    if path == INSTALL_PATH:
+        try:
+            body = USERSCRIPT_FILE.read_bytes()
+        except OSError:
+            return _http_response(404, "Not Found", b"userscript missing\n", "text/plain")
+        event("userscript_served")
+        return _http_response(200, "OK", body, "text/javascript; charset=utf-8")
+    if path == "/":
+        return _http_response(200, "OK", _LANDING.encode(), "text/html; charset=utf-8")
+    return None  # anything else: websockets answers it as a failed handshake
 
 
 @dataclass
@@ -30,6 +83,7 @@ class TabState:
     search_id: str
     last_hello_monotonic: float
     search_reward: str | None = None
+    search_kind: str = "valdo"
     version: str | None = None  # userscript @version this tab is running
 
 
@@ -71,7 +125,10 @@ class SniperServer:
     async def serve_forever(self) -> None:
         try:
             server = await websockets.serve(
-                self._handle, self._config.server.host, self._config.server.port
+                self._handle,
+                self._config.server.host,
+                self._config.server.port,
+                process_request=process_http,
             )
         except OSError as e:
             raise SystemExit(
@@ -108,6 +165,7 @@ class SniperServer:
                         search_id=frame.search_id,
                         last_hello_monotonic=time.monotonic(),
                         search_reward=frame.search_reward,
+                        search_kind=frame.search_kind,
                         version=frame.version,
                     )
                     if not known:
@@ -116,6 +174,13 @@ class SniperServer:
                             tab_id=tab_id,
                             search_id=frame.search_id,
                             search_reward=frame.search_reward,
+                            # valdo | any: which lane this tab's listings take.
+                            # Received since 0.7.6 but never recorded, which
+                            # made "the generic tab stopped alerting" invisible
+                            # in the logs - the only trace was generic=False on
+                            # its listings, with no way to see what the tab
+                            # itself had reported.
+                            search_kind=frame.search_kind,
                             # a tab runs the script it loaded with until it is
                             # reloaded; logged so a missed snipe can be traced
                             # to a stale userscript
@@ -170,6 +235,10 @@ class SniperServer:
             detected_at=listing.detected_at,
             indexed_at=listing.indexed_at,
             capture=listing.capture,
+            # why a listing did or did not take the generic (non-Valdo)
+            # lane; without it a stale userscript that never sets the flag
+            # is indistinguishable from a reward that failed to price
+            generic=listing.generic,
             # how long it was already live before we saw it: the head start
             # every other sniper had. Null on DOM-captured listings.
             index_lag_ms=None if listing.index_lag_ms is None else round(listing.index_lag_ms),
@@ -185,15 +254,15 @@ class SniperServer:
             listing_id=listing.listing_id,
             key=decision.key,
             verdict=decision.verdict,
-            profit_div=None if decision.profit_div is None else round(decision.profit_div, 2),
+            net_div=None if decision.net_div is None else round(decision.net_div, 2),
             margin=None if decision.margin is None else round(decision.margin, 4),
             threshold_div=decision.threshold,
             difficulty=decision.difficulty,
             difficulty_mods=list(decision.difficulty_mods),
             special_warnings=[f"{color}:{label}" for label, color in decision.special_warnings],
-            required_profit_div=None
-            if decision.required_profit_div is None
-            else round(decision.required_profit_div, 2),
+            required_net_div=None
+            if decision.required_net_div is None
+            else round(decision.required_net_div, 2),
             listing_chaos=decision.listing_chaos,
             reference_chaos=decision.reference.chaos_value if decision.reference else None,
             reference_source=decision.reference.source if decision.reference else None,
@@ -246,6 +315,7 @@ class SniperServer:
                 "tab_id": tid,
                 "search_id": t.search_id,
                 "search_reward": t.search_reward,
+                "search_kind": t.search_kind,
                 "version": t.version,
                 "hello_age_s": round(now - t.last_hello_monotonic, 1),
             }

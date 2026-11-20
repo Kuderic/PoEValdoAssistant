@@ -52,6 +52,13 @@ class Listing:
     mods: tuple[str, ...]
     row_index: int
     detected_at: str
+    # A listing from a NON-Valdo live search: the user's own search is the
+    # filter, so there is no reward to price, no map mods to score, and
+    # nothing to hold for. It alerts on arrival (see margin.evaluate).
+    generic: bool = False
+    # the item's base type ("Vermillion Ring"); for a rare it is the half
+    # worth reading, while item_name is the random rare name
+    type_line: str | None = None
     # GGG's own index time (network capture only; None from the DOM path)
     indexed_at: str | None = None
     # which capture path produced this: "net" (the page's own fetch payload,
@@ -83,6 +90,9 @@ class Hello:
     search_id: str
     tab_id: str
     search_reward: str | None = None  # majority reward of the tab's visible rows
+    # "valdo" (a map-reward search, scored and priced) or "any" (any other
+    # live search: alerts on arrival, see margin._generic_decision)
+    search_kind: str = "valdo"
     # userscript @version. A browser tab keeps running the script it loaded
     # with until it is reloaded, so "which version is actually live" is not
     # otherwise answerable from the logs when diagnosing a missed snipe.
@@ -139,6 +149,7 @@ def parse_frame(msg: object) -> Frame:
             search_id=search_id,
             tab_id=tab_id,
             search_reward=reward if isinstance(reward, str) and reward else None,
+            search_kind="any" if msg.get("search_kind") == "any" else "valdo",
             version=version if isinstance(version, str) and version else None,
             net_stats=stats if isinstance(stats, dict) else None,
         )
@@ -190,6 +201,7 @@ def parse_frame(msg: object) -> Frame:
             return FrameError(reason="; ".join(errors), raw=msg)
         row_index = msg.get("row_index")
         indexed_at = msg.get("indexed_at")
+        type_line = msg.get("type_line")
         return Listing(
             search_id=search_id,
             tab_id=tab_id,
@@ -203,6 +215,8 @@ def parse_frame(msg: object) -> Frame:
             detected_at=detected_at,
             indexed_at=indexed_at if isinstance(indexed_at, str) and indexed_at else None,
             capture=msg.get("capture") if msg.get("capture") in ("net", "dom") else "",
+            generic=msg.get("generic") is True,
+            type_line=type_line if isinstance(type_line, str) and type_line else None,
         )
 
     return FrameError(reason=f"unknown frame type {mtype!r}", raw=msg)
@@ -231,7 +245,7 @@ class Decision:
     threshold: float  # base divine-profit threshold (before difficulty)
     reference: Reference | None = None
     listing_chaos: float | None = None
-    profit_div: float | None = None  # (reference - listing) in divine orbs
+    net_div: float | None = None  # (reference - listing) in divine orbs
     margin: float | None = None  # same as fraction of reference, for display
     currency_mismatch: bool = False
     mod_hits: tuple[ModHit, ...] = field(default_factory=tuple)
@@ -243,4 +257,4 @@ class Decision:
     special_warnings: tuple[tuple[str, str], ...] = field(default_factory=tuple)  # (label, color)
     # deadly mod pairings present: (label, note, multiplier)
     pairings: tuple[tuple[str, str, float], ...] = field(default_factory=tuple)
-    required_profit_div: float | None = None  # threshold * difficulty / 100
+    required_net_div: float | None = None  # threshold * difficulty / 100

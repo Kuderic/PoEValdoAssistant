@@ -130,7 +130,7 @@ def test_hard_map_needs_more_profit():
     mods = ["Area contains The Feared", "Players in Area are 100% Delirious"]
 
     cheap = decide_with_scoring(80, mods)  # 120 div profit
-    assert cheap.required_profit_div == 36
+    assert cheap.required_net_div == 36
     assert cheap.verdict == "alert"
 
     pricey = decide_with_scoring(175, mods)  # 25 div profit < 36
@@ -141,7 +141,7 @@ def test_clean_map_needs_proportionally_less():
     # clean map: diff 25 -> need 20 * 25/100 = 5 div (threshold is calibrated
     # for a 100-difficulty map; easier maps need proportionally less)
     d = decide_with_scoring(170, [])  # 30 div profit
-    assert d.required_profit_div == 5
+    assert d.required_net_div == 5
     assert d.verdict == "alert"
 
 

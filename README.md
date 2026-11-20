@@ -7,7 +7,7 @@ run — alerts with sound and an always-on-top overlay, and travels to the
 seller's hideout on a single hotkey press. PoE 3.27+ asynchronous trading:
 no whispers, you complete the purchase manually at Faustus.
 
-<img src="docs/screenshot.png" alt="Valdo Sniper overlay: a Mageblood map alerting at +107 div profit, with difficulty-scored mods highlighted, a runner-up alert, and the live feed of recent listings" width="440">
+<img src="docs/overlay-alert.png" alt="Valdo Sniper overlay: an Emperor's Mastery map alerting at +48 divine net and yield +45.5, with its difficulty-scored mods, a deadly-pairing warning, two runner-up alerts, and the live feed of recent listings" width="420">
 
 **Trade etiquette / ToS stance (non-negotiable, see CLAUDE.md):** one user
 input = one server action. The Travel click fires only in direct response to
@@ -17,31 +17,37 @@ polling the trade API.
 
 ---
 
-## The profit model — read this first
+## The value model — read this first
 
 Everything the app does comes down to one number.
 
 ```
-P/100D  =  divine profit  ÷  difficulty  × 100
+NET    =  market price  −  asking price  −  running cost
+YIELD  =  NET  ÷  difficulty  ×  100
 ```
 
-**Profit** is the reward's market price minus the asking price, minus a flat
-toll (see below). **Difficulty** is a score built from the map's mods. The
-ratio is *profit per unit of pain*, and an alert fires when it clears your
-threshold:
+**NET** is what the map actually leaves you: the reward's market price, minus
+what you pay, minus the running cost — a flat charge for the time and losses
+that running *any* map incurs (see below). It is deliberately not called
+profit, because that cost has already come off it.
+
+**YIELD** is that net figure per unit of difficulty. Since net is already
+time-adjusted and difficulty measures how nasty the map is to run, yield is
+what the map pays you **per unit of pain**. An alert fires when it clears
+your threshold:
 
 ```
-alert  ⟺  P/100D  ≥  thresholds.global_profit_div      (default 2)
+alert  ⟺  YIELD  ≥  thresholds.min_yield
 ```
 
-Why a ratio rather than raw profit: a clean 25-difficulty map at +20 div and
-a Feared + VOID nightmare at +50 div are not the same trade. The second one
-pays more and is worth less. P/100D says so, and it is what the hotkey ranks
-on when several maps are alerting at once.
+Why a rate rather than raw surplus: a clean 25-difficulty map at +20 div and
+a Feared + VOID nightmare at +50 div are not the same trade. The second pays
+more and is worth less. Yield says so, and it is what the hotkey ranks on
+when several maps are alerting at once.
 
-The threshold is expressed in those same units, so it reads directly: **"a
-100-difficulty map must clear this much profit."** A 200-difficulty map needs
-twice as much; a 50-difficulty map half.
+The threshold is in those same units, so it reads directly: **"a
+100-difficulty map must net this much."** A 200-difficulty map needs twice as
+much; a 50-difficulty map half.
 
 ### Difficulty
 
@@ -58,13 +64,15 @@ Each mod on the map contributes, via `mod_scoring` in `config.yaml`:
 So `difficulty = max(base_default, highest min_base) × every multiplier ×
 every pairing`.
 
-### The flat toll
+### The running cost
 
-`thresholds.flat_profit_reduction` (default **1** divine) comes off every
-listing's profit before anything else looks at it. Running any map costs you
-time, so an easy map with a 0.5 div margin is not actually worth doing. It is
-subtracted at the source, so the profit you see on screen, the P/100D, the
-alert cutoff and the hotkey's ranking all agree.
+`thresholds.running_cost` (default **1** divine) is what running a map costs
+you — the time it takes plus what you lose reselling — and it comes off every
+listing before anything else looks at it. Running any map costs you something, so
+an easy map with a 0.5 div margin is not actually worth doing. It is
+subtracted at the source, which is why the column is called NET rather than
+profit: the number on screen, the yield, the alert cutoff and the hotkey's
+ranking all already account for it.
 
 ### Deadly pairings
 
@@ -89,61 +97,72 @@ in `config.yaml`.
 
 ## Setup
 
-1. **Python side** (Windows, Python 3.12):
-   ```
-   pip install websockets httpx keyboard pygetwindow pywin32 psutil PyYAML python-dotenv
-   ```
-   Dev extras: `pip install pytest pytest-asyncio ruff`
+You need Windows, Chrome and Path of Exile. About five minutes:
 
-2. **Browser side** (Chrome): install
-   [Tampermonkey](https://www.tampermonkey.net/), create a new userscript,
-   paste in `userscript/valdo-sniper.user.js`. **Re-paste after every update
-   and hard-reload your trade tabs** — a tab keeps running the script it
-   loaded with. The version each tab is running is logged at `tab_connect`,
-   so `grep userscript_version logs/*.jsonl` settles any doubt.
+1. **Install Python 3.12 or newer** from
+   [python.org](https://www.python.org/downloads/) and tick *"Add python.exe
+   to PATH"*, or run `winget install -e --id Python.Python.3.12`.
+2. **Get this folder**: *Code → Download ZIP* on GitHub (then unzip), or
+   `git clone https://github.com/Kuderic/PoEValdoAssistant.git`.
+3. **Double-click `start.bat`.** The first run sets up a private Python
+   environment and installs everything (about 20 seconds); after that it
+   starts instantly. The overlay opens with a setup guide:
 
-3. **Run**: `python -m sniper` (`--headless` for no overlay, `--config path`
-   for an alternate config).
+   <img src="docs/overlay-setup.png" alt="First launch: the overlay says no live searches are connected and lists two clickable steps - install the browser script, open a Valdo live search" width="420">
 
-4. Open your Valdo live searches in Chrome tabs. The header should show
-   `Tabs: N` in green, `Prices: trade`, `PoE: Running`.
+4. **Install [Tampermonkey](https://www.tampermonkey.net/) in Chrome**, then
+   open `chrome://extensions`, click Tampermonkey's **Details** and turn on
+   **Allow User Scripts** (Chrome blocks userscripts without it).
+5. **Click "Install the browser script"** in the overlay and press
+   **Install** on the Tampermonkey page that opens. (The app serves it
+   itself, at `http://127.0.0.1:8765/valdo-sniper.user.js`.)
+6. **Open your Valdo live searches** on the trade site and press *Live
+   search*. Each tab connects on its own, and the status strip turns green:
+   `4 tabs · PoE running · Trade prices`.
 
-Run PoE in **windowed-fullscreen**, not exclusive fullscreen, or the overlay
+Run PoE in **windowed fullscreen**, not exclusive fullscreen, or the overlay
 can't stay on top. Sound works either way.
+
+**Updating:** `git pull` (or download the ZIP again) and restart
+`start.bat`. Tampermonkey picks up the new browser script by itself; if a
+tab is still on an old one, the tabs light turns red with *update script*,
+and clicking it reinstalls. Hard-reload open trade tabs afterwards, since a
+tab keeps running the script it loaded with.
+
+`start.bat` passes arguments through: `start.bat --headless` runs without
+the overlay, `start.bat --config other.yaml` uses another config. If you
+manage Python yourself, `pip install -e .` and `python -m sniper` work
+too. Developer extras: `pip install pytest pytest-asyncio ruff`.
 
 ---
 
 ## Reading an alert
 
-```
-Mageblood                                  ⚡ TELEPORT  [ ` ]   latency 2.2s
-PRICE DIVINE   PROFIT DIV   │ P/100D │   DIFFICULTY
-156            +46          │ +3.8   │   1214
-☠ NO DAMAGE + FATAL TIMER  ×10        Impossible unless DPS-check build
-Area contains The Feared                                          base 120
-```
+See the screenshot at the top: the reward name, the latency badge and the
+**TELEPORT** button (with your hotkey on it), then the four numbers, then
+warnings, then the map's mods.
 
 | Element | What it tells you |
 |---|---|
 | **PRICE** | What you pay, and in which currency. Turns red on a currency mismatch (the classic "20 exalted, not 20 divine" bait) — a full-width banner also appears |
-| **PROFIT DIV** | Market price − asking price − the flat toll |
-| **P/100D** | The decision number, boxed. Green means it clears your threshold |
+| **NET DIV** | Market price − asking price − the running cost. What the map actually leaves you |
+| **YIELD** | The decision number, in the tinted cell: net per 100 difficulty. Green means it clears your threshold |
 | **DIFFICULTY** | Plain ≤100, amber >100, red >300 |
-| **latency** | How long the listing was already live before it reached you — the head start every other sniper had. Green under 2s, red past 5s. Hover it for the full explanation |
-| **☠ banners** | Deadly pairings, with the reason |
-| **Mod list** | Each mod with its contribution (`base 120`, `×2.5`), red/amber by severity, modifiers right-aligned |
+| **latency badge** | How long the listing was already live before it reached you — the head start every other sniper had. Green under 2s, red past 5s. Hover it for the full explanation |
+| **☠ rows** | Deadly pairings, with the reason |
+| **Mod list** | Each mod with its contribution (`base 120`, `×2.5`), marked red/amber by severity, modifiers right-aligned |
 
 **Use latency to decide whether to bother.** From this app's own logs:
 travels clicked within ~2s of detection still lost the item 26% of the time;
 4–10s lost 52%. A red latency means someone almost certainly has it already.
 
-Other markers you may see: `⚠️ ESTIMATED PRICE` (priced from poe.ninja's
-median, which is inaccurate for foil Valdos), `⏳ CACHED PRICE` (last
-session's trade price, refresh pending). Both disappear once a fresh trade
-average lands.
+Other markers you may see: `ESTIMATED PRICE` (priced from poe.ninja's
+median, which is inaccurate for foil Valdos), `CACHED PRICE` (last
+session's trade price, refresh pending), `YOUR PRICE` (a price you pinned in
+the ⚙ panel). The first two disappear once a fresh trade average lands.
 
 **Acting on it:** press the hotkey (default `` ` ``) to travel to the best
-alert by P/100D, click the **TELEPORT** button, or click any row — including
+alert by yield, click the **TELEPORT** button, or click any row — including
 a grayed-out one in the history — to travel to that specific listing. All
 require PoE to be running; the hotkey is deliberately inert otherwise. After
 traveling, the map's mods stay pinned for ~10s so you can read them during
@@ -151,19 +170,91 @@ the loading screen, then you buy manually at Faustus.
 
 ---
 
+## Sniping things that aren't Valdo maps
+
+Open a live search for **anything** — a rare with the stats you want, a
+unique under a price — and the app alerts on it the moment it lists, with
+the same hotkey travel.
+
+Nothing to configure. A tab whose search has no Valdo map-reward filter is
+detected automatically and switched to an always-alert lane: no reference
+price, no difficulty score, no threshold. Your search already says what you
+want and what you will pay, so the app's only job is to put it on screen
+fast and let you travel.
+
+```
+⚡ LIVE SEARCH
+Vermillion Ring                            ⚡ TELEPORT  [ ` ]   latency 1.4s
+PRICE DIVINE
+12
+Doom Coil  ·  Serpent#1234
++45 to maximum Life
++38% to Fire Resistance
+```
+
+Net, Yield and difficulty are blank because they have no meaning here —
+there is no market average to profit against, and the mod scoring reads
+*map* modifiers, so a ring's stats would invent a difficulty out of nothing.
+These rows show `[search]` in the history list.
+
+Two things worth knowing:
+
+- **These never touch the pricing budget.** A generic tab registers no
+  reward, so it costs zero trade-API requests — open as many as you like
+  without pushing pricing closer to a rate-limit lockout. (Your browser's
+  own fetches still count; see Maintenance.)
+- **The hotkey goes to whichever alert arrived most recently** when both
+  kinds are live — the thing that just made a sound is the thing you
+  travel to. Valdo alerts still rank among themselves by yield, so a
+  session with no generic tabs open behaves exactly as before.
+
+**These get their own sound.** A non-Valdo hit plays `tada.wav` instead of
+the usual Windows Exclamation woop, so you can tell one apart from routine
+Valdo traffic without looking at the screen. Point `alerts.generic_sound` at
+any `.wav` to change it; `alerts.volume` scales both. Keep any replacement
+short — alerts expire in seconds and the next one cancels this one, so a
+5-second alarm would still be playing after you'd already travelled.
+
+If a search is too broad it will alert constantly; tighten the filters on
+the trade site rather than in the app.
+
+### Jackpots
+
+A Valdo listing that is **both** big money and cheap to run (net ≥ 30d
+**and** yield ≥ 50 by default) is a jackpot, and is built so it can't
+slip by unseen:
+
+<img src="docs/overlay-jackpot.png" alt="A jackpot alert: Nimis at 80 divine, +80 net, yield +144, difficulty 55, with a magenta JACKPOT banner and a magenta frame around the alert card" width="420">
+
+- a pulsing magenta **★ JACKPOT** banner and frame, with the name, net
+  and yield in magenta and a magenta TELEPORT button;
+- an alarm (`Alarm02.wav`) that **loops** until you travel, the alert
+  expires, or you click the speaker icon to mute. It plays at `alerts.jackpot_volume`,
+  regardless of the volume slider;
+- the overlay is pulled in front and restored if minimised, and its taskbar
+  button flashes. Keyboard focus stays in the game;
+- it takes the hotkey's top slot over anything else, so the press goes to
+  the thing that's ringing;
+- it stays magenta with `★ JACKPOT` in the live feed, so one you missed is
+  obvious later.
+
+Tune the bars in the ⚙ panel under **Jackpot** (applied live and saved), or
+with `alerts.jackpot_min_net` / `jackpot_min_yield` in `config.yaml`. A
+currency mismatch is never a jackpot.
+
 ## Tuning it to actually make money
 
 The defaults are a starting point, not an answer. The app logs every listing
 and every decision, so tune against your own data rather than guessing.
 
-**Start loose, then tighten.** Set `global_profit_div` low (1–2), run a
+**Start loose, then tighten.** Set `min_yield` low (1–2), run a
 session, then look at what you'd have bought:
 
 ```
 grep '"event": "decision"' logs/sniper-*.jsonl
 ```
 
-Every entry carries `profit_div`, `difficulty`, `required_profit_div` and the
+Every entry carries `net_div`, `difficulty`, `required_net_div` and the
 matched `difficulty_mods`. If maps you would never run are alerting, their
 difficulty is scored too low — raise those rules. If you're seeing nothing,
 the threshold is too high or your mod rules are too harsh.
@@ -179,7 +270,7 @@ stop you. The ⚙ panel edits every rule live and saves to
 worth encoding once, with a note, so you never have to re-derive it at 2am
 with a 16-second alert timer running.
 
-**Raise the flat toll if you're churning low-value maps.** At 1 divine you'll
+**Raise the running cost if you're churning low-value maps.** At 1 divine you'll
 still see thin margins on cheap rewards; at 3–5 you only see trades worth
 stopping for.
 
@@ -196,16 +287,18 @@ them when you know better than the market average, e.g. right after a patch.
 
 | Key | Does |
 |---|---|
-| `thresholds.global_profit_div` | Minimum P/100D to alert |
-| `thresholds.flat_profit_reduction` | Divine toll off every listing |
+| `thresholds.min_yield` | Minimum Yield to alert |
+| `thresholds.running_cost` | Divine cost of running a map, off every listing |
 | `thresholds.per_map` | Per-reward threshold overrides |
 | `mod_scoring.base_default` | Difficulty of a clean, unmodded map |
 | `mod_scoring.rules` | Per-mod `min_base` / `multiplier`, optional `warning` |
 | `mod_pairings` | Deadly combinations: `multiplier` + `note` |
 | `mod_warnings` | `block` rules — logged, never alerted, at any price |
-| `hotkey.combo` / `.consume` | Travel key; `all` clears every alert per press, `top` keeps runners-up |
+| `hotkey.combo` / `.consume` | Travel key; `all` clears every alert per press, `top` keeps runners-up (a *failed* travel gives them back either way) |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
+| `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (30 / 50), also in the ⚙ panel |
+| `alerts.jackpot_sound` / `jackpot_volume` | Jackpot alarm file and its own volume |
 | `trade_pricing.cache_max_age_minutes` | How stale a restored price may be (720) |
 
 ---
@@ -226,10 +319,22 @@ poe.ninja is still used for currency rates and to resolve `league: auto`.
   with a per-reward panel of what's done, in flight, and queued.
 - **Rate limits are respected from the API's own headers**, so pacing adapts
   instead of guessing. If you get limited anyway, the header pill turns red
-  (`RATE LIMITED 47s`) and unpriced rewards show as `est. prices: 5/8`.
-- Prices refresh every `refresh_minutes`; the panel shows `↻` on whichever
-  reward is being recalculated, and both the panel and the Searching-line
-  tooltip show how long ago each price was calculated.
+  (`RATE LIMITED 47s`) and unpriced rewards show as `Est. prices 5/8`.
+- Prices refresh every `refresh_minutes` (30 by default); the panel shows `↻`
+  on whichever reward is being recalculated, and both the panel and the
+  *Watching* line's tooltip show how long ago each price was calculated. Every
+  active reward re-prices each cycle, so lowering this multiplies the request
+  rate by however many live searches you have open — 10 minutes was enough to
+  earn a 30-minute API backoff.
+
+- **A price that's plainly wrong is fixable on the spot.** The ⚙ panel's
+  **Reward prices** section pins your own figure (in divine) for any active
+  reward; blank means automatic. It beats every other source, applies to
+  listings from then on, and shows the automatic price beside the field so
+  you can see what you're overriding. Alerts priced from it are flagged
+  `✋ YOUR PRICE`. Pins are session-only — they're gone on restart, on
+  purpose. For a correction you want permanently, use `prices:` in
+  `config.yaml`.
 
 **Opening many tabs has a cost.** Every live search makes its own detail
 fetches against the same rate-limit budget the app uses for pricing. If your
@@ -253,6 +358,9 @@ searches you aren't actually racing for.
 - **Latency**: `python tools/latency_report.py` prints p50/p90/p99 for the
   detection → UI hot path (target under 150 ms; typically ~16 ms).
 - **Tests**: `pytest` · **Lint**: `ruff check . && ruff format .`
+- **README screenshots**: `python tools/screenshots.py` renders the real
+  overlay with sample data into `docs/overlay-*.png` (the window shows
+  briefly while it captures).
 - **Record/replay**: `python tools/record.py` captures real frames;
   `python tools/replay.py [file]` feeds them back through the pipeline.
   `python tools/echo_server.py` is a bare frame viewer for userscript work.
@@ -265,11 +373,13 @@ searches you aren't actually racing for.
 |---|---|
 | `cannot bind ws://127.0.0.1:8765` | Another sniper/echo server is running — close it |
 | `could not register global hotkey` | Run the terminal elevated, or pick another combo |
-| Overlay shows `Tabs: 0` | Tab not connected: check Tampermonkey is enabled on the trade page, look for `[valdo]` lines in the tab's DevTools console |
-| `Tabs: N (M stale)` | A tab stopped heartbeating (crashed/asleep) — reload it |
-| `RATE LIMITED` / `est. prices: N/M` | Trade API refused us; margins fall back to poe.ninja medians and every affected alert is flagged. Close some searches |
+| Overlay shows `0 tabs` | Tab not connected: check **Allow User Scripts** is on for Tampermonkey (`chrome://extensions` → Details), the script is enabled, and you pressed *Live search*. Look for `[valdo]` lines in the tab's DevTools console |
+| `N tabs · M stale` | A tab stopped heartbeating (crashed/asleep) — reload it |
+| `N tabs · update script` (red) | A tab runs an older browser script: click the pill to reinstall, then hard-reload the tab |
+| `start.bat` says Python not found | Install Python 3.12+ with *Add to PATH* ticked, then run it again. Delete the `.venv` folder to force a clean reinstall |
+| `RATE LIMITED` / `Est. prices N/M` | Trade API refused us; margins fall back to poe.ninja medians and every affected alert is flagged. Close some searches |
 | Alert shows no latency | The DOM path captured it, or the tab is on an old userscript. `python tools/capture_report.py` says which |
-| Alerts but hotkey does nothing | `PoE: NOT RUNNING` in the header — the hotkey is deliberately inert without the game |
-| Travel says `item no longer available` | Someone beat you to it. Check the latency figure on the alerts you're losing |
+| Alerts but hotkey does nothing | `PoE not running` in the status strip — the hotkey is deliberately inert without the game |
+| Travel says `item no longer available` | Someone beat you to it — the runner-up is promoted to the top slot, press again to take it. Check the latency figure on the alerts you're losing |
 | Config error on startup naming a rule | Two `mod_scoring` rules share a label; labels must be unique (the ⚙ panel keys on them) |
 | Firefox | Not supported — Chrome only (`ws://127.0.0.1` from HTTPS pages) |

@@ -139,6 +139,85 @@ def test_relisting_never_resurrects_a_consumed_listing():
     assert len(store) == 0
 
 
+# --------------------------------------------------------- failed travels
+# The item sold out from under us. The alert we cannot have is gone for
+# good, but the ones the press cleared as collateral are still buyable, and
+# an empty overlay in that moment costs the next snipe too.
+
+
+def test_failed_travel_restores_the_runners_up():
+    store = AlertStore(expiry_s=10, consume_mode="all")
+    store.insert(alert_decision("one", 100))
+    store.insert(alert_decision("two", 60))
+    assert store.consume_best().decision.listing.listing_id == "two"
+    assert len(store) == 0
+
+    assert store.settle_travel("two", ok=False)
+    assert [v.listing_id for v in store.views()] == ["one"]
+    assert store.consume_best().decision.listing.listing_id == "one"
+
+
+def test_failed_travel_never_restores_the_listing_it_failed_on():
+    store = AlertStore(expiry_s=10, consume_mode="all")
+    store.insert(alert_decision("one", 100))
+    store.insert(alert_decision("sold", 60))
+    store.consume_best()
+    store.settle_travel("sold", ok=False)
+    assert "sold" not in {v.listing_id for v in store.views()}
+    assert not store.insert(alert_decision("sold", 60))  # nor can it re-alert
+
+
+def test_ok_result_does_not_settle_the_travel():
+    """The userscript replies ok the instant it clicks, then watches the row
+    for ~3s and reports the sale if one lands. Throwing the collateral away
+    on that optimistic reply would discard it right before it is needed."""
+    store = AlertStore(expiry_s=10, consume_mode="all")
+    store.insert(alert_decision("one", 100))
+    store.insert(alert_decision("two", 60))
+    store.consume_best()
+
+    assert not store.settle_travel("two", ok=True)  # clicked the button...
+    assert len(store) == 0  # nothing shown while it may still work
+    assert store.settle_travel("two", ok=False)  # ...but it had just sold
+    assert [v.listing_id for v in store.views()] == ["one"]
+
+
+def test_failed_travel_keeps_the_original_expiry():
+    """A failed click does not make the other listings any fresher, so a
+    runner-up that expired mid-flight stays gone."""
+    store = AlertStore(expiry_s=0.05, consume_mode="all")
+    store.insert(alert_decision("one", 100))
+    store.insert(alert_decision("two", 60))
+    store.consume_best()
+    time.sleep(0.08)
+    assert not store.settle_travel("two", ok=False)
+    assert store.views() == ()
+
+
+def test_settle_ignores_a_result_for_another_listing():
+    store = AlertStore(expiry_s=10, consume_mode="all")
+    store.insert(alert_decision("one", 100))
+    store.insert(alert_decision("two", 60))
+    store.consume_best()
+    assert not store.settle_travel("somebody-elses-row", ok=False)
+    assert len(store) == 0
+
+
+def test_a_later_press_replaces_what_a_failure_could_restore():
+    """Press 2's collateral is what press 2 cleared - press 1's alerts were
+    consumed for real and must not come back."""
+    store = AlertStore(expiry_s=10, consume_mode="all")
+    store.insert(alert_decision("one", 100))
+    store.insert(alert_decision("two", 60))
+    store.consume_best()  # takes "two", holds "one"
+    store.settle_travel("two", ok=False)  # "one" is back
+    store.insert(alert_decision("three", 120))  # pricier, so it ranks below "one"
+    store.consume_best()  # takes "one", holds "three"
+    assert store.settle_travel("one", ok=False)
+    assert [v.listing_id for v in store.views()] == ["three"]
+    assert not store.settle_travel("two", ok=False)  # stale result: ignored
+
+
 # ----------------------------------------------- ranking by profit/difficulty
 # The hotkey takes the best VALUE (profit per 100 difficulty), not the
 # biggest absolute profit: a hard map's larger surplus is not worth more.

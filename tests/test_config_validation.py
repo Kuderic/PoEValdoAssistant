@@ -7,7 +7,7 @@ from sniper.config import ConfigError, load_config
 BASE = """
 league: auto
 server: {{ host: 127.0.0.1, port: {port} }}
-thresholds: {{ global_profit_div: {threshold} }}
+thresholds: {{ min_yield: {threshold} }}
 alerts: {{ expiry_seconds: {expiry}, max_display: {max_display}, volume: {volume} }}
 hotkey: {{ combo: "{combo}", consume: {consume} }}
 ninja: {{ enabled: true, refresh_minutes: {refresh} }}
@@ -43,7 +43,7 @@ def write(tmp_path, **overrides):
 def test_valid_config_loads(tmp_path):
     config = load_config(write(tmp_path))
     assert config.server.port == 8765
-    assert config.thresholds.global_profit_div == 10
+    assert config.thresholds.min_yield == 10
 
 
 @pytest.mark.parametrize(

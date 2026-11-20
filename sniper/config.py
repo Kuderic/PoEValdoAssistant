@@ -52,10 +52,12 @@ def apply_scoring_overrides(scoring: ModScoringConfig, path: Path) -> ModScoring
 def save_scoring_overrides(
     scoring: ModScoringConfig,
     path: Path,
-    global_profit_div: float | None = None,
+    min_yield: float | None = None,
     hotkey_combo: str | None = None,
     alert_volume: float | None = None,
-    flat_profit_reduction: float | None = None,
+    running_cost: float | None = None,
+    jackpot_min_net: float | None = None,
+    jackpot_min_yield: float | None = None,
 ) -> None:
     """Persist tuning-panel values (numbers, hotkey combo, alert volume;
     match patterns stay in config.yaml)."""
@@ -68,14 +70,18 @@ def save_scoring_overrides(
         # the namespaces apart means neither can ever clobber the other
         "pairings": {p.label: p.multiplier for p in scoring.pairings},
     }
-    if global_profit_div is not None:
-        data["global_profit_div"] = global_profit_div
+    if min_yield is not None:
+        data["min_yield"] = min_yield
     if hotkey_combo is not None:
         data["hotkey_combo"] = hotkey_combo
     if alert_volume is not None:
         data["alert_volume"] = alert_volume
-    if flat_profit_reduction is not None:
-        data["flat_profit_reduction"] = flat_profit_reduction
+    if running_cost is not None:
+        data["running_cost"] = running_cost
+    if jackpot_min_net is not None:
+        data["jackpot_min_net"] = jackpot_min_net
+    if jackpot_min_yield is not None:
+        data["jackpot_min_yield"] = jackpot_min_yield
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
@@ -85,7 +91,14 @@ def load_extra_overrides(path: Path) -> dict:
     if not path.exists():
         return {}
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    keys = ("global_profit_div", "hotkey_combo", "alert_volume", "flat_profit_reduction")
+    keys = (
+        "min_yield",
+        "hotkey_combo",
+        "alert_volume",
+        "running_cost",
+        "jackpot_min_net",
+        "jackpot_min_yield",
+    )
     return {k: raw[k] for k in keys if raw.get(k) is not None}
 
 
@@ -99,12 +112,12 @@ class ServerConfig:
 class Thresholds:
     """Profit thresholds in divine orbs (absolute, not percentages)."""
 
-    global_profit_div: float = 10.0
+    min_yield: float = 10.0
     per_map: dict[str, float] = field(default_factory=dict)
     # Fixed divine toll subtracted from every listing's profit: running any
     # map costs time, so an easy map with a tiny margin is not really worth
-    # it. Comes off before profit, P/100D and the alert cutoff are computed.
-    flat_profit_reduction: float = 1.0
+    # it. Comes off before profit, yield and the alert cutoff are computed.
+    running_cost: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -112,9 +125,21 @@ class AlertsConfig:
     expiry_seconds: float = 12.0
     max_display: int = 3
     sound: str = ""
-    volume: float = 0.5  # 0.0-1.0; scales the alert WAV (see sniper/sound.py)
+    # Non-Valdo live-search alerts get their own sound so they are
+    # distinguishable without looking; empty falls back to sound.GENERIC_WAV.
+    generic_sound: str = ""
+    volume: float = 0.5  # 0.0-1.0; scales both alert WAVs (see sniper/sound.py)
     traveled_display_seconds: float = 10.0  # keep the traveled map's mods readable
     feed_rows: int = 40  # live-feed history rows (the area scrolls)
+    # Jackpot: net AND yield both at or above these (see margin.is_jackpot).
+    # Gets its own colour, a looping alarm until consumed/expired, the
+    # hotkey's top slot, and pulls the overlay to the front.
+    jackpot_min_net: float = 30.0
+    jackpot_min_yield: float = 50.0
+    jackpot_sound: str = ""  # empty falls back to sound.JACKPOT_WAV
+    # Its own volume, independent of the ⚙ slider: a quiet routine woop
+    # must not make the one alert worth interrupting for quiet too.
+    jackpot_volume: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -135,7 +160,11 @@ class TradePricingConfig:
     """Official trade API pricing of unid uniques for active rewards."""
 
     enabled: bool = True
-    refresh_minutes: float = 10.0
+    # Every active reward is re-priced each cycle, so the request rate scales
+    # with how many live searches are open. At 10 a busy session earned a
+    # 30-minute API backoff; 30 cuts the sustained load to a third and still
+    # re-prices well inside the cached-price staleness window.
+    refresh_minutes: float = 30.0
     max_listings: int = 3  # cheapest N listings averaged (after outlier drop)
     # listings below this fraction of the sample median are price-fixers
     # (the perennial 2-chaos Mageblood) and are dropped before averaging
@@ -203,7 +232,7 @@ class ModPairing:
 
 @dataclass(frozen=True)
 class ModScoringConfig:
-    """required_profit = global_profit_div * score / 100: the base threshold
+    """required_profit = min_yield * score / 100: the base threshold
     is what a 100-difficulty map needs; 200 difficulty doubles it."""
 
     base_default: float = 25.0
@@ -297,6 +326,12 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         raise ConfigError("alerts.max_display must be >= 1")
     if not 0.0 <= alerts.volume <= 1.0:
         raise ConfigError(f"alerts.volume must be between 0 and 1, got {alerts.volume}")
+    if not 0.0 <= alerts.jackpot_volume <= 1.0:
+        raise ConfigError(
+            f"alerts.jackpot_volume must be between 0 and 1, got {alerts.jackpot_volume}"
+        )
+    if alerts.jackpot_min_net < 0 or alerts.jackpot_min_yield < 0:
+        raise ConfigError("alerts.jackpot_min_net / jackpot_min_yield must be >= 0")
 
     ninja = build(NinjaConfig, "ninja")
     if ninja.enabled and ninja.refresh_minutes < 1:
@@ -421,9 +456,9 @@ def load_config(path: str | Path = "config.yaml") -> Config:
 
     try:
         thresholds = Thresholds(
-            global_profit_div=float(section("thresholds").get("global_profit_div", 10.0)),
+            min_yield=float(section("thresholds").get("min_yield", 10.0)),
             per_map={k: float(v) for k, v in (section("thresholds").get("per_map") or {}).items()},
-            flat_profit_reduction=float(section("thresholds").get("flat_profit_reduction", 1.0)),
+            running_cost=float(section("thresholds").get("running_cost", 1.0)),
         )
         currency_rates = {k: float(v) for k, v in section("currency_rates").items()}
     except (TypeError, ValueError) as e:
@@ -434,17 +469,18 @@ def load_config(path: str | Path = "config.yaml") -> Config:
 
     # settings-panel overrides (saved next to the config) win over config.yaml
     extra = load_extra_overrides(path.with_name(SCORING_OVERRIDES_NAME))
-    if "global_profit_div" in extra:
-        thresholds = replace(thresholds, global_profit_div=float(extra["global_profit_div"]))
+    if "min_yield" in extra:
+        thresholds = replace(thresholds, min_yield=float(extra["min_yield"]))
     if "hotkey_combo" in extra:
         hotkey = replace(hotkey, combo=str(extra["hotkey_combo"]))
-    if "flat_profit_reduction" in extra:
-        thresholds = replace(
-            thresholds, flat_profit_reduction=float(extra["flat_profit_reduction"])
-        )
+    if "running_cost" in extra:
+        thresholds = replace(thresholds, running_cost=float(extra["running_cost"]))
     if "alert_volume" in extra:
         volume = min(1.0, max(0.0, float(extra["alert_volume"])))
         alerts = replace(alerts, volume=volume)
+    for key in ("jackpot_min_net", "jackpot_min_yield"):
+        if key in extra:
+            alerts = replace(alerts, **{key: max(0.0, float(extra[key]))})
 
     game_raw = section("game")
     return Config(

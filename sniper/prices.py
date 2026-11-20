@@ -1,8 +1,9 @@
 """PriceBook: reference prices and currency normalization.
 
-Layering per DESIGN.md: manual config entries always override; poe.ninja
-fills the rest (marked stale when the last refresh is too old). Everything
-is chaos-normalized at refresh time so the hot path is dict lookups only.
+Layering per DESIGN.md: a session price override beats everything, then
+manual config entries, then the trade-API average; poe.ninja fills the rest
+(marked stale when the last refresh is too old). Everything is
+chaos-normalized at refresh time so the hot path is dict lookups only.
 """
 
 from __future__ import annotations
@@ -57,6 +58,13 @@ class PriceBook:
         # replaces it, and reported as source="cached" so the UI can say so.
         self._trade_rewards: dict[str, tuple[float, float, bool, float]] = {}
         self._trade_ttl_s = max(config.trade_pricing.refresh_minutes * 60 * 2, 300)
+        # Session price corrections from the settings panel: reward -> divine.
+        # Highest precedence of all sources - the user is looking at the real
+        # market and correcting a reference they can see is wrong - and
+        # deliberately never persisted: a temporary fix for a temporarily
+        # wrong price, gone on restart so a stale correction can never
+        # outlive the situation that justified it.
+        self._overrides: dict[str, float] = {}
 
     # ------------------------------------------------------------------ state
 
@@ -144,20 +152,42 @@ class PriceBook:
             return None
         return chaos / divine_rate
 
+    # ------------------------------------------------------- session override
+
+    def set_override(self, reward: str, divine_value: float | None) -> None:
+        """Pin this reward's reference price to `divine_value` for the rest of
+        the session, or clear the pin with None (back to automatic pricing).
+
+        Not written to disk by design: see `_overrides`.
+        """
+        if divine_value is None:
+            self._overrides.pop(reward, None)
+        else:
+            self._overrides[reward] = float(divine_value)
+
+    def override_for(self, reward: str) -> float | None:
+        return self._overrides.get(reward)
+
+    def auto_reference_for(self, key: str) -> Reference | None:
+        """What the reference would be with no session override - what the UI
+        shows beside the override field so the user can see what they are
+        overriding, and what clearing it returns to."""
+        return self._reference_for(key)
+
     def price_age_s(self, reward: str) -> float | None:
         """Seconds since the price `reference_for` would return was actually
         fetched. None when there is no fetch time to report.
 
         Mirrors reference_for's precedence so the age always describes the
         figure on screen:
-        - manual override -> None, it was never fetched;
+        - session or manual override -> None, it was never fetched;
         - trade average -> its own fetch time, taken from the ORIGINAL fetch
           so a price restored from disk reports its true age (an app reopened
           after five hours shows "5h ago", not "just now");
         - poe.ninja fallback -> the age of the last ninja refresh, which is
           when that median was pulled.
         """
-        if self._config.prices.get(reward) is not None:
+        if reward in self._overrides or self._config.prices.get(reward) is not None:
             return None
         entry = self._trade_rewards.get(reward)
         if entry is not None:
@@ -223,11 +253,25 @@ class PriceBook:
         poe.ninja per-map median, which is only a fallback and is known to
         be inaccurate for foil Valdo maps. The startup warm-up holds
         listings until this is true (see __main__._hold_listing)."""
-        if self._config.prices.get(key) is not None:
+        if key in self._overrides or self._config.prices.get(key) is not None:
             return True
         return self._trade_reference(key) is not None
 
     def reference_for(self, key: str) -> Reference | None:
+        override = self._overrides.get(key)
+        if override is not None:
+            divine_rate = self.rate_chaos("divine")
+            if divine_rate:  # no rate to normalize with: fall through to auto
+                return Reference(
+                    key=key,
+                    display_amount=round(override, 1),
+                    display_currency="divine",
+                    chaos_value=override * divine_rate,
+                    source="override",
+                )
+        return self._reference_for(key)
+
+    def _reference_for(self, key: str) -> Reference | None:
         manual = self._config.prices.get(key)
         if manual is not None:
             chaos = self.to_chaos(manual.amount, manual.currency)

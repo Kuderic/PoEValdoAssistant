@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.7.5
+// @version      0.8.0
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
 // @run-at       document-idle
+// @updateURL    http://127.0.0.1:8765/valdo-sniper.user.js
+// @downloadURL  http://127.0.0.1:8765/valdo-sniper.user.js
 // ==/UserScript==
 
 'use strict';
@@ -64,7 +66,7 @@ const CONFIRM_WINDOW_MS = 3_000;
    script it loaded with until it is reloaded, so this is the only way to
    tell from logs/ whether a live tab is on a stale userscript.
    KEEP IN SYNC with the @version header above. */
-const SCRIPT_VERSION = '0.7.4';
+const SCRIPT_VERSION = '0.8.0';
 
 const WS_URL = 'ws://127.0.0.1:8765';
 const HEARTBEAT_MS = 30_000;
@@ -83,6 +85,10 @@ const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const PENDING_CAP = 50; // listings queued during ws reconnects
 const PENDING_MAX_AGE_MS = 60_000;
+/* Rows needed before their lack of a Reward property is treated as proof
+   that a search is not a Valdo one (see isGenericSearch). Enough that a
+   half-rendered page cannot momentarily look generic. */
+const GENERIC_ROW_EVIDENCE = 5;
 
 // ---------------------------------------------------------------------------
 // Pure functions (no DOM mutation, no network) - exercised by the harness.
@@ -207,6 +213,9 @@ function parseFetchItem(entry) {
   return {
     id,
     item_name: itemName,
+    // the base type; for a rare "Vermillion Ring" is the half worth reading
+    // while item_name is the random rare name. Valdo maps ignore it.
+    type_line: typeof item.typeLine === 'string' ? item.typeLine : null,
     price: { amount, currency },
     seller,
     reward: typeof reward === 'string' && reward ? reward : null,
@@ -324,11 +333,67 @@ function main() {
    * id of the search that state belongs to, to still be in the path. That
    * makes a stale bootstrap fall back to the rows on its own.
    */
-  function filterReward() {
+  function queryState() {
     const opts = window.tradeOpts;
     const live = opts && opts.live;
     if (typeof live !== 'string' || !live || !location.pathname.includes(live)) return null;
-    const filters = opts.state && opts.state.filters && opts.state.filters.map_filters;
+    return (opts.state && typeof opts.state === 'object') ? opts.state : null;
+  }
+
+  /**
+   * True when this tab is watching something OTHER than a Valdo reward -
+   * any live search the user built for an item they want.
+   *
+   * Detected by the ABSENCE of the map-reward filter, but only when the
+   * query state was positively readable: a stale or missing bootstrap also
+   * yields "no reward filter", and treating that as generic would turn a
+   * Valdo tab into an alert-on-everything tab. Unknown therefore means
+   * Valdo, the conservative direction - the worst case is the tab keeps its
+   * existing scored behaviour instead of gaining a new one.
+   */
+  function isGenericSearch() {
+    const state = queryState();
+    if (state) {
+      const filters = state.filters && state.filters.map_filters;
+      const reward = filters && filters.filters && filters.filters.map_completion_reward;
+      return !(reward && typeof reward.option === 'string' && reward.option);
+    }
+    return rowsLookGeneric();
+  }
+
+  /**
+   * Fallback when the bootstrap is unreadable: ask the rows instead.
+   *
+   * queryState() deliberately returns null once `tradeOpts.live` stops
+   * matching the path - which happens on any in-place SPA navigation, since
+   * `state` is a page-LOAD snapshot. That guard is right for reward
+   * detection, but as the ONLY generic test it silently demoted a working
+   * generic tab back to the Valdo lane: its listings then arrive
+   * generic:false, get judged against a reward price that does not exist,
+   * and land as no_reference - visible in the feed, never alerting, no
+   * sound. Observed live: 18 Pearl of Tsoatha listings, 18 no_reference,
+   * 0 flagged generic, on a tab already running 0.7.6.
+   *
+   * Every Valdo row carries the Reward property - it is how the map is
+   * priced at all - so a screenful of rows with NO reward among them cannot
+   * be a Valdo search. Requiring several rows keeps a half-rendered page
+   * from momentarily looking generic, and rows are only consulted when the
+   * authoritative query state is unavailable.
+   */
+  function rowsLookGeneric() {
+    if (!observedContainer) return false;
+    const rows = observedContainer.querySelectorAll(SELECTORS.row);
+    if (rows.length < GENERIC_ROW_EVIDENCE) return false;
+    for (const row of rows) {
+      if (textOf(row, SELECTORS.rewardValue)) return false;
+    }
+    return true;
+  }
+
+  function filterReward() {
+    const state = queryState();
+    if (!state) return null;
+    const filters = state.filters && state.filters.map_filters;
     const reward = filters && filters.filters && filters.filters.map_completion_reward;
     const option = reward && reward.option;
     if (typeof option !== 'string' || !option) return null;
@@ -357,6 +422,7 @@ function main() {
       search_id: searchId,
       tab_id: tabId,
       search_reward: lastSentReward,
+      search_kind: isGenericSearch() ? 'any' : 'valdo',
       version: SCRIPT_VERSION,
       net_stats: { ...netStats },
     });
@@ -426,12 +492,18 @@ function main() {
     rowRefs.set(id, new WeakRef(rowEl));
     if (silent) return true;
     const rows = Array.from(rowEl.parentElement?.children ?? []);
+    const generic = isGenericSearch();
     send({
       type: 'new_listing',
       search_id: searchId,
       tab_id: tabId,
       listing_id: id,
       ...parsed,
+      // A generic tab's listings must never carry a reward: the server
+      // registers rewards for trade-API pricing, and a stray one would put
+      // an unwanted name into that already-tight request budget.
+      reward: generic ? null : parsed.reward,
+      generic,
       capture: 'dom',
       row_index: rows.indexOf(rowEl),
       detected_at: new Date().toISOString(),
@@ -544,12 +616,15 @@ function main() {
     }
     netStats.sent += 1;
     const { id, indexed, ...fields } = parsed;
+    const generic = isGenericSearch();
     send({
       type: 'new_listing',
       search_id: searchId,
       tab_id: tabId,
       listing_id: id,
       ...fields,
+      reward: generic ? null : fields.reward, // see the DOM path for why
+      generic,
       indexed_at: indexed, // GGG's index time; null on the DOM path
       capture: 'net',
       row_index: -1, // no DOM row yet

@@ -7,7 +7,7 @@ league: "Allflame"
 server: { host: 127.0.0.1, port: 8766 }
 
 thresholds:
-  global_profit_div: 20    # divine orbs of profit required to alert
+  min_yield: 20    # divine orbs of profit required to alert
   per_map: {}
 
 alerts: { expiry_seconds: 12, max_display: 3, sound: "" }

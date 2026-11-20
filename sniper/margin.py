@@ -1,7 +1,7 @@
 """Pure decision logic: listing + PriceBook + rules -> Decision. Hot path.
 
-Alert condition: profit_div >= required_profit_div, where
-required_profit_div = threshold * difficulty_score / 100.
+Alert condition: net_div >= required_net_div, where
+required_net_div = threshold * difficulty_score / 100.
 The base threshold is calibrated for a 100-difficulty map: a 200-difficulty
 map needs twice the profit, a 50-difficulty map only half.
 """
@@ -14,19 +14,62 @@ from sniper.modrules import ModRules, ModScoring
 from sniper.prices import PriceBook
 
 
-def profit_per_100_difficulty(profit_div: float | None, difficulty: float) -> float | None:
+def net_yield(net_div: float | None, difficulty: float) -> float | None:
     """Divine profit normalised to a 100-difficulty map.
 
     The same unit as the configured threshold (which IS the profit a
     100-difficulty map must make), so this value is directly comparable to
     it: >= threshold is exactly the alert condition, restated. Used as the
-    alert ranking key and shown as the overlay's P/100D column.
+    alert ranking key and shown as the overlay's Yield column.
 
     None when profit is unknown (no reference/rate) or difficulty is zero.
     """
-    if profit_div is None or not difficulty:
+    if net_div is None or not difficulty:
         return None
-    return profit_div / difficulty * 100
+    return net_div / difficulty * 100
+
+
+def is_jackpot(
+    net_div: float | None,
+    difficulty: float,
+    min_net: float | None,
+    min_yield: float | None,
+) -> bool:
+    """A listing that is BOTH big money and cheap to run.
+
+    Neither number alone is rare: a 1000-difficulty Nimis can net +300d at
+    a mediocre yield, and a trivial map can show a huge yield on +5d. Both
+    at once is what is worth dropping everything for (e.g. a half-price
+    Nimis: +80d net, +144 yield, 55 difficulty). Disabled when either
+    threshold is None.
+    """
+    if min_net is None or min_yield is None:
+        return False
+    ratio = net_yield(net_div, difficulty)
+    return ratio is not None and net_div >= min_net and ratio >= min_yield
+
+
+def _generic_decision(listing: Listing, thresholds: Thresholds) -> Decision:
+    """A listing from a non-Valdo live search alerts on arrival.
+
+    None of the Valdo machinery applies: there is no reward to look up a
+    reference for, and the mod scoring reads MAP modifiers, so a ring's
+    explicit mods would score as noise and invent a difficulty out of
+    nothing. The user's live search already encodes what they want and what
+    they will pay, so the only useful thing the app can add is speed - get
+    it on screen and let them travel.
+
+    difficulty stays 0, which makes net_yield return None,
+    so these never pollute the Yield column or the Valdo ranking.
+    """
+    return Decision(
+        listing=listing,
+        key=listing.type_line or listing.item_name,
+        verdict="alert",
+        threshold=thresholds.min_yield,
+        # mods pass through unscored so the overlay can still show them
+        mods_annotated=tuple((m, "", "none") for m in listing.mods),
+    )
 
 
 def evaluate(
@@ -36,8 +79,10 @@ def evaluate(
     rules: ModRules,
     scoring: ModScoring | None = None,
 ) -> Decision:
+    if listing.generic:
+        return _generic_decision(listing, thresholds)
     key = listing.price_key
-    threshold = thresholds.per_map.get(key, thresholds.global_profit_div)
+    threshold = thresholds.per_map.get(key, thresholds.min_yield)
     mod_hits = rules.evaluate(listing.mods)
     blocked = any(h.severity == "block" for h in mod_hits)
 
@@ -60,7 +105,7 @@ def evaluate(
             special_warnings=difficulty.warnings,
             pairings=difficulty.pairings,
             mods_annotated=annotated,
-            required_profit_div=required,
+            required_net_div=required,
         )
 
     listing_chaos = book.to_chaos(listing.price.amount, listing.price.currency)
@@ -78,22 +123,22 @@ def evaluate(
             special_warnings=difficulty.warnings,
             pairings=difficulty.pairings,
             mods_annotated=annotated,
-            required_profit_div=required,
+            required_net_div=required,
         )
 
     # Flat reduction: every map costs time to run regardless of how easy it
     # is, so a fixed toll comes off the profit before anything else looks at
     # it. Applied here rather than at the display layer so the shown profit,
-    # P/100D, the alert cutoff and the hotkey's ranking all agree - a map
+    # yield, the alert cutoff and the hotkey's ranking all agree - a map
     # displaying less profit than it alerts on would be a bug.
-    profit_div = (reference.chaos_value - listing_chaos) / divine_rate
-    profit_div -= thresholds.flat_profit_reduction
+    net_div = (reference.chaos_value - listing_chaos) / divine_rate
+    net_div -= thresholds.running_cost
     margin = (reference.chaos_value - listing_chaos) / reference.chaos_value
     mismatch = listing.price.currency != reference.display_currency
 
     if blocked:
         verdict = "blocked"
-    elif profit_div >= required:
+    elif net_div >= required:
         verdict = "alert"
     else:
         verdict = "below_threshold"
@@ -105,7 +150,7 @@ def evaluate(
         threshold=threshold,
         reference=reference,
         listing_chaos=listing_chaos,
-        profit_div=profit_div,
+        net_div=net_div,
         margin=margin,
         currency_mismatch=mismatch,
         mod_hits=mod_hits,
@@ -114,5 +159,5 @@ def evaluate(
         special_warnings=difficulty.warnings,
         pairings=difficulty.pairings,
         mods_annotated=annotated,
-        required_profit_div=required,
+        required_net_div=required,
     )

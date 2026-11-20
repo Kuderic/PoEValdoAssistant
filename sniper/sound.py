@@ -21,12 +21,84 @@ import hashlib
 import io
 import sys
 import tempfile
+import threading
 import wave
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 # What the SystemExclamation alias plays. Used when no custom sound is
 # configured, so the default alert is volume-controllable too.
 DEFAULT_WAV = Path(r"C:\Windows\Media\Windows Exclamation.wav")
+# Non-Valdo live-search hits are rare and hand-picked, so they get their own
+# sound - the whole point is telling them apart from the routine Valdo woop
+# without looking at the screen. Deliberately short (1.6s): alerts expire in
+# seconds and the next one cancels this one, so a 5s alarm would still be
+# playing after the travel it announced.
+GENERIC_WAV = Path(r"C:\Windows\Media\tada.wav")
+# Jackpot (big net AND big yield): an actual alarm, LOOPED until the alert
+# is consumed, expires, or is muted - a single woop is exactly how a
+# half-price Nimis expired unseen. Unlike the two above its length does not
+# matter, because the overlay stops it the moment the alert is gone.
+JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm02.wav")
+
+
+@dataclass(frozen=True)
+class SoundCommand:
+    """kind: "valdo" | "generic" | "jackpot" plays that alert's WAV;
+    "stop" silences whatever is playing (ends a jackpot loop)."""
+
+    kind: str
+    loop: bool = False
+
+
+class SoundWorker:
+    """Runs PlaySound calls on ONE background thread, newest command wins.
+
+    PlaySound blocks its caller while it loads audio (~100-500ms when it
+    interrupts a playing sound), so it must stay off the UI thread. It used
+    to get a fresh thread per alert, which was fine while every sound was
+    fire-and-forget - but a looping jackpot alarm has to be STOPPED, and a
+    stop racing ahead of its play on a second thread would leave the alarm
+    ringing with no alert behind it. One worker keeps the calls ordered.
+
+    Pending commands coalesce: a burst only plays its last one. Nothing is
+    lost by that - each PlaySound cancels the previous anyway.
+    """
+
+    def __init__(self, backend: Callable[[SoundCommand], None], on_error=None):
+        self._backend = backend
+        self._on_error = on_error
+        self._cond = threading.Condition()
+        self._pending: SoundCommand | None = None
+        self._busy = False
+        threading.Thread(target=self._run, name="alert-sound", daemon=True).start()
+
+    def submit(self, command: SoundCommand) -> None:
+        with self._cond:
+            self._pending = command
+            self._cond.notify()
+
+    def wait_idle(self, timeout: float = 2.0) -> bool:
+        """Block until nothing is pending or running (tests)."""
+        with self._cond:
+            return self._cond.wait_for(lambda: self._pending is None and not self._busy, timeout)
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                self._cond.wait_for(lambda: self._pending is not None)
+                command, self._pending = self._pending, None
+                self._busy = True
+            try:
+                self._backend(command)
+            except Exception as e:  # a silent alert is a missed snipe
+                if self._on_error is not None:
+                    self._on_error(e)
+            finally:
+                with self._cond:
+                    self._busy = False
+                    self._cond.notify_all()
 
 
 def scale_wav(data: bytes, volume: float) -> bytes:
@@ -69,13 +141,13 @@ def scale_wav(data: bytes, volume: float) -> bytes:
         return data  # never let a malformed sound file break alerting
 
 
-def source_path(path: str = "") -> Path | None:
+def source_path(path: str = "", default: Path | None = None) -> Path | None:
     """The WAV to alert with: the configured file if set and readable,
-    otherwise the Windows default alert sound. None when neither exists -
-    the caller then falls back to the system alias, which plays at full
-    volume because an alias cannot be rescaled."""
+    otherwise `default` (the Windows alert sound unless overridden). None
+    when neither exists - the caller then falls back to the system alias,
+    which plays at full volume because an alias cannot be rescaled."""
     candidates = [Path(path)] if path else []
-    candidates.append(DEFAULT_WAV)
+    candidates.append(DEFAULT_WAV if default is None else default)
     for candidate in candidates:
         try:
             if candidate.is_file():
@@ -85,23 +157,23 @@ def source_path(path: str = "") -> Path | None:
     return None
 
 
-def load_wav(path: str = "") -> bytes | None:
+def load_wav(path: str = "", default: Path | None = None) -> bytes | None:
     """Raw bytes of the alert WAV (see source_path)."""
-    src = source_path(path)
+    src = source_path(path, default)
     try:
         return None if src is None else src.read_bytes()
     except OSError:
         return None
 
 
-def alert_wav_path(path: str = "", volume: float = 1.0) -> str | None:
+def alert_wav_path(path: str = "", volume: float = 1.0, default: Path | None = None) -> str | None:
     """Path to a WAV at the requested volume, ready for SND_FILENAME.
 
     Full volume plays the source file directly; anything quieter is scaled
     once into a temp file keyed by source identity + volume, so repeated
     alerts re-use it. Returns None when there is no source WAV at all.
     """
-    src = source_path(path)
+    src = source_path(path, default)
     if src is None:
         return None
     volume = max(0.0, min(1.0, volume))
