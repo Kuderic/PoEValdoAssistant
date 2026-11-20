@@ -15,11 +15,10 @@ import contextlib
 import threading
 import time
 import tkinter as tk
-import webbrowser
 from collections import deque
 from tkinter import font as tkfont
 
-from sniper import attention
+from sniper import attention, browser
 from sniper.alerts import AlertView
 from sniper.bus import (
     AlertsChanged,
@@ -466,7 +465,7 @@ class Overlay:
         self._setup_panel = tk.Frame(card, bg=SURFACE)
         for num, text, action in (
             ("1", "Install the browser script", self._open_install),
-            ("2", "Open a Valdo live search on the trade site", lambda: webbrowser.open(TRADE_URL)),
+            ("2", "Open a Valdo live search on the trade site", lambda: self._open_link(TRADE_URL)),
         ):
             line = tk.Frame(self._setup_panel, bg=SURFACE)
             line.pack(fill="x", pady=(0, 5))
@@ -1249,8 +1248,12 @@ class Overlay:
     def _open_install(self) -> None:
         """Opens the app's own userscript URL; Tampermonkey takes it from
         there. Only ever on a click."""
-        event("open_install", url=self._install_url)
-        webbrowser.open(self._install_url)
+        self._open_link(self._install_url)
+
+    def _open_link(self, url: str) -> None:
+        """In Chrome, where the live searches and Tampermonkey are - never
+        just the Windows default browser (see sniper/browser.py)."""
+        event("open_link", url=url, browser=browser.open_url(url))
 
     def _render_alerts(self) -> None:
         pinned = self._pinned_top
