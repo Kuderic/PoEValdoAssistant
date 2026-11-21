@@ -1,10 +1,10 @@
 """Jackpot tier: a listing with BOTH big net and big yield.
 
 Motivated by a half-price Nimis (+79.5d net, +144 yield, 55.2 difficulty)
-that expired unseen behind a single routine alert sound. These pin the
-detection rule, its exclusions (generic hits, currency mismatches), the
-ranking guarantee that the ringing alert is the one the hotkey takes, and
-the ordered sound worker that makes the looping alarm stoppable.
+that expired unseen. These pin the detection rule, its exclusions
+(generic hits, currency mismatches), the ranking guarantee that a jackpot is
+the hotkey's top pick, and the ordered sound worker. (A jackpot used to
+loop an alarm and pull the overlay forward; both were removed on request.)
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from sniper.config import AlertsConfig, ConfigError, load_config
 from sniper.models import Listing, parse_frame
 from sniper.modrules import ModRules
 from sniper.prices import PriceBook
-from sniper.sound import JACKPOT_WAV, SoundCommand, SoundWorker
+from sniper.sound import SoundCommand, SoundWorker
 
 CONFIG = make_config()
 BOOK = PriceBook(CONFIG)
@@ -141,36 +141,39 @@ def test_restored_runner_up_keeps_its_jackpot_flag():
 def test_config_defaults():
     assert DEFAULTS.jackpot_min_net == 30
     assert DEFAULTS.jackpot_min_yield == 50
-    assert DEFAULTS.jackpot_volume == 1.0
-    assert DEFAULTS.jackpot_sound == ""
 
 
 def test_jackpot_keys_load_and_validate(tmp_path):
     path = write(tmp_path)
     text = path.read_text(encoding="utf-8").replace(
-        "volume: 0.5 }", "volume: 0.5, jackpot_min_net: 40, jackpot_volume: 0.8 }"
+        "volume: 0.5 }", "volume: 0.5, jackpot_min_net: 40, jackpot_min_yield: 70 }"
     )
     path.write_text(text, encoding="utf-8")
     alerts = load_config(path).alerts
-    assert (alerts.jackpot_min_net, alerts.jackpot_volume) == (40, 0.8)
+    assert (alerts.jackpot_min_net, alerts.jackpot_min_yield) == (40, 70)
 
-    path.write_text(text.replace("jackpot_volume: 0.8", "jackpot_volume: 1.5"), encoding="utf-8")
-    with pytest.raises(ConfigError, match="jackpot_volume"):
+    bad = text.replace("jackpot_min_yield: 70", "jackpot_min_yield: -1")
+    path.write_text(bad, encoding="utf-8")
+    with pytest.raises(ConfigError, match="jackpot_min"):
+        load_config(path)
+
+
+def test_removed_jackpot_alarm_keys_are_rejected(tmp_path):
+    """jackpot_sound / jackpot_volume no longer exist; a config that still
+    sets them gets a clear error naming the allowed keys."""
+    path = write(tmp_path)
+    old = path.read_text(encoding="utf-8")
+    path.write_text(old.replace("volume: 0.5 }", "volume: 0.5, jackpot_volume: 1 }"), "utf-8")
+    with pytest.raises(ConfigError, match="unknown key"):
         load_config(path)
 
 
 # ------------------------------------------------------------------ sound
 
 
-def test_jackpot_default_sound_is_distinct():
-    from sniper import sound
-
-    assert JACKPOT_WAV not in (sound.DEFAULT_WAV, sound.GENERIC_WAV)
-
-
 def test_sound_worker_runs_commands_in_order_and_coalesces():
-    """A stop submitted after a play must never be overtaken by it - that
-    would leave the looping alarm ringing with no alert behind it."""
+    """A later command must never be overtaken by an earlier one, and a
+    burst queued behind a busy worker plays only its last command."""
     gate = threading.Event()
     seen: list[str] = []
 
@@ -182,7 +185,7 @@ def test_sound_worker_runs_commands_in_order_and_coalesces():
     worker = SoundWorker(backend)
     worker.submit(SoundCommand("first"))
     time.sleep(0.05)  # worker is now blocked inside "first"
-    worker.submit(SoundCommand("jackpot", loop=True))
+    worker.submit(SoundCommand("valdo", loop=True))
     worker.submit(SoundCommand("stop"))
     gate.set()
     assert worker.wait_idle()

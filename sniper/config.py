@@ -42,10 +42,18 @@ def apply_scoring_overrides(scoring: ModScoringConfig, path: Path) -> ModScoring
         replace(p, multiplier=float(saved_pairings[p.label])) if p.label in saved_pairings else p
         for p in scoring.pairings
     )
+    saved_risks = raw.get("risks") or {}
+    risks = tuple(
+        replace(r, fail_chance=min(1.0, max(0.0, float(saved_risks[r.label]))))
+        if r.label in saved_risks
+        else r
+        for r in scoring.risks
+    )
     return ModScoringConfig(
         base_default=float(raw.get("base_default", scoring.base_default)),
         rules=tuple(rules),
         pairings=pairings,
+        risks=risks,
     )
 
 
@@ -69,6 +77,8 @@ def save_scoring_overrides(
         # separate key: a pairing may share a label with nothing, but keeping
         # the namespaces apart means neither can ever clobber the other
         "pairings": {p.label: p.multiplier for p in scoring.pairings},
+        # failure chances (0-1) per risk label; match patterns stay in config
+        "risks": {r.label: r.fail_chance for r in scoring.risks},
     }
     if min_yield is not None:
         data["min_yield"] = min_yield
@@ -132,14 +142,10 @@ class AlertsConfig:
     traveled_display_seconds: float = 10.0  # keep the traveled map's mods readable
     feed_rows: int = 40  # live-feed history rows (the area scrolls)
     # Jackpot: net AND yield both at or above these (see margin.is_jackpot).
-    # Gets its own colour, a looping alarm until consumed/expired, the
-    # hotkey's top slot, and pulls the overlay to the front.
+    # Gets its own colour and the hotkey's top slot; it sounds like any
+    # other alert.
     jackpot_min_net: float = 30.0
     jackpot_min_yield: float = 50.0
-    jackpot_sound: str = ""  # empty falls back to sound.JACKPOT_WAV
-    # Its own volume, independent of the ⚙ slider: a quiet routine woop
-    # must not make the one alert worth interrupting for quiet too.
-    jackpot_volume: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -172,6 +178,10 @@ class TradePricingConfig:
     # unid+uncorrupted needs at least this many listings, else fall back to
     # identified+uncorrupted (and to identified+corrupted if that has none)
     min_unid_listings: int = 10
+    # which listings are the market: securable (instant buyout - all async
+    # trade can buy) | online | any (adds offline/negotiable listings, whose
+    # stale prices undercut the real market)
+    listing_status: str = "securable"
     # Reward prices are written to price_cache.json and reloaded at startup
     # so listings can be judged immediately instead of waiting out a fetch.
     # Anything older than this is ignored as too stale to trade on.
@@ -231,6 +241,26 @@ class ModPairing:
 
 
 @dataclass(frozen=True)
+class ModRisk:
+    """A mod (or combination) that can make the map FAIL outright, losing
+    what you paid for it. Unlike a difficulty multiplier this is not about
+    effort: it turns net into an expected value,
+        net = (1 - fail_chance) x market price - asking price - running cost
+    e.g. Bismuth bugging out, or Protect the Altar under less damage.
+    Several risks on one map combine as independent chances."""
+
+    label: str
+    match_all: tuple[str, ...]  # every pattern must find a line (one is fine)
+    fail_chance: float  # 0.0-1.0
+    note: str = ""
+    regex: bool = False
+    # skip this risk when ANY of these patterns finds a line: lets a plain
+    # "Ultimatum 10%" step aside for the more specific "Ultimatum + less
+    # damage 25%" instead of stacking with it
+    unless: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ModScoringConfig:
     """required_profit = min_yield * score / 100: the base threshold
     is what a 100-difficulty map needs; 200 difficulty doubles it."""
@@ -238,6 +268,7 @@ class ModScoringConfig:
     base_default: float = 25.0
     rules: tuple[ModScoringRule, ...] = ()
     pairings: tuple[ModPairing, ...] = ()
+    risks: tuple[ModRisk, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -326,10 +357,6 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         raise ConfigError("alerts.max_display must be >= 1")
     if not 0.0 <= alerts.volume <= 1.0:
         raise ConfigError(f"alerts.volume must be between 0 and 1, got {alerts.volume}")
-    if not 0.0 <= alerts.jackpot_volume <= 1.0:
-        raise ConfigError(
-            f"alerts.jackpot_volume must be between 0 and 1, got {alerts.jackpot_volume}"
-        )
     if alerts.jackpot_min_net < 0 or alerts.jackpot_min_yield < 0:
         raise ConfigError("alerts.jackpot_min_net / jackpot_min_yield must be >= 0")
 
@@ -338,6 +365,11 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         raise ConfigError("ninja.refresh_minutes must be >= 1 (be kind to poe.ninja)")
 
     trade_pricing = build(TradePricingConfig, "trade_pricing")
+    if trade_pricing.listing_status not in ("securable", "online", "any"):
+        raise ConfigError(
+            "trade_pricing.listing_status must be securable, online or any, "
+            f"got {trade_pricing.listing_status!r}"
+        )
     if trade_pricing.enabled and trade_pricing.refresh_minutes < 5:
         raise ConfigError("trade_pricing.refresh_minutes must be >= 5 (trade API rate limits)")
 
@@ -441,10 +473,50 @@ def load_config(path: str | Path = "config.yaml") -> Config:
             )
         )
 
+    risks = []
+    risk_labels = set()
+    for i, entry in enumerate(raw.get("mod_risks") or []):
+        if not isinstance(entry, dict) or "label" not in entry:
+            raise ConfigError(f"mod_risks[{i}] needs 'label'")
+        label = entry["label"]
+        patterns = entry.get("match_all") or ([entry["match"]] if entry.get("match") else [])
+        if not isinstance(patterns, list) or not patterns:
+            raise ConfigError(f"mod_risks[{i}] ({label}) needs 'match' or 'match_all'")
+        try:
+            chance = float(entry["fail_chance"])
+        except (KeyError, TypeError, ValueError):
+            raise ConfigError(
+                f"mod_risks[{i}] ({label}) needs 'fail_chance' between 0 and 1"
+            ) from None
+        if not 0.0 <= chance <= 1.0:
+            raise ConfigError(
+                f"mod_risks[{i}] ({label}) fail_chance must be between 0 and 1, got {chance}"
+                " (0.3 means 30%)"
+            )
+        if label in risk_labels:
+            raise ConfigError(f"mod_risks has two entries labelled {label!r}")
+        risk_labels.add(label)
+        unless = entry.get("unless") or []
+        if isinstance(unless, str):
+            unless = [unless]
+        for pattern in [*patterns, *unless]:
+            check_pattern(f"mod_risks[{i}]", pattern, bool(entry.get("regex")))
+        risks.append(
+            ModRisk(
+                label=label,
+                match_all=tuple(patterns),
+                fail_chance=chance,
+                note=str(entry.get("note", "")),
+                regex=bool(entry.get("regex", False)),
+                unless=tuple(unless),
+            )
+        )
+
     mod_scoring = ModScoringConfig(
         base_default=float(scoring_raw.get("base_default", 25.0)),
         rules=tuple(scoring_rules),
         pairings=tuple(pairings),
+        risks=tuple(risks),
     )
     mod_scoring = apply_scoring_overrides(mod_scoring, path.with_name(SCORING_OVERRIDES_NAME))
 

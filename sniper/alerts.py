@@ -4,7 +4,7 @@ ToS-critical semantics (DESIGN.md):
 - best-value-wins: the hotkey consumes the non-expired alert with the
   highest profit per 100 difficulty (see _rank), not the biggest absolute
   profit - except that a jackpot (big net AND big yield) always outranks a
-  non-jackpot, because it is the one alert ringing until it is dealt with;
+  non-jackpot: it is the best deal on screen by both measures;
 - expiry: a stale listing can never be traveled to by reflex;
 - single consumption: a consumed listing id can never alert or be clicked
   again, even if the tab re-pushes it;
@@ -59,8 +59,12 @@ class AlertView:
     expires_at_monotonic: float
     # from a non-Valdo live search: no net/yield/difficulty to show
     generic: bool = False
-    # big net AND big yield (margin.is_jackpot): its own colour + alarm
+    # big net AND big yield (margin.is_jackpot): its own colour, top pick
     jackpot: bool = False
+    # failure risks: (label, note, chance); combined chance; its divine cost
+    risks: tuple[tuple[str, str, float], ...] = ()
+    fail_chance: float = 0.0
+    risk_cost_div: float = 0.0
 
 
 @dataclass
@@ -96,6 +100,9 @@ class Alert:
             expires_at_monotonic=self.expires_at_monotonic,
             generic=d.listing.generic,
             jackpot=self.jackpot,
+            risks=d.risks,
+            fail_chance=d.fail_chance,
+            risk_cost_div=d.risk_cost_div or 0.0,
         )
 
 
@@ -123,7 +130,7 @@ class AlertStore:
 
     def set_jackpot_thresholds(self, min_net: float, min_yield: float) -> None:
         """Settings panel. Applies to alerts from now on; a live alert keeps
-        the flag it was raised with, so its alarm never flips mid-ring."""
+        the flag it was raised with, so it never changes colour mid-alert."""
         self._jackpot_min_net = min_net
         self._jackpot_min_yield = min_yield
 
@@ -282,9 +289,9 @@ class AlertStore:
         (80/100D) outranks a Feared+VOID monster at +50 div (4/100D).
         Generic alerts have no such key and rank newest-first.
 
-        A jackpot outranks everything: it is the alert whose alarm keeps
-        ringing, so it must also be the one a reflex press takes - otherwise
-        a newer generic hit could quietly steal the press meant for it.
+        A jackpot outranks everything: it clears both the big-money and the
+        big-yield bar, and a newer generic hit must not quietly steal the
+        press meant for it.
         """
 
         def key(a: Alert) -> tuple[bool, bool, float]:

@@ -36,17 +36,13 @@ alerts:
   traveled_display_seconds: 10 # traveled map's mods stay readable this long
   feed_rows: 40                # live-feed history rows (the area scrolls)
   # JACKPOT: a listing whose NET and YIELD BOTH clear these bars (e.g. a
-  # half-price Nimis: +80d net, +144 yield). It gets a pulsing magenta
-  # banner, takes the hotkey's top slot, pulls the overlay to the front
-  # (without taking keyboard focus from the game), flashes its taskbar
-  # button, and LOOPS an alarm until you travel, it expires, or you mute.
+  # half-price Nimis: +80d net, +144 yield). It gets a magenta banner and
+  # frame and takes the hotkey's top slot; it sounds like any other alert.
   # Stays magenta in the live feed so a missed one is obvious later.
   # 30/50 matched ~9 of ~1500 logged alerts. Currency mismatches never count.
   # Both bars are also editable in the ⚙ panel (saved to scoring_overrides.yaml).
   jackpot_min_net: 30          # divines
   jackpot_min_yield: 50        # divines per 100 difficulty
-  jackpot_sound: ""            # empty -> C:\Windows\Media\Alarm02.wav
-  jackpot_volume: 1.0          # independent of the ⚙ volume slider
 
 hotkey:
   combo: "`"
@@ -82,6 +78,11 @@ trade_pricing:
   # than this and they are discarded as too stale to trade on
   cache_max_age_minutes: 720
   outlier_cutoff: 0.5      # drop listings under this fraction of the sample median
+  # Only instant-buyout listings count: those are all async trading can buy.
+  # "any" also counts offline sellers' days-old prices and negotiable
+  # "~price" listings, which undercut the real market (Headhunter read
+  # ~161d that way when every buyable one was 184d+). securable|online|any
+  listing_status: securable
   base_url: "https://www.pathofexile.com"
   corrupted_uniques:
     - "Impossible Escape"
@@ -128,22 +129,8 @@ mod_pairings:
     match_all: ["100% delirious", "becomes fatal"]
     multiplier: 10
     note: "Impossible unless DPS-check build"
-  # regex on both sides so the ultimatum pattern can exclude
-  # "Area has no chance to contain Ultimatum Encounters"
-  - label: "Ultimatum + delirium"
-    match_all:
-      - "an ultimatum encounter|ultimatum encounter waves|ultimatum modifier"
-      - "100% delirious"
-    regex: true
-    multiplier: 2
-    note: "Almost certain to fail Protect the Altar"
-  - label: "Ultimatum + no damage"
-    match_all:
-      - "an ultimatum encounter|ultimatum encounter waves|ultimatum modifier"
-      - "less damage per equipped item"
-    regex: true
-    multiplier: 2
-    note: "Almost certain to fail Protect the Altar"
+  # (Ultimatum + delirium / no damage used to be pairings here; they are a
+  # chance of FAILING the map, so they now live in mod_risks below.)
   - label: "Blight + melee-range only"
     match_all: ["blight", "within 2 metres of a player"]
     multiplier: 2
@@ -155,6 +142,46 @@ mod_pairings:
     match_all: ["area contains the feared", "sent to the void"]
     multiplier: 2
     note: "The Feared can one-shot; dying here deletes the character"
+
+# FAILURE RISKS: mods (or combinations) that can make the map FAIL. A failed
+# map pays nothing and what you paid for it is gone, so each risk turns NET
+# into an expected value:
+#   NET = (1 - fail_chance) x market price - asking price - running cost
+# fail_chance is 0-1 (0.3 = 30%). Several risks on one map combine as
+# independent chances (two 30% risks = 51%). 1.0 means it can never pay off,
+# so it never alerts. 0 switches a risk off. The chances are editable in the
+# ⚙ panel (saved to scoring_overrides.yaml); match patterns stay here.
+# "Less damage or delirium": the second pattern is a regex alternation.
+mod_risks:
+  # Even a clean Ultimatum can brick the map. `unless` hands the map to the
+  # more specific entry below when less damage or delirium is present, so
+  # the two never stack: 10% alone, 25% with the penalty.
+  - label: "Ultimatum"
+    match: "an ultimatum encounter|ultimatum encounter waves|ultimatum modifier"
+    unless: "less damage per equipped item|100% delirious"
+    regex: true
+    fail_chance: 0.10
+    note: "Can brick the map even without penalties"
+  # 25% overall: Protect the Altar does not roll every time, but when it
+  # does, less damage or delirium usually fails it.
+  - label: "Ultimatum + less damage/delirium"
+    match_all:
+      - "an ultimatum encounter|ultimatum encounter waves|ultimatum modifier"
+      - "less damage per equipped item|100% delirious"
+    regex: true
+    fail_chance: 0.25
+    note: "Protect the Altar is likely to fail"
+  - label: "Breach + less damage/delirium"
+    match_all:
+      - "unstable breaches must be stabilised"
+      - "less damage per equipped item|100% delirious"
+    regex: true
+    fail_chance: 1.0
+    note: "Breaches can't be stabilised: unclearable"
+  - label: "Bismuth"
+    match: "bismuth"
+    fail_chance: 0.30
+    note: "Bismuth maps bug out and fail"
 
 # Difficulty scoring. Every listing gets:
 #   score = max(base_default, min_base of matched rules) x product(multipliers)
@@ -250,7 +277,10 @@ mod_scoring:
         - "runic monsters have"
       multiplier: 1.2
     - { label: "6 additional projectiles", match: "fire 6 additional projectiles", multiplier: 1.1 }
-    - { label: "Apparitions", match: "players are assaulted by", multiplier: 1.2 }
+    # "apparitions", not "players are assaulted by": Ruinous Ghosts share
+    # that opening and are scored on their own below.
+    - { label: "Apparitions", match: "apparitions", multiplier: 1.2 }
+    - { label: "Ruinous Ghosts", match: "ruinous ghosts", multiplier: 1.5 }
     - { label: "Driven mad", match: "driven mad", multiplier: 1.3 }
     - { label: "Enrage on Low Life", match: "enrage on low life", multiplier: 1.3 }
     - { label: "Melee-range damage only", match: "within 2 metres of a player", multiplier: 1.3 }

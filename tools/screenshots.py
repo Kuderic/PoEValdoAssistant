@@ -164,7 +164,6 @@ def scene(name: str, events, height: int = 800) -> None:
     bus = Bus()
     overlay = Overlay(root, bus, config)
     overlay._play_sound = lambda *a, **k: None  # silent: no alarm while capturing
-    overlay._start_jackpot = lambda v: setattr(overlay, "_jackpot_active", False)
     # on-screen for the moment of the grab (the overlay is always-on-top)
     root.geometry(f"515x{height}+60+60")
     for ev in events:

@@ -26,6 +26,13 @@ from sniper.logging_setup import event
 # fetch this many cheapest listings (trade API max per fetch); the average
 # uses max_listings of them after outlier rejection
 FETCH_LIMIT = 10
+# Which listings count as the market. "securable" = instant buyout, the only
+# kind PoE 3.27+ asynchronous trading can actually sell you. "any" also
+# returns offline sellers' days-old prices and "~price" (negotiable, not
+# buyout) listings - verified live 2026-11-21: they were the two cheapest
+# Headhunters (148d, 150d) and dragged its price to ~161d when every
+# buyable one was 184d+.
+LISTING_STATUSES = ("securable", "online", "any")
 
 
 def select_representative(
@@ -130,7 +137,9 @@ class TradePricer:
         spacing_s: float = REQUEST_SPACING_S,
         corrupted_uniques: tuple[str, ...] = (),
         min_unid_listings: int = 10,
+        listing_status: str = "securable",
     ):
+        self._listing_status = listing_status
         self._corrupted_uniques = {u.lower() for u in corrupted_uniques}
         self._min_unid_listings = min_unid_listings
         headers = {"User-Agent": USER_AGENT}
@@ -236,7 +245,7 @@ class TradePricer:
         """One search; returns (query_id, cheapest hashes, total listings)."""
         query = {
             "query": {
-                "status": {"option": "any"},
+                "status": {"option": self._listing_status},
                 "name": name,
                 "filters": {
                     "misc_filters": {

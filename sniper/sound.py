@@ -36,17 +36,12 @@ DEFAULT_WAV = Path(r"C:\Windows\Media\Windows Exclamation.wav")
 # seconds and the next one cancels this one, so a 5s alarm would still be
 # playing after the travel it announced.
 GENERIC_WAV = Path(r"C:\Windows\Media\tada.wav")
-# Jackpot (big net AND big yield): an actual alarm, LOOPED until the alert
-# is consumed, expires, or is muted - a single woop is exactly how a
-# half-price Nimis expired unseen. Unlike the two above its length does not
-# matter, because the overlay stops it the moment the alert is gone.
-JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm02.wav")
 
 
 @dataclass(frozen=True)
 class SoundCommand:
-    """kind: "valdo" | "generic" | "jackpot" plays that alert's WAV;
-    "stop" silences whatever is playing (ends a jackpot loop)."""
+    """kind: "valdo" | "generic" plays that alert's WAV; "stop" silences
+    whatever is playing. `loop` repeats until the next command."""
 
     kind: str
     loop: bool = False
@@ -56,11 +51,9 @@ class SoundWorker:
     """Runs PlaySound calls on ONE background thread, newest command wins.
 
     PlaySound blocks its caller while it loads audio (~100-500ms when it
-    interrupts a playing sound), so it must stay off the UI thread. It used
-    to get a fresh thread per alert, which was fine while every sound was
-    fire-and-forget - but a looping jackpot alarm has to be STOPPED, and a
-    stop racing ahead of its play on a second thread would leave the alarm
-    ringing with no alert behind it. One worker keeps the calls ordered.
+    interrupts a playing sound), so it must stay off the UI thread. One
+    worker rather than a thread per alert keeps the calls ordered: a later
+    sound (or a stop) can never be overtaken by an earlier one.
 
     Pending commands coalesce: a burst only plays its last one. Nothing is
     lost by that - each PlaySound cancels the previous anyway.

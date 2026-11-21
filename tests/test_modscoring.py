@@ -387,3 +387,25 @@ def test_shipped_config_has_no_reflect_rule():
     double-count the thorns lines ("...Thorns reflecting...")."""
     scoring = _shipped_scoring()
     assert not [c for c in scoring._rules if "reflect" in c.rule.label.lower()]
+
+
+def test_ruinous_ghosts_score_on_their_own_not_as_apparitions():
+    """Both mods open with "Players are assaulted by"; Ruinous Ghosts are
+    x1.5, apparitions x1.2, and neither may claim the other's line."""
+    from pathlib import Path
+
+    from sniper.config import load_config
+
+    sc = ModScoring(load_config(Path(__file__).parent.parent / "config.yaml").mod_scoring)
+    ghosts = sc.evaluate(
+        [
+            "Players are assaulted by Ruinous Ghosts\n"
+            "Reaching seven Ruin prevents Reward from being claimed"
+        ]
+    )
+    assert ghosts.matched == ("Ruinous Ghosts",)
+    for line in (
+        "Players are assaulted by apparitions of Atziri, Queen of the Vaal",
+        "Players are assaulted by many dangerous Apparitions",
+    ):
+        assert sc.evaluate([line]).matched == ("Apparitions",)

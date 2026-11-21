@@ -67,6 +67,17 @@ class DifficultyResult:
     warnings: tuple[tuple[str, str], ...]  # (label, color) for warning rules
     # (label, note, multiplier) for every deadly pairing present
     pairings: tuple[tuple[str, str, float], ...] = ()
+    # (label, note, fail_chance) for every failure risk present
+    risks: tuple[tuple[str, str, float], ...] = ()
+
+    @property
+    def fail_chance(self) -> float:
+        """Chance the map fails from ANY present risk, treating them as
+        independent: 1 - (1-a)(1-b)... Two 30% risks are 51%, not 60%."""
+        survive = 1.0
+        for _label, _note, chance in self.risks:
+            survive *= 1.0 - chance
+        return 1.0 - survive
 
 
 class _CompiledScoringRule:
@@ -90,11 +101,28 @@ class _CompiledPairing:
         return all(any(m(mod) for mod in mods) for m in self._matchers)
 
 
+class _CompiledRisk(_CompiledPairing):
+    """Same all-patterns-must-hit matching as a pairing (one pattern is
+    fine for a single-mod risk like Bismuth)."""
+
+    def __init__(self, risk):
+        self.risk = risk
+        self._matchers = [_matcher(p, risk.regex) for p in risk.match_all]
+        self._unless = [_matcher(p, risk.regex) for p in risk.unless]
+
+    def hits(self, mods: list[str]) -> bool:
+        if any(m(mod) for m in self._unless for mod in mods):
+            return False
+        return super().hits(mods)
+
+
 class ModScoring:
     def __init__(self, config: ModScoringConfig):
         self._config = config
         self._rules = [_CompiledScoringRule(r) for r in config.rules]
         self._pairings = [_CompiledPairing(p) for p in config.pairings]
+        # a 0% risk is switched off: it would only add noise to the overlay
+        self._risks = [_CompiledRisk(r) for r in config.risks if r.fail_chance > 0]
 
     def evaluate(self, mods: Iterable[str]) -> DifficultyResult:
         mods = list(mods)
@@ -111,11 +139,13 @@ class ModScoring:
         pairings = [c.pairing for c in self._pairings if c.hits(mods)]
         for p in pairings:
             score *= p.multiplier
+        risks = [c.risk for c in self._risks if c.hits(mods)]
         return DifficultyResult(
             score=round(score, 2),
             matched=tuple(r.label for r in matched),
             warnings=tuple((r.label, r.warning) for r in matched if r.warning),
             pairings=tuple((p.label, p.note, p.multiplier) for p in pairings),
+            risks=tuple((r.label, r.note, r.fail_chance) for r in risks),
         )
 
     @staticmethod

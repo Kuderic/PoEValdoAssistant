@@ -272,3 +272,31 @@ async def test_429_restriction_headers_drive_the_backoff():
     with pytest.raises(TradeBackoff):
         await pricer.fetch_reward_listings("Allflame", "Foil Mageblood")
     assert pricer.backoff_remaining == pytest.approx(300, abs=2)
+
+
+@pytest.mark.parametrize(("configured", "sent"), [(None, "securable"), ("any", "any")])
+async def test_search_prices_only_buyable_listings(configured, sent):
+    """Default status is securable (instant buyout): offline and negotiable
+    "~price" listings are not the market. Verified live on Headhunter: with
+    "any" the two cheapest were unbuyable and pulled the price ~13% low."""
+    statuses: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/api/trade/search/"):
+            statuses.append(json.loads(request.content)["query"]["status"]["option"])
+            return httpx.Response(200, json={"id": "q1", "total": 25, "result": ["h0"]})
+        return httpx.Response(200, json=FETCH_RESPONSE)
+
+    kwargs = {} if configured is None else {"listing_status": configured}
+    pricer = pricer_with(handler, **kwargs)
+    await pricer.fetch_reward_listings("Covens", "Foil Headhunter")
+    assert statuses and set(statuses) == {sent}
+
+
+def test_config_rejects_unknown_listing_status(tmp_path):
+    from sniper.config import ConfigError, load_config
+
+    path = tmp_path / "config.yaml"
+    path.write_text("trade_pricing: { listing_status: buyable }\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="listing_status"):
+        load_config(path)

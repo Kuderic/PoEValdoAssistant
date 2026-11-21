@@ -84,14 +84,51 @@ note saying what actually goes wrong:
 |---|---|---|
 | No damage + fatal timer | 10 | Impossible unless DPS-check build |
 | Delirium + fatal timer | 10 | Impossible unless DPS-check build |
-| Ultimatum + delirium | 2 | Almost certain to fail Protect the Altar |
-| Ultimatum + no damage | 2 | Almost certain to fail Protect the Altar |
 | Blight + melee-range only | 2 | Bricks the CC tower strategy |
 
 These stack multiplicatively, so a map with two 10× pairings lands in the
 hundreds of thousands of difficulty and will simply never alert — which is
 the point. Multipliers are editable in the ⚙ panel; the match patterns live
 in `config.yaml`.
+
+### Failure risks
+
+Some mods don't make a map harder, they make it **fail**, and a failed map
+loses everything you paid for it. `mod_risks` gives each one a chance of
+failing, and net becomes an *expected* value:
+
+```
+NET  =  (1 − fail chance) × market price  −  asking price  −  running cost
+```
+
+| Risk | Fail chance | Why |
+|---|---|---|
+| Ultimatum | 10% | Can brick the map even without penalties |
+| Ultimatum + less damage or delirium | 25% (replaces the 10%) | Protect the Altar, if it rolls, is likely to fail |
+| Breach + less damage or delirium | 100% | Breaches can't be stabilised: unclearable |
+| Bismuth | 30% | Bismuth maps bug out and fail |
+
+A 200d reward listed at 100d with Bismuth on it nets 0.7 × 200 − 100 =
+**+40d**, not +100d. Several risks on one map combine as independent chances
+(25% and 30% together is 47.5%, not 55%). A 100% risk can never come out
+positive, so an unclearable Breach never alerts at any price.
+
+Because yield, the alert cutoff, jackpots and the hotkey's ranking are all
+built on net, they all account for the risk. On the overlay the NET caption
+reads **NET · EXPECTED**, each risk gets an amber row with its chance, and a
+line says what it cost (*"Net counts a 48% chance of failing (−95d of the
+reward's value)"*). Feed and runner-up rows carry a `⚠30%` marker.
+
+**Adjust the chances in the ⚙ panel** under *Failure risks* (in percent,
+applied live and saved); 0 switches a risk off. To add a new one, copy an
+entry in `mod_risks` in `config.yaml`. An `unless:` pattern makes a general
+risk step aside for a more specific one, which is how plain Ultimatum (10%)
+and Ultimatum with less damage or delirium (25%) avoid stacking.
+
+**The ⚙ panel has a search box** at the top: type part of a mod or setting
+name (`ghost`, `jackpot`) to filter every section, or a section name
+(`risk`, `pairing`) to show all of it. Esc clears it. Difficulty rules are
+listed alphabetically.
 
 ---
 
@@ -221,24 +258,19 @@ the trade site rather than in the app.
 ### Jackpots
 
 A Valdo listing that is **both** big money and cheap to run (net ≥ 30d
-**and** yield ≥ 50 by default) is a jackpot, and is built so it can't
-slip by unseen:
+**and** yield ≥ 50 by default) is a jackpot:
 
 <img src="docs/overlay-jackpot.png" alt="A jackpot alert: Nimis at 80 divine, +80 net, yield +144, difficulty 55, with a magenta JACKPOT banner and a magenta frame around the alert card" width="420">
 
-- a pulsing magenta **★ JACKPOT** banner and frame, with the name, net
-  and yield in magenta and a magenta TELEPORT button;
-- an alarm (`Alarm02.wav`) that **loops** until you travel, the alert
-  expires, or you click the speaker icon to mute. It plays at `alerts.jackpot_volume`,
-  regardless of the volume slider;
-- the overlay is pulled in front and restored if minimised, and its taskbar
-  button flashes. Keyboard focus stays in the game;
-- it takes the hotkey's top slot over anything else, so the press goes to
-  the thing that's ringing;
+- a magenta **★ JACKPOT** banner and frame, with the name, net and yield
+  in magenta and a magenta TELEPORT button;
+- it takes the hotkey's top slot over anything else;
 - it stays magenta with `★ JACKPOT` in the live feed, so one you missed is
   obvious later.
 
-Tune the bars in the ⚙ panel under **Jackpot** (applied live and saved), or
+It plays the normal alert sound and never pulls the overlay to the front.
+
+Tune the bars in the ⚙ panel under **Alerts** (applied live and saved), or
 with `alerts.jackpot_min_net` / `jackpot_min_yield` in `config.yaml`. A
 currency mismatch is never a jackpot.
 
@@ -293,12 +325,12 @@ them when you know better than the market average, e.g. right after a patch.
 | `mod_scoring.base_default` | Difficulty of a clean, unmodded map |
 | `mod_scoring.rules` | Per-mod `min_base` / `multiplier`, optional `warning` |
 | `mod_pairings` | Deadly combinations: `multiplier` + `note` |
+| `mod_risks` | Chance (0–1) a mod combination makes the map fail; net becomes an expected value. Chances also in the ⚙ panel |
 | `mod_warnings` | `block` rules — logged, never alerted, at any price |
 | `hotkey.combo` / `.consume` | Travel key; `all` clears every alert per press, `top` keeps runners-up (a *failed* travel gives them back either way) |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (30 / 50), also in the ⚙ panel |
-| `alerts.jackpot_sound` / `jackpot_volume` | Jackpot alarm file and its own volume |
 | `trade_pricing.cache_max_age_minutes` | How stale a restored price may be (720) |
 
 ---

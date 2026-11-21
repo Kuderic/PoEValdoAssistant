@@ -259,6 +259,8 @@ class SniperServer:
             threshold_div=decision.threshold,
             difficulty=decision.difficulty,
             difficulty_mods=list(decision.difficulty_mods),
+            fail_chance=round(decision.fail_chance, 4),
+            risks=[f"{chance:.0%}:{label}" for label, _note, chance in decision.risks],
             special_warnings=[f"{color}:{label}" for label, color in decision.special_warnings],
             required_net_div=None
             if decision.required_net_div is None

@@ -258,3 +258,9 @@ class Decision:
     # deadly mod pairings present: (label, note, multiplier)
     pairings: tuple[tuple[str, str, float], ...] = field(default_factory=tuple)
     required_net_div: float | None = None  # threshold * difficulty / 100
+    # failure risks present: (label, note, fail_chance 0-1), their combined
+    # chance, and what that chance costs in divines (fail_chance x market
+    # price) - already taken off net_div, which is an expected value
+    risks: tuple[tuple[str, str, float], ...] = field(default_factory=tuple)
+    fail_chance: float = 0.0
+    risk_cost_div: float | None = None

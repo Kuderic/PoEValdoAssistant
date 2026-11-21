@@ -108,8 +108,7 @@ def _shipped():
     [
         ([NO_DMG, MINION_DMG, FATAL], "No damage + fatal timer"),
         ([DELIRIOUS, FATAL], "Delirium + fatal timer"),
-        (["Areas contain an Ultimatum Encounter", DELIRIOUS], "Ultimatum + delirium"),
-        (["Areas contain an Ultimatum Encounter", NO_DMG], "Ultimatum + no damage"),
+        # Ultimatum + delirium/no damage moved to mod_risks (tests/test_risks.py)
         (
             [
                 "Area contains a Blight Encounter",

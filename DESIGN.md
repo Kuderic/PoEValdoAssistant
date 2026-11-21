@@ -194,14 +194,14 @@ exactly as it always did.
 
 **Jackpot tier.** A Valdo alert whose net AND yield both clear
 `alerts.jackpot_min_net` / `jackpot_min_yield` (`margin.is_jackpot`) is a
-jackpot. It outranks every non-jackpot, generic hits included, because it
-is the alert whose alarm is looping and a reflex press must take the thing
-making the noise. Generic hits and currency mismatches are never jackpots
-(the scam guard's case must not be made louder). The overlay loops its own
-alarm (`SoundWorker` keeps play/stop ordered) until no live alert is a
-jackpot, and pulls itself forward with no-activate Win32 calls
-(`sniper/attention.py`) so keyboard focus never leaves the game. None of
-this touches the click path: one press is still one travel.
+jackpot. It outranks every non-jackpot, generic hits included: it clears
+both bars, and a newer generic hit must not steal the press meant for it.
+Generic hits and currency mismatches are never jackpots (the scam guard's
+case must not be pushed to the top). A jackpot is visual only - magenta
+banner, frame and feed row; it plays the ordinary alert sound and does not
+pull the window forward (an earlier looping alarm and bring-to-front were
+removed on request). None of this touches the click path: one press is
+still one travel.
 
 ## Scam guard
 
@@ -210,6 +210,26 @@ currency of the map's reference price (e.g., reference in divine, listed
 in exalted — the classic "20 exalted instead of 20 divine" bait). The
 overlay shows both currencies prominently. Margin is still computed
 correctly via chaos normalization; a mismatch warns, it never blocks.
+
+## Failure risks
+
+`mod_risks` (`config.ModRisk`, matched like a pairing but one pattern is
+allowed) model mods that can make the map FAIL rather than be harder:
+Bismuth bugging out, Protect the Altar under less damage/delirium, an
+unclearable Breach. A failed map pays nothing and the asking price is spent,
+so `margin.evaluate` computes an expected value:
+
+    net = (1 - p) x reference - listing price - running_cost
+    p   = 1 - prod(1 - fail_chance_i)   (independent risks)
+
+`risk_cost_div = p x reference` is carried on the Decision for display only;
+it is already inside `net_div`. Everything downstream (yield, the cutoff,
+jackpot, hotkey ranking) reads `net_div`, so none of it needs to know about
+risks. A risk at 0 is skipped at compile time. Chances are tuned in the ⚙
+panel (stored under `risks:` in scoring_overrides.yaml); patterns stay in
+config.yaml. Difficulty multipliers and failure risks must not describe the
+same thing twice: the old Ultimatum pairings were removed when the risk
+replaced them.
 
 ## Mod warnings and difficulty scoring
 
@@ -263,7 +283,9 @@ for regex, `match_all` for combos where every pattern must hit):
   searches the **unidentified** version of the unique —
   `POST /api/trade/search/{league}` with `name` (verified: `name` matches
   unid uniques; base-type search is a 1c gamble bin), `identified: false`,
-  `status: any`, no foil filter (foil doesn't matter; foils list at
+  `status: securable` (instant buyout only - `trade_pricing.listing_status`;
+  `any` let offline sellers' stale prices and negotiable `~price` listings
+  undercut the market: Headhunter read ~161d against a real 184d), no foil filter (foil doesn't matter; foils list at
   market parity) — then fetches the cheapest `max_listings` and stores
   the **average** in the PriceBook.
 - Cadence: the loop wakes every 15s so a newly-opened live search is
@@ -353,6 +375,14 @@ Save" also writes `scoring_overrides.yaml` next to config.yaml, which is
 merged over `mod_scoring` at startup — so quick tweaks survive restarts
 without touching the commented main config. Price pins are the one thing
 deliberately left out of that file.
+
+Layout: a pinned header (search box + the save/error note, so feedback is
+always in view) over a scrolling body ordered by how often each part is
+touched: Alerts (yield, running cost, jackpot bars), Hotkey & sound, Reward
+prices, Failure risks, Deadly pairings, Base difficulty, Difficulty
+multipliers (both rule lists alphabetical). The search filters rows by
+label and hover hint; a query matching a section title shows the whole
+section; rows are hidden with `grid_remove()` so they return in place.
 
 ## Click-to-travel and the confirmation dialog
 

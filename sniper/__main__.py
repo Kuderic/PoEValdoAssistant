@@ -210,6 +210,8 @@ class App:
                         # verdict-gated: a blocked/below-threshold row must
                         # never be painted as the one worth chasing
                         jackpot=decision.verdict == "alert" and self.store.is_jackpot(decision),
+                        risks=decision.risks,
+                        fail_chance=decision.fail_chance,
                     )
                 )
             )
@@ -584,6 +586,7 @@ class App:
                 max_listings=self.config.trade_pricing.max_listings,
                 corrupted_uniques=tuple(self.config.trade_pricing.corrupted_uniques),
                 min_unid_listings=self.config.trade_pricing.min_unid_listings,
+                listing_status=self.config.trade_pricing.listing_status,
             )
             tasks.append(asyncio.create_task(self.trade_price_loop(pricer), name="trade-price"))
         await asyncio.gather(*tasks)

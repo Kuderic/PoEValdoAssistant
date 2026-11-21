@@ -4,6 +4,10 @@ Alert condition: net_div >= required_net_div, where
 required_net_div = threshold * difficulty_score / 100.
 The base threshold is calibrated for a 100-difficulty map: a 200-difficulty
 map needs twice the profit, a 50-difficulty map only half.
+
+Failure risks make net an EXPECTED value: a failed map pays nothing and the
+asking price is gone, so
+    net = (1 - fail_chance) x market price - asking price - running cost
 """
 
 from __future__ import annotations
@@ -106,6 +110,8 @@ def evaluate(
             pairings=difficulty.pairings,
             mods_annotated=annotated,
             required_net_div=required,
+            risks=difficulty.risks,
+            fail_chance=difficulty.fail_chance,
         )
 
     listing_chaos = book.to_chaos(listing.price.amount, listing.price.currency)
@@ -124,6 +130,8 @@ def evaluate(
             pairings=difficulty.pairings,
             mods_annotated=annotated,
             required_net_div=required,
+            risks=difficulty.risks,
+            fail_chance=difficulty.fail_chance,
         )
 
     # Flat reduction: every map costs time to run regardless of how easy it
@@ -131,7 +139,13 @@ def evaluate(
     # it. Applied here rather than at the display layer so the shown profit,
     # yield, the alert cutoff and the hotkey's ranking all agree - a map
     # displaying less profit than it alerts on would be a bug.
-    net_div = (reference.chaos_value - listing_chaos) / divine_rate
+    # A map that fails pays nothing back while the asking price is still
+    # spent, so only the surviving share of the market price counts. The
+    # same expected value then drives yield, the cutoff, jackpots and the
+    # hotkey ranking; a 100% risk can never come out positive.
+    fail_chance = difficulty.fail_chance
+    risk_cost_div = fail_chance * reference.chaos_value / divine_rate
+    net_div = ((1.0 - fail_chance) * reference.chaos_value - listing_chaos) / divine_rate
     net_div -= thresholds.running_cost
     margin = (reference.chaos_value - listing_chaos) / reference.chaos_value
     mismatch = listing.price.currency != reference.display_currency
@@ -160,4 +174,7 @@ def evaluate(
         pairings=difficulty.pairings,
         mods_annotated=annotated,
         required_net_div=required,
+        risks=difficulty.risks,
+        fail_chance=fail_chance,
+        risk_cost_div=risk_cost_div,
     )

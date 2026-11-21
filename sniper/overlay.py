@@ -18,7 +18,7 @@ import tkinter as tk
 from collections import deque
 from tkinter import font as tkfont
 
-from sniper import attention, browser
+from sniper import browser
 from sniper.alerts import AlertView
 from sniper.bus import (
     AlertsChanged,
@@ -37,7 +37,7 @@ from sniper.config import Config
 from sniper.logging_setup import event
 from sniper.margin import net_yield
 from sniper.server import EXPECTED_USERSCRIPT_VERSION, INSTALL_PATH
-from sniper.sound import GENERIC_WAV, JACKPOT_WAV, SoundCommand, SoundWorker, alert_wav_path
+from sniper.sound import GENERIC_WAV, SoundCommand, SoundWorker, alert_wav_path
 
 try:
     import winsound
@@ -147,6 +147,7 @@ PRICE = "#ffffff"
 BOX = "#2a323c"  # neutral chip fill
 YIELD_BG, YIELD_CAP, YIELD_FG = "#1b2a20", "#a9d8b0", "#6fe07b"
 PAIR_BG, PAIR_FG = "#4a1c1c", "#ffd2d2"  # deadly-pairing rows
+RISK_BG, RISK_FG = "#3d2f12", "#ffe2a8"  # failure-risk rows: amber, not red
 # Runner-up alerts are travel targets too, so each one is a raised band that
 # reads as a button rather than a dim line of text, and lifts under the
 # pointer to confirm what a click would hit.
@@ -165,10 +166,8 @@ BADGE_EDGE = {GOOD: "#2d4a33", WARN: "#5c4a1e", BAD: "#5a2626"}
 JACKPOT = "#d65cff"
 JACKPOT_SOFT = "#e7a8ff"  # name and numbers on the dark card
 JACKPOT_BANNER = "#a634d1"  # banner fill: dark enough for white text
-JACKPOT_DEEP = "#6e2a8c"  # the banner pulses between the two
 JACKPOT_YIELD_BG = "#2c1838"
 JACKPOT_BTN_FG = "#1c0626"
-JACKPOT_PULSE_MS = 350
 TITLE = "Valdo Sniper"
 TRADE_URL = "https://www.pathofexile.com/trade/search"
 # Font roles -> the first installed family. Every _font() call names a role,
@@ -271,11 +270,6 @@ class Overlay:
             self._sound_backend,
             on_error=lambda e: event("alert_sound_error", error=repr(e)),
         )
-        # A jackpot is live: banner pulsing, alarm looping, window pulled
-        # forward. Ends the moment no live alert is a jackpot any more
-        # (consumed, expired, travel pinned) - see _sync_jackpot.
-        self._jackpot_active = False
-        self._pulse_token = 0
         # after a travel, the traveled listing stays pinned in the top slot
         # for traveled_display_seconds instead of vanishing instantly
         self._pinned_top: AlertView | None = None
@@ -524,6 +518,10 @@ class Overlay:
         # chip: the note ("Impossible unless DPS-check build") is the part
         # worth reading, and it does not fit in a chip.
         self._pairings = tk.Frame(card, bg=SURFACE)
+        # Failure risks (Bismuth, Protect the Altar under less damage...):
+        # one amber row each plus a line saying what they cost. Net is
+        # already an expected value; these rows say why it is lower.
+        self._risks = tk.Frame(card, bg=SURFACE)
         # the top listing's mods, always visible (no hover needed)
         self._top_mods = tk.Frame(card, bg=MODS_BG, pady=6)
         self._countdown = tk.Canvas(card, height=4, bg=COUNTDOWN_BG, highlightthickness=0)
@@ -537,6 +535,7 @@ class Overlay:
             (self._stats, {"fill": "x"}),
             (self._chips, {"fill": "x", "padx": 12, "pady": (8, 0)}),
             (self._pairings, {"fill": "x", "padx": 12, "pady": (6, 0)}),
+            (self._risks, {"fill": "x", "padx": 12, "pady": (6, 0)}),
             (self._top_mods, {"fill": "x", "padx": 12, "pady": (8, 0)}),
             (self._countdown, {"fill": "x", "padx": 12, "pady": (10, 12)}),
         )
@@ -826,19 +825,11 @@ class Overlay:
                 frame_to_ui_ms=round((time.monotonic() - view.created_monotonic) * 1000, 1),
             )
         if new_alert:  # one sound per batch: SND_ASYNC bursts cancel anyway
-            if any(v.jackpot for v in new_views):
-                self._start_jackpot(next(v for v in new_views if v.jackpot))
-            elif self._jackpot_active:
-                # any other sound would cancel the looping alarm, silencing
-                # the best alert on screen to announce a lesser one
-                pass
-            else:
-                # A batch carrying a generic hit plays the generic sound:
-                # those are the rare, hand-picked ones, so if a batch mixes
-                # kinds the one worth interrupting for wins.
-                self._play_sound("generic" if any(v.generic for v in new_views) else "valdo")
-        if alerts_dirty:
-            self._sync_jackpot()
+            # A batch carrying a generic hit plays the generic sound: those
+            # are the rare, hand-picked ones, so if a batch mixes kinds the
+            # one worth interrupting for wins. A jackpot is shown, not
+            # sounded: it plays the ordinary alert sound.
+            self._play_sound("generic" if any(v.generic for v in new_views) else "valdo")
 
     # ----------------------------------------------------------------- fonts
 
@@ -1111,6 +1102,9 @@ class Overlay:
             return
         for key, caption in STAT_COLUMNS[1:]:
             self._stat_caps[key].config(text=caption)
+        if top.fail_chance > 0:
+            # net is an expected value once a failure risk is in play
+            self._stat_caps["profit"].config(text="NET · EXPECTED")
         jp = top.jackpot
         self._paint_cell(
             TINTED_STAT,
@@ -1171,6 +1165,7 @@ class Overlay:
             self._stats: stats,
             self._chips: chips,
             self._pairings: bool(self._pairings.winfo_children()),
+            self._risks: bool(self._risks.winfo_children()),
             self._top_mods: mods,
             self._countdown: countdown,
         }
@@ -1259,6 +1254,7 @@ class Overlay:
         pinned = self._pinned_top
         top_widgets = self._top_widgets
         self._clear_frame(self._pairings)
+        self._clear_frame(self._risks)
         if not self._alerts and pinned is None:
             setup = self._tab_count == 0
             self._key_label.config(
@@ -1337,6 +1333,8 @@ class Overlay:
                     padx=8,
                 ).pack(side="right")
 
+        self._render_risks(top)
+
         self._clear_frame(self._top_mods)
         self._render_mods(self._top_mods, top.mods, MODS_BG, wrap=360)
         self._clear_frame(self._chips)
@@ -1387,6 +1385,63 @@ class Overlay:
             self._render_runner(i, a)
         self._draw_countdown()
 
+    def _render_risks(self, top: AlertView) -> None:
+        """One amber row per failure risk, then what they cost. The cost is
+        already off net (an expected value), so this is the explanation for
+        a net that looks lower than price-vs-market would suggest."""
+        if not top.risks:
+            return
+        for label, note, chance in top.risks:
+            # label left, chance pinned right, the note on its own line: a
+            # long label and a note side by side overflow the card
+            row = tk.Frame(self._risks, bg=RISK_BG, pady=3)
+            row.pack(fill="x", pady=(0, 2))
+            head = tk.Frame(row, bg=RISK_BG)
+            head.pack(fill="x")
+            tk.Label(
+                head,
+                text=f"{chance:.0%} FAIL",
+                bg=RISK_BG,
+                fg=BAD if chance >= 1.0 else RISK_FG,
+                font=self._font("ui", 9, "bold"),
+                padx=8,
+            ).pack(side="right")
+            tk.Label(
+                head,
+                text=f"⚠  {label.upper()}",
+                bg=RISK_BG,
+                fg=RISK_FG,
+                font=self._font("ui", 9, "bold"),
+                anchor="w",
+                padx=8,
+            ).pack(side="left", fill="x", expand=True)
+            if note:
+                tk.Label(
+                    row,
+                    text=note,
+                    bg=RISK_BG,
+                    fg=RISK_FG,
+                    font=self._font("ui", 8),
+                    anchor="w",
+                    padx=26,
+                ).pack(fill="x")
+        if top.fail_chance >= 1.0:
+            summary, color = "Fails every time: you would lose what you pay.", BAD
+        else:
+            summary = (
+                f"Net counts a {top.fail_chance:.0%} chance of failing "
+                f"(−{top.risk_cost_div:.0f}d of the reward's value)."
+            )
+            color = DIM
+        tk.Label(
+            self._risks,
+            text=summary,
+            bg=SURFACE,
+            fg=color,
+            font=self._font("ui", 9),
+            anchor="w",
+        ).pack(fill="x", pady=(1, 0))
+
     def _paint_card(self, jackpot: bool) -> None:
         """2px magenta outline for a jackpot, 1px hairline otherwise."""
         color = JACKPOT if jackpot else HAIR
@@ -1422,7 +1477,8 @@ class Overlay:
         text = tk.Label(
             band,
             text=f"{'★' if a.jackpot else '#'}{i + 2}  {price:<9}{profit:<8}{per_100:<8}"
-            f"{a.difficulty:<8g}{_display_name(a.key)}",
+            f"{a.difficulty:<8g}{_display_name(a.key)}"
+            + (f"  ⚠{a.fail_chance:.0%}" if a.fail_chance > 0 else ""),
             bg=RUNNER_BG,
             fg=JACKPOT_SOFT if a.jackpot else FG,
             font=self._font("mono", 9),
@@ -1524,8 +1580,45 @@ class Overlay:
         win.attributes("-topmost", True)
         win.geometry("+460+40")
 
-        # the rule list is long: everything lives in a scrollable body
-        canvas = tk.Canvas(win, bg=BG, highlightthickness=0, width=400, height=680)
+        # ---- pinned header: search box + the save/error note. Both stay in
+        # view however far the list below is scrolled - the note used to sit
+        # at the very bottom, out of sight of the field being edited.
+        top = tk.Frame(win, bg=STRIP)
+        top.pack(side="top", fill="x")
+        search_row = tk.Frame(top, bg=STRIP)
+        search_row.pack(fill="x", padx=10, pady=(10, 4))
+        tk.Label(
+            search_row,
+            text="" if self._glyph is ICON_GLYPHS else "⌕",
+            bg=STRIP,
+            fg=DIM,
+            font=self._font("icon", 10),
+        ).pack(side="left", padx=(0, 6))
+        search_var = tk.StringVar()
+        search_e = tk.Entry(
+            search_row,
+            textvariable=search_var,
+            bg=SURFACE,
+            fg=FG,
+            insertbackground=FG,
+            relief="flat",
+            font=self._font("ui", 10),
+            highlightthickness=1,
+            highlightbackground=HAIR,
+            highlightcolor=GOOD,
+        )
+        search_e.pack(side="left", fill="x", expand=True, ipady=3)
+        clear_btn = tk.Label(
+            search_row, text="✕", bg=STRIP, fg=FAINT, font=self._font("ui", 10), cursor="hand2"
+        )
+        clear_btn.pack(side="left", padx=(6, 0))
+        clear_btn.bind("<Button-1>", lambda e: (search_var.set(""), search_e.focus_set()))
+        note = tk.Label(top, text="", bg=STRIP, fg=DIM, font=self._font("ui", 9), anchor="w")
+        note.pack(fill="x", padx=10, pady=(0, 6))
+        tk.Frame(win, bg=HAIR, height=1).pack(side="top", fill="x")
+
+        # the rule list is long: everything else lives in a scrollable body
+        canvas = tk.Canvas(win, bg=BG, highlightthickness=0, width=400, height=640)
         scrollbar = tk.Scrollbar(win, orient="vertical", command=canvas.yview)
         body = tk.Frame(canvas, bg=BG)
         body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -1539,21 +1632,31 @@ class Overlay:
         entries: dict[str, tk.Entry] = {}
 
         row_cursor = [0]
+        # Every section registers its widgets here so the search box can
+        # show/hide them: {"title", "head": [...], "rows": [(text, [...])],
+        # "captions": [...]}. grid_remove() remembers each widget's grid
+        # options, so hidden rows come back exactly where they were.
+        sections: list[dict] = []
 
         def heading(title: str, column_title: str = "") -> None:
             r = row_cursor[0]
-            tk.Label(body, text=title, bg=BG, fg=FG, font=self._font("semi", 10), anchor="w").grid(
-                row=r, column=0, sticky="w", padx=(10, 6), pady=(10, 1)
-            )
+            head = [
+                tk.Label(body, text=title, bg=BG, fg=FG, font=self._font("semi", 10), anchor="w")
+            ]
+            head[0].grid(row=r, column=0, sticky="w", padx=(10, 6), pady=(12, 2))
             if column_title:
-                tk.Label(body, text=column_title, bg=BG, fg=FG, font=self._font("semi", 10)).grid(
-                    row=r, column=1, padx=(2, 10), pady=(10, 1)
-                )
+                col = tk.Label(body, text=column_title, bg=BG, fg=DIM, font=self._font("ui", 8))
+                col.grid(row=r, column=1, padx=(2, 10), pady=(12, 2), sticky="w")
+                head.append(col)
+            sections.append({"title": title.casefold(), "head": head, "rows": [], "captions": []})
             row_cursor[0] += 1
 
-        def field(label: str, value: str, width: int = 7, hint: str = "") -> tk.Entry:
+        def field(
+            label: str, value: str, width: int = 7, hint: str = "", search: str = ""
+        ) -> tk.Entry:
             """One label + entry row in the body grid. `hint` becomes a hover
-            tooltip on the label (marked with a trailing ⓘ)."""
+            tooltip on the label (marked with a trailing ⓘ); it is searched
+            too, along with any extra `search` words."""
             r = row_cursor[0]
             name = tk.Label(
                 body,
@@ -1570,72 +1673,66 @@ class Overlay:
             entry = self._entry(body, width)
             entry.insert(0, value)
             entry.grid(row=r, column=1, padx=(2, 10), sticky="w")
+            sections[-1]["rows"].append((f"{label} {hint} {search}".casefold(), [name, entry]))
             row_cursor[0] += 1
             return entry
 
         def caption(text: str) -> None:
-            tk.Label(
+            label = tk.Label(
                 body,
                 text=text,
                 bg=BG,
-                fg=DIM,
-                font=self._font("ui", 9),
+                fg=FAINT,
+                font=self._font("ui", 8),
                 anchor="w",
                 justify="left",
-            ).grid(row=row_cursor[0], column=0, columnspan=2, sticky="w", padx=10, pady=(2, 0))
+            )
+            label.grid(row=row_cursor[0], column=0, columnspan=2, sticky="w", padx=10, pady=(2, 0))
+            sections[-1]["captions"].append(label)
             row_cursor[0] += 1
 
-        # --- alerting ------------------------------------------------------
-        # The threshold IS a yield value: alert when profit/difficulty*100
-        # reaches it, which is exactly the feed's Yield column.
-        heading("Alerting", "Value")
-        thr_e = field("Alert at YIELD ≥", _fmt(self._current_threshold))
+        # ---- 1. Alerts: everything that decides WHETHER something alerts
+        heading("Alerts", "Value")
+        thr_e = field(
+            "Alert at YIELD ≥",
+            _fmt(self._current_threshold),
+            hint="YIELD = net divine per 100 difficulty. A 200-difficulty map\n"
+            "must net twice as much as a 100 one to reach the same yield.\n"
+            "Highest yield is also what the hotkey travels to.",
+            search="threshold min_yield",
+        )
         flat_e = field(
-            "Running cost",
+            "Running cost (div)",
             _fmt(self._current_running_cost),
             hint="Taken off every listing BEFORE Net and Yield are computed: it\n"
             "accounts for loss on selling and the time spent running the map.\n"
             "Recommended value is 1.",
         )
-        caption(
-            "YIELD = NET divine per 100 difficulty (feed column 3).\n"
-            "Net is what is left after the running cost, so yield is\n"
-            "already time-adjusted: what the map pays per unit of pain,\n"
-            "not its headline profit.\n"
-            "A clean 25-difficulty map at yield 14 nets ~3.5d; a\n"
-            "200-difficulty map must net twice as much to match.\n"
-            "Highest yield is also what the hotkey travels to."
-        )
-
-        heading("Jackpot", "Value")
         jp_net_e = field(
-            "Jackpot NET ≥",
+            "Jackpot at NET ≥",
             _fmt(self._jackpot_net),
             hint="A listing is a JACKPOT when its net AND its yield both\n"
-            "clear these bars: magenta banner, looping alarm, overlay\n"
-            "pulled to the front, hotkey's top pick.",
+            "clear these bars: it gets a magenta banner and frame and\n"
+            "becomes the hotkey's top pick.",
         )
-        jp_yield_e = field("Jackpot YIELD ≥", _fmt(self._jackpot_yield))
-        caption("Both must be met (e.g. +80d net at yield 144).\nApplies to new listings.")
+        jp_yield_e = field("Jackpot at YIELD ≥", _fmt(self._jackpot_yield), search="jackpot")
+        caption("Jackpot needs both (e.g. +80d net at yield 144).")
 
-        heading("Controls")
-        combo_e = field("Hotkey combo", self._current_combo, width=16)
-        vol_e = field("Alert volume (0 - 1)", _fmt(self._volume))
+        # ---- 2. Hotkey & sound
+        heading("Hotkey & sound", "Value")
+        combo_e = field("Hotkey combo", self._current_combo, width=16, search="key travel")
+        vol_e = field("Alert volume (0 - 1)", _fmt(self._volume), search="sound")
 
-        # --- reward prices ---------------------------------------------------
-        # A reference price is occasionally just wrong - a thin unid market, a
-        # reward whose listings the average lands badly on - and every profit
-        # figure downstream inherits the error. Rather than leave a known-bad
-        # number driving alerts, the user can pin the price they know is
-        # right. Session-only on purpose: an old correction outliving the
-        # market that justified it would be worse than the original error.
+        # ---- 3. Reward prices. A reference price is occasionally just wrong -
+        # a thin unid market, a reward whose listings the average lands badly
+        # on - and every figure downstream inherits the error, so the user can
+        # pin the price they know is right. Session-only on purpose: an old
+        # correction outliving the market that justified it would be worse
+        # than the original error.
         self._price_entries = {}
         self._price_labels = {}
         heading("Reward prices", "Divine")
-        caption(
-            "Fix a reference price that is wrong. Blank = automatic.\n"
-            "Applies to new listings; not saved, cleared on restart."
-        )
+        caption("Fix a wrong reference price. Blank = automatic.\nNot saved: cleared on restart.")
 
         def price_row(entry) -> None:
             r = row_cursor[0]
@@ -1651,6 +1748,7 @@ class Overlay:
             box = self._entry(body, 7)
             box.insert(0, _fmt(self._price_overrides.get(entry.reward)))
             box.grid(row=r, column=1, padx=(2, 10), sticky="w")
+            sections[-1]["rows"].append((_display_name(entry.reward).casefold(), [name, box]))
             row_cursor[0] += 1
             self._price_entries[entry.reward] = box
             self._price_labels[entry.reward] = name
@@ -1661,43 +1759,90 @@ class Overlay:
         else:
             caption("No live searches connected yet.")
 
-        # Rules split into two exclusive groups: a rule either raises the base
-        # difficulty (min_base) or multiplies the final score (multiplier),
-        # never both. Warning-only rules (bismuth/blight) have no number to
-        # tune and are not listed.
-        base_rules = [r for r in sc.rules if r.min_base is not None]
-        mult_rules = [r for r in sc.rules if r.multiplier is not None]
+        # ---- 4. Failure risks, in percent. A failed map loses what you paid,
+        # so these turn net into an expected value.
+        risk_entries: dict[str, tk.Entry] = {}
+        if sc.risks:
+            heading("Failure risks", "Fail %")
+            for risk in sc.risks:
+                risk_entries[risk.label] = field(
+                    risk.label, _fmt(round(risk.fail_chance * 100, 2)), hint=risk.note
+                )
+            caption(
+                "Chance the map fails, losing what you paid for it:\n"
+                "net = (1 − fail) × market − price − running cost.\n"
+                "100 = never worth buying; 0 = ignore the risk."
+            )
+
+        # ---- 5. Deadly pairings: separate dict from the rules, so a pairing
+        # named like a rule cannot clobber it
+        pair_entries: dict[str, tk.Entry] = {}
+        if sc.pairings:
+            heading("Deadly pairings", "×")
+            for pairing in sc.pairings:
+                pair_entries[pairing.label] = field(
+                    pairing.label, _fmt(pairing.multiplier), hint=pairing.note
+                )
+            caption("Mods that are far worse together than apart.")
+
+        # ---- 6/7. Difficulty. Rules split into two exclusive groups: a rule
+        # either raises the base difficulty (min_base) or multiplies the final
+        # score, never both. Warning-only rules have no number to tune and
+        # are not listed. Alphabetical: there are dozens of them.
+        def by_name(rule):
+            return rule.label.casefold()
+
+        base_rules = sorted((r for r in sc.rules if r.min_base is not None), key=by_name)
+        mult_rules = sorted((r for r in sc.rules if r.multiplier is not None), key=by_name)
 
         def rule_rows(rules, values) -> None:
             for rule, value in zip(rules, values, strict=True):
                 entries[rule.label] = field(rule.label, value)
 
-        # base_default belongs here, not in a separate block: it is the same
-        # kind of number as every min_base below it, and they combine as
-        # max(base_default, matched min_bases).
+        # base_default belongs here: it is the same kind of number as every
+        # min_base, and they combine as max(base_default, matched min_bases).
         heading("Base difficulty", "Base")
-        base_e = field("Clean map (no mods)", _fmt(sc.base_default))
+        base_e = field("Clean map (no mods)", _fmt(sc.base_default), search="base_default")
         rule_rows(base_rules, [_fmt(r.min_base) for r in base_rules])
-        caption("The highest base wins; multipliers below then scale it.")
+        caption("The highest base wins; multipliers then scale it.")
 
-        heading("Difficulty multipliers", "Mult")
+        heading("Difficulty multipliers", "×")
         rule_rows(mult_rules, [_fmt(r.multiplier) for r in mult_rules])
 
-        # pairings live in their own dict: they share the entry-by-label
-        # mechanism but are a separate config section, so a pairing named
-        # like a rule cannot clobber it
-        pair_entries: dict[str, tk.Entry] = {}
-        if sc.pairings:
-            heading("Deadly pairings", "Mult")
-            caption("Mods that are far worse together than apart.")
-            for pairing in sc.pairings:
-                pair_entries[pairing.label] = field(
-                    pairing.label, _fmt(pairing.multiplier), hint=pairing.note
-                )
-
-        note = tk.Label(body, text="", bg=BG, fg=BAD, font=self._font("ui", 9))
-        note.grid(row=row_cursor[0], column=0, columnspan=2, pady=(6, 4))
+        no_match = tk.Label(body, text="", bg=BG, fg=FAINT, font=self._font("ui", 9), anchor="w")
+        no_match.grid(row=row_cursor[0], column=0, columnspan=2, sticky="w", padx=10, pady=12)
+        no_match.grid_remove()
         row_cursor[0] += 1
+
+        def apply_search(*_args) -> None:
+            """Show only rows whose label (or hover hint) contains the query.
+            A query naming a section ("risk", "pairing") shows all of it.
+            Captions are help text, so they hide while searching."""
+            query = search_var.get().strip().casefold()
+            shown = 0
+            for section in sections:
+                whole = bool(query) and query in section["title"]
+                visible = 0
+                for text, widgets in section["rows"]:
+                    show = not query or whole or query in text
+                    for widget in widgets:
+                        widget.grid() if show else widget.grid_remove()
+                    visible += show
+                for widget in section["head"]:
+                    widget.grid() if (not query or visible) else widget.grid_remove()
+                for widget in section["captions"]:
+                    widget.grid() if not query else widget.grid_remove()
+                shown += visible
+            if query and not shown:
+                no_match.config(text=f"No setting matches “{search_var.get().strip()}”.")
+                no_match.grid()
+            else:
+                no_match.grid_remove()
+            canvas.yview_moveto(0)
+
+        search_var.trace_add("write", apply_search)
+        search_e.bind("<Escape>", lambda e: search_var.set(""))
+        search_e.focus_set()
 
         def collect(save: bool) -> None:
             from dataclasses import replace
@@ -1725,6 +1870,12 @@ class Overlay:
                         if p.label in pair_entries
                         else p
                         for p in sc.pairings
+                    ),
+                    risks=tuple(
+                        replace(r, fail_chance=float(risk_entries[r.label].get()) / 100)
+                        if r.label in risk_entries
+                        else r
+                        for r in sc.risks
                     ),
                 )
                 new_threshold = float(thr_e.get())
@@ -1755,6 +1906,12 @@ class Overlay:
                 return
             if not 0.0 <= new_volume <= 1.0:
                 note.config(text="Volume must be between 0 and 1", fg=BAD)
+                return
+            bad_risk = next(
+                (r.label for r in new_config.risks if not 0.0 <= r.fail_chance <= 1.0), None
+            )
+            if bad_risk is not None:
+                note.config(text=f"{bad_risk}: fail % must be 0-100", fg=BAD)
                 return
             if new_jp_net < 0 or new_jp_yield < 0:
                 note.config(text="Jackpot bars must be >= 0", fg=BAD)
@@ -1831,6 +1988,7 @@ class Overlay:
             vol_e,
             *entries.values(),
             *pair_entries.values(),
+            *risk_entries.values(),
             *self._price_entries.values(),
         ]:
             widget.bind("<KeyRelease>", schedule_apply)
@@ -1886,6 +2044,14 @@ class Overlay:
             (f"☠ {label.upper()}  ×{mult:g}" + (f" — {note}" if note else ""), "", "red")
             for label, note, mult in entry.pairings
         ]
+        rows += [
+            (
+                f"⚠ {label.upper()}  {chance:.0%} FAIL" + (f" — {note}" if note else ""),
+                "",
+                "red" if chance >= 1.0 else "yellow",
+            )
+            for label, note, chance in entry.risks
+        ]
         if entry.index_lag_ms is not None:
             lag = entry.index_lag_ms
             if lag <= CLOCK_SKEW_MS:
@@ -1924,6 +2090,8 @@ class Overlay:
                 # that was never attempted
                 profit = per_100 = difficulty = "—"
                 note = "  [search]"
+            if e.fail_chance > 0 and not e.generic:
+                note += f"  ⚠{e.fail_chance:.0%} fail"
             if e.jackpot:
                 note = "  ★ JACKPOT"
             if e.received_monotonic > 0:
@@ -1988,62 +2156,8 @@ class Overlay:
             text=self._glyph["mute" if self._muted else "volume"], fg=BAD if self._muted else DIM
         )
         event("mute_toggled", muted=self._muted)
-        # mute is also the way to silence a ringing jackpot without acting on
-        # it; unmuting while one is still live brings the alarm back
-        if self._jackpot_active:
-            if self._muted:
-                self._sound.submit(SoundCommand("stop"))
-            else:
-                self._play_sound("jackpot")
-
-    # --------------------------------------------------------------- jackpot
-
-    def _start_jackpot(self, view: AlertView) -> None:
-        """A jackpot just arrived: alarm on loop, overlay forward, banner
-        pulsing. Re-entrant - a second jackpot simply restarts the alarm."""
-        event("jackpot_alert", listing_id=view.listing_id, key=view.key, net_div=view.net_div)
-        self._play_sound("jackpot")
-        self._root.title(f"★ JACKPOT ★  {TITLE}")
-        try:
-            attention.bring_to_front(attention.frame_hwnd(self._root))
-        except Exception as e:  # best-effort: never let this break alerting
-            event("bring_to_front_error", error=repr(e))
-        if not self._jackpot_active:
-            self._jackpot_active = True
-            self._pulse_token += 1
-            self._pulse(self._pulse_token, on=False)
-
-    def _sync_jackpot(self) -> None:
-        """End the jackpot state once no live alert is one any more: it was
-        consumed (hotkey/click), expired, or cleared by a press. The pinned
-        traveled view does not count - the alarm's job is done once you
-        have acted on it."""
-        if not self._jackpot_active or any(a.jackpot for a in self._alerts):
-            return
-        self._jackpot_active = False
-        self._pulse_token += 1  # cancels the pending pulse callback
-        self._paint_jackpot_banner(JACKPOT_BANNER)
-        self._sound.submit(SoundCommand("stop"))
-        self._root.title(TITLE)
-        try:
-            attention.stop_flash(attention.frame_hwnd(self._root))
-        except Exception as e:
-            event("bring_to_front_error", error=repr(e))
-
-    def _paint_jackpot_banner(self, color: str) -> None:
-        for widget in (self._jackpot_banner, self._jp_left, self._jp_right):
-            widget.config(bg=color)
-
-    def _pulse(self, token: int, on: bool) -> None:
-        if token != self._pulse_token:
-            return
-        self._paint_jackpot_banner(JACKPOT_BANNER if on else JACKPOT_DEEP)
-        self._root.after(JACKPOT_PULSE_MS, self._pulse, token, not on)
 
     # ----------------------------------------------------------------- sound
-
-    def _kind_volume(self, kind: str) -> float:
-        return self._config.alerts.jackpot_volume if kind == "jackpot" else self._volume
 
     def _alert_wav(self, kind: str = "valdo") -> str | None:
         """Path to the volume-scaled WAV for this alert kind + volume.
@@ -2056,9 +2170,8 @@ class Overlay:
         alerts = self._config.alerts
         configured, default = {
             "generic": (alerts.generic_sound, GENERIC_WAV),
-            "jackpot": (alerts.jackpot_sound, JACKPOT_WAV),
         }.get(kind, (alerts.sound, None))
-        volume = self._kind_volume(kind)
+        volume = self._volume
         # `kind` belongs in the key even though `configured` usually
         # differs: with the settings left empty the paths are the SAME
         # empty string, and keying on it alone made the generic alert replay
@@ -2071,18 +2184,17 @@ class Overlay:
     def _warm_alert_wavs(self) -> None:
         """Rescale every alert sound off the UI thread. Called at startup and
         after a volume change, which invalidates every cached key."""
-        for kind in ("valdo", "generic", "jackpot"):
+        for kind in ("valdo", "generic"):
             self._alert_wav(kind)
 
     def _play_sound(self, kind: str = "valdo") -> None:
-        """kind: "valdo" | "generic" | "jackpot" (the last one loops until
-        _sync_jackpot or mute stops it)."""
-        if self._muted or self._kind_volume(kind) <= 0:
+        """kind: "valdo" | "generic"."""
+        if self._muted or self._volume <= 0:
             return
         if winsound is None:
             self._root.bell()
             return
-        self._sound.submit(SoundCommand(kind, loop=kind == "jackpot"))
+        self._sound.submit(SoundCommand(kind))
 
     def _sound_backend(self, command: SoundCommand) -> None:
         """Runs on the SoundWorker thread. PlaySound loads the audio
