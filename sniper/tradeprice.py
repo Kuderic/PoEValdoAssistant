@@ -252,6 +252,10 @@ class TradePricer:
                         "filters": {
                             "identified": {"option": "true" if identified else "false"},
                             "corrupted": {"option": "true" if corrupted else "false"},
+                            # Foulborn (3.27 mutated uniques) trade at their
+                            # own, often lower, prices - a Valdo reward is
+                            # never Foulborn, so they are not its market
+                            "mutated": {"option": "false"},
                         }
                     }
                 },

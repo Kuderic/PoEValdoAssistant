@@ -300,3 +300,20 @@ def test_config_rejects_unknown_listing_status(tmp_path):
     path.write_text("trade_pricing: { listing_status: buyable }\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="listing_status"):
         load_config(path)
+
+
+async def test_search_excludes_foulborn():
+    """Foulborn (mutated) uniques trade at their own prices; a Valdo reward
+    is never Foulborn, so every search in the filter ladder sets it to No."""
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/api/trade/search/"):
+            sent.append(json.loads(request.content)["query"]["filters"]["misc_filters"])
+            return httpx.Response(200, json={"id": "q1", "total": 0, "result": []})
+        return httpx.Response(200, json=FETCH_RESPONSE)
+
+    pricer = pricer_with(handler)
+    await pricer.fetch_reward_listings("Covens", "Foil Headhunter")
+    assert len(sent) == 3  # unid -> identified -> identified+corrupted
+    assert all(f["filters"]["mutated"] == {"option": "false"} for f in sent)

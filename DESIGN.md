@@ -285,7 +285,9 @@ for regex, `match_all` for combos where every pattern must hit):
   unid uniques; base-type search is a 1c gamble bin), `identified: false`,
   `status: securable` (instant buyout only - `trade_pricing.listing_status`;
   `any` let offline sellers' stale prices and negotiable `~price` listings
-  undercut the market: Headhunter read ~161d against a real 184d), no foil filter (foil doesn't matter; foils list at
+  undercut the market: Headhunter read ~161d against a real 184d),
+  `mutated: false` (Foulborn: No - Foulborn uniques trade at their own
+  prices and a Valdo reward is never Foulborn), no foil filter (foil doesn't matter; foils list at
   market parity) — then fetches the cheapest `max_listings` and stores
   the **average** in the PriceBook.
 - Cadence: the loop wakes every 15s so a newly-opened live search is

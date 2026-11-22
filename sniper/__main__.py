@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -639,6 +640,12 @@ def run_with_overlay(config: Config, config_path: str) -> None:
     def on_jackpot_change(min_net: float, min_yield: float) -> None:
         loop.call_soon_threadsafe(app.set_jackpot_thresholds, min_net, min_yield)
 
+    # Our own taskbar identity: without it Windows groups the window under
+    # python.exe and shows the Python logo instead of the app's icon.
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ValdoSniper.Overlay")
     root = tk.Tk()
     Overlay(
         root,

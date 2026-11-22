@@ -19,6 +19,7 @@ from collections import deque
 from tkinter import font as tkfont
 
 from sniper import browser
+from sniper import icon as app_icon
 from sniper.alerts import AlertView
 from sniper.bus import (
     AlertsChanged,
@@ -286,6 +287,7 @@ class Overlay:
         self._skew_logged = False  # clock-skew warning is logged once per run
 
         root.title(TITLE)
+        self._icon_images = app_icon.apply(root)  # kept referenced: see icon.apply
         root.configure(bg=BG)
         root.attributes("-topmost", True)
         root.geometry("515x800+40+40")
