@@ -3,6 +3,7 @@ tabs in the sniper Chrome, paced under the search limit, only the ones not
 already open, never before the profile exists, and never alongside pricing."""
 
 import base64
+import contextlib
 import gzip
 import json
 from types import SimpleNamespace
@@ -135,3 +136,53 @@ async def test_saved_rewards_are_priced_without_open_tabs(tmp_path):
     path.write_text(export(query_slug("Headhunter"), "Aa1"))
     app = App(make_config(), Bus(), searches_path=path)
     assert app.server.active_rewards() == {"Foil Headhunter"}
+
+
+async def test_clicking_again_does_not_reopen_tabs_still_connecting(monkeypatch, tmp_path):
+    app, path, opened, _ = setup(monkeypatch, tmp_path)
+    path.write_text(export("Aa1", "Bb2"))
+    await app.open_live_searches()
+    await app.open_live_searches()  # tabs not connected yet (Allow prompt)
+    assert len(opened) == 2
+
+
+async def test_tab_connecting_mid_run_is_not_opened_twice(monkeypatch, tmp_path):
+    app, path, opened, sleeps = setup(monkeypatch, tmp_path)
+    path.write_text(export("Aa1", "Bb2"))
+
+    async def sleep(s):  # Bb2's tab (restored by Chrome) connects meanwhile
+        sleeps.append(s)
+        app.server.tabs = {1: tab("Bb2")}
+
+    monkeypatch.setattr(main_mod.asyncio, "sleep", sleep)
+    await app.open_live_searches()
+    assert [u.split("/")[-2] for u in opened] == ["Aa1"]
+
+
+async def test_pricer_makes_no_calls_while_tabs_open(monkeypatch, tmp_path):
+    app, path, _, _ = setup(monkeypatch, tmp_path)
+    app.server.saved_rewards = frozenset({"Foil Headhunter"})
+    app._opening = True
+    calls = []
+
+    class Pricer:
+        in_backoff = False
+        backoff_remaining = 0.0
+        session_invalid = False
+
+        async def fetch_reward_listings(self, league, reward):
+            calls.append(reward)
+            return [], "unid"
+
+    passes = []
+
+    async def sleep(s):
+        passes.append(s)
+        if len(passes) == 3:
+            raise TimeoutError  # stop the endless loop
+
+    monkeypatch.setattr(main_mod.asyncio, "sleep", sleep)
+    monkeypatch.setattr(app, "_push_pricing_health", lambda p: None)
+    with contextlib.suppress(TimeoutError):
+        await app.trade_price_loop(Pricer())
+    assert calls == [] and len(passes) == 3

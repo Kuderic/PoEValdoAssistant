@@ -442,12 +442,12 @@ trade site, and focusing the game window synthesizes no keypress.
    B in here replaces A's session, and travel then moves the wrong
    account). Install Tampermonkey, turn on **Allow User Scripts**, and install
    the script. Then import your **Better Trading** folder export
-   (⚙ → *Import Better Trading*; it pops up by itself while nothing is
-   saved, and pre-fills from your clipboard) and click **Save & open tabs**.
+   (⚙ → *Import Better Trading*; it pops up by itself at launch while
+   nothing is saved and no tab is connected, pre-filled from your clipboard) and click **Save & open tabs**.
    Each search that has no tab yet opens live for the current league, paced
    under the trade site's search limit (5/10s, 15/60s, 30/5 min per IP) with
    reward pricing paused meanwhile. On later launches the app reopens any
-   missing tabs by itself, about 20 s after start.
+   missing tabs by itself, about 45 s after start.
 4. **Allow local network access.** The first time a trade tab connects,
    Chrome asks whether pathofexile.com may access devices on your local
    network. Click **Allow**: without it the tab never reaches the app

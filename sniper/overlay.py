@@ -716,8 +716,7 @@ class Overlay:
         bus.set_waker(self._wake)
         root.after(DRAIN_MS, self._drain)
         root.after(TICK_MS, self._tick)
-        if self._on_import_searches is not None and not self._searches_count():
-            root.after(1500, self._open_import)  # first thing a new user needs
+        root.after(10_000, self._offer_import)
         root.after(30_000, self._refresh_feed_ages)
 
     # ------------------------------------------------------------------ bus
@@ -1323,6 +1322,13 @@ class Overlay:
     def _open_searches(self) -> None:
         if self._on_open_searches is not None:
             self._on_open_searches()
+
+    def _offer_import(self) -> None:
+        """A new user's first step, shown once at launch - but only when
+        nothing is imported AND no tab connected (someone opening their
+        searches by hand doesn't need it)."""
+        if self._on_import_searches and not self._tab_count and not self._searches_count():
+            self._open_import()
 
     def _open_import(self) -> None:
         """Paste box for Better Trading exports (one string per line)."""

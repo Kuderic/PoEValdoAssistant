@@ -44,7 +44,7 @@ under x64 emulation. Use a real Windows PC.
      - Log into pathofexile.com as **account A only**.
      - Go to Settings, then *Performance*: add `pathofexile.com` to *Always keep these sites active*, and turn off Energy Saver.
 6. **Import your searches.** In Better Trading, open your Valdo folder's ⋯ menu and choose **Export**.
-   - The import box opens by itself while nothing is saved, and fills in from your clipboard. Otherwise click **Import Better Trading searches**.
+   - The import box opens by itself shortly after launch while nothing is saved and no tab is connected. It fills in from your clipboard. Otherwise click **Import Better Trading searches**.
    - Click **Save & open tabs**. For several folders, put one export per line.
    - The searches are saved in `searches.txt` for next time, and their prices refresh on their own every 30 minutes.
 7. **Tabs open by themselves.** Each search opens as a live tab for the current league: 6 seconds apart for the first 10, then 15 seconds apart, so you never hit the trade site's search limit. Price checks pause while tabs open.
@@ -67,7 +67,7 @@ Then continue from step 5 above.
 ## Every session
 
 1. Start **Valdo Sniper** from the Start menu, or `start.bat` if you installed from source.
-2. Missing live tabs reopen by themselves about 20 seconds after start. Tabs that are already open are skipped.
+2. Missing live tabs reopen by themselves about 45 seconds after start. Tabs that are already open are skipped.
 3. Start **client A** on account A and park it in your hideout.
 4. Start **client B** on account B.
 5. Click into client A and press **Ctrl+Alt+B**. The status strip shows `buyer ✓`.

@@ -73,7 +73,12 @@ SEARCH_BURST = 10
 SEARCH_SPACING_SLOW_S = 15.0
 # On launch, give tabs restored by Chrome this long to reconnect before
 # opening the saved searches that are still missing.
-AUTO_OPEN_GRACE_S = 20.0
+# (the browser script's reconnect backoff tops out at 30s plus jitter)
+AUTO_OPEN_GRACE_S = 45.0
+# A tab this app opened counts as open for this long even before it connects
+# (Chrome's local-network prompt, a slow load), so a second click or the
+# launch auto-open never stacks a duplicate set.
+OPENED_GRACE_S = 120.0
 
 
 class App:
@@ -141,6 +146,7 @@ class App:
         self._setup_url = f"http://{config.server.host}:{config.server.port}/"
         self.searches_path = searches_path
         self._opening = False  # a live-search open run is in progress
+        self._opened_at: dict[str, float] = {}  # slug -> monotonic, this session
         self._pricer = None  # TradePricer once trade pricing starts
         self.reload_saved_rewards()
 
@@ -314,7 +320,14 @@ class App:
         tabs = self.server.tabs.values()
         open_ids = {t.search_id for t in tabs}
         open_rewards = {t.search_reward for t in tabs if t.search_reward}
-        return [s for s in searches if s.slug not in open_ids and s.reward not in open_rewards]
+        now = time.monotonic()
+        return [
+            s
+            for s in searches
+            if s.slug not in open_ids
+            and s.reward not in open_rewards
+            and now - self._opened_at.get(s.slug, -OPENED_GRACE_S) >= OPENED_GRACE_S
+        ]
 
     async def open_live_searches(self, auto: bool = False) -> None:
         """Open every imported Better Trading search that has no live tab yet,
@@ -354,14 +367,17 @@ class App:
         for i, search in enumerate(todo):
             if i:
                 await asyncio.sleep(SEARCH_SPACING_S if i < SEARCH_BURST else SEARCH_SPACING_SLOW_S)
+            if not self._missing_searches([search]):
+                continue  # its tab connected while we were waiting
             while self._pricer is not None and self._pricer.in_backoff:
                 # the IP is locked out: a tab opened now would load empty
                 wait = max(self._pricer.backoff_remaining, 1)
                 self._notice(f"Trade site rate limit - waiting {wait:.0f}s", False)
                 await asyncio.sleep(min(wait, 15))
             await self._run_blocking(browser.open_url, bettertrading.live_url(search, league))
+            self._opened_at[search.slug] = time.monotonic()
             self._notice(f"Opening live searches {i + 1}/{n}: {search.title}")
-        self._notice(f"Opened {n} live searches ({league})")
+        self._notice(f"Opened the missing live searches ({league})")
 
     async def auto_open_searches(self) -> None:
         """On launch: once the league is known and restored tabs have had a
@@ -645,10 +661,10 @@ class App:
         last_priced: dict[str, float] = {}
         while True:
             league = self.book.league  # resolves via the first ninja refresh
-            if self._opening:  # tab loads are spending the search budget
-                await asyncio.sleep(2)
-                continue
-            if league is None or pricer.in_backoff:
+            # tab loads spend the same search budget: price after they open
+            if league is None or pricer.in_backoff or self._opening:
+                if self._opening:  # a long run must not end the warm-up hold
+                    self._warmup_deadline = time.monotonic() + WARMUP_STALL_S
                 self._update_warmup()  # keeps the stall timer honest
                 self._push_pricing_health(pricer)  # keep the pill counting down
                 # a tab opened while we are stalled is still an active reward
