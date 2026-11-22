@@ -1,9 +1,15 @@
-"""Entry point for the packaged ValdoSniper.exe (PyInstaller).
+"""Entry point for the installed app: python\\pythonw.exe launch.py.
 
-The exe is windowed (no console), so two things start_bat users get for
-free are done here: run from the install folder (config.yaml, .env, logs/,
-searches.txt all live beside the exe), and show a startup failure in a
-dialog instead of a console that never existed.
+The installer ships python.org's own runtime (pythonw.exe is signed by the
+Python Software Foundation) next to the source, instead of a PyInstaller
+exe: PyInstaller's bootloader is shared with a lot of malware, so Windows
+Defender's machine-learning scan flags unsigned PyInstaller builds as
+"Trojan:Win32/Wacatac" and deletes them.
+
+pythonw has no console, so two things start.bat users get for free are done
+here: run from the install folder (config.yaml, .env, logs/, searches.txt
+all live there), and show a startup failure in a dialog instead of a console
+that never existed.
 """
 
 from __future__ import annotations
@@ -27,8 +33,8 @@ def _show_error(text: str) -> None:
 
 
 def run() -> None:
-    if getattr(sys, "frozen", False):
-        os.chdir(Path(sys.executable).resolve().parent)
+    if Path(sys.executable).stem.lower() == "pythonw":  # the installed app
+        os.chdir(Path(__file__).resolve().parent)
     from sniper.__main__ import main
 
     try:

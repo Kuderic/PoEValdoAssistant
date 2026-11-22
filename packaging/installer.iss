@@ -1,5 +1,7 @@
 ; Inno Setup script: iscc /DAppVersion=x.y.z packaging\installer.iss
-; Builds dist\ValdoSniper-Setup.exe from the PyInstaller folder dist\ValdoSniper.
+; Builds dist\ValdoSniper-Setup.exe from dist\ValdoSniper: the app source plus
+; python.org's signed Python runtime in python\ (see packaging/launch.py for why
+; there is no PyInstaller exe).
 ;
 ; Per-user install (no admin): the app writes config.yaml edits, logs\,
 ; searches.txt, price_cache.json and scoring_overrides.yaml beside the exe,
@@ -24,7 +26,7 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 InfoBeforeFile=before-install.txt
-UninstallDisplayIcon={app}\ValdoSniper.exe
+UninstallDisplayIcon={app}\python\pythonw.exe
 CloseApplications=yes
 
 [Tasks]
@@ -38,13 +40,13 @@ Source: "..\.env.example"; DestDir: "{app}"; DestName: ".env"; Flags: onlyifdoes
 Source: "..\SETUP.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Valdo Sniper"; Filename: "{app}\ValdoSniper.exe"; WorkingDir: "{app}"
+Name: "{group}\Valdo Sniper"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\launch.py"""; WorkingDir: "{app}"
 Name: "{group}\Setup guide"; Filename: "{app}\SETUP.md"
 Name: "{group}\Uninstall Valdo Sniper"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\Valdo Sniper"; Filename: "{app}\ValdoSniper.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userdesktop}\Valdo Sniper"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\launch.py"""; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\ValdoSniper.exe"; WorkingDir: "{app}"; Description: "Start Valdo Sniper now"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\launch.py"""; WorkingDir: "{app}"; Description: "Start Valdo Sniper now"; Flags: nowait postinstall skipifsilent
 
 [Code]
 function ChromeInstalled(): Boolean;
