@@ -110,7 +110,7 @@ The status strip should read `N tabs · PoE running · buyer ✓ · Trade prices
 | Console shows `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS` | Lock icon, then *Site settings*, then allow *Local network access* for pathofexile.com, then reload |
 | `update script` | Click it, then hard-reload the trade tabs (Ctrl+Shift+R) |
 | `BUYER LOST` | Client A closed or restarted: click into it and press Ctrl+Alt+B |
-| `TRADE API REFUSED US` | Your `POESESSID` in `.env` expired. Replace it or leave it empty |
+| `TRADE API REFUSED US` | The trade site answered 401/403. If `.env` has a `POESESSID`, it expired: replace it or leave it empty. Otherwise the site is blocking you for now: wait |
 | Hotkey does nothing | The game isn't detected, or no alert is live |
 
 ## Rules this follows

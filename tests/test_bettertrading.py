@@ -88,3 +88,10 @@ def test_slug_reward_reads_the_embedded_query():
     assert rewards[:3] == ["Foil Headhunter", "Foil Sublime Vision", "Foil Mageblood"]
     assert slug_reward("Ab12Cd34") is None  # short id: no query inside
     assert slug_reward("H4sI" + "A" * 40) is None  # truncated gzip
+
+
+def test_unreadable_saved_file_does_not_crash_startup(tmp_path):
+    path = tmp_path / "searches.txt"
+    path.write_bytes("3:abc".encode("utf-16"))
+    result = load(path)
+    assert result.searches == () and "unreadable" in result.skipped[0]

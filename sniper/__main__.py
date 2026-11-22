@@ -16,7 +16,7 @@ import contextlib
 import sys
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -314,18 +314,24 @@ class App:
         searches = bettertrading.load(self.searches_path).searches
         self.server.saved_rewards = frozenset(s.reward for s in searches if s.reward)
 
+    def _saved_searches(self):
+        return bettertrading.load(self.searches_path).searches if self.searches_path else ()
+
     def _missing_searches(self, searches) -> list:
         """Saved searches with no connected tab yet. A tab reports either the
-        slug it loaded or, for a Better Trading 1.9 query slug, its reward."""
+        slug it loaded or, for a Better Trading 1.9 query slug, its reward.
+        A reward only stands in for a search when no other saved search
+        shares it: two Headhunter searches can't both be "the" Headhunter tab."""
         tabs = self.server.tabs.values()
         open_ids = {t.search_id for t in tabs}
         open_rewards = {t.search_reward for t in tabs if t.search_reward}
+        per_reward = Counter(s.reward for s in self._saved_searches() if s.reward)
         now = time.monotonic()
         return [
             s
             for s in searches
             if s.slug not in open_ids
-            and s.reward not in open_rewards
+            and not (per_reward[s.reward] == 1 and s.reward in open_rewards)
             and now - self._opened_at.get(s.slug, -OPENED_GRACE_S) >= OPENED_GRACE_S
         ]
 
@@ -346,6 +352,8 @@ class App:
                 self._notice("League not known yet - try again in a few seconds", False)
             return
         if browser.is_first_run():
+            if auto:  # Chrome only opens on a click until the profile exists
+                return
             # no Tampermonkey there yet: live tabs would capture nothing
             await self._run_blocking(browser.open_url, self._setup_url)
             self._notice("First run: finish the setup page in the new Chrome, then click again")
@@ -861,7 +869,10 @@ def run_with_overlay(config: Config, config_path: str) -> None:
         loop.call_soon_threadsafe(app.set_price_override, reward, divine)
 
     def on_open_searches() -> None:
-        asyncio.run_coroutine_threadsafe(app.open_live_searches(), loop)
+        future = asyncio.run_coroutine_threadsafe(app.open_live_searches(), loop)
+        future.add_done_callback(
+            lambda f: f.exception() and event("open_live_searches_error", error=repr(f.exception()))
+        )
 
     def on_import_searches(text: str):
         """UI thread: validate + save the paste (a small local file), then

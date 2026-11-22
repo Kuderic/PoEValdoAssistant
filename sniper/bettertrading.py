@@ -129,6 +129,8 @@ def load(path: Path) -> ImportResult:
         return parse_exports(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return ImportResult((), ())
+    except (OSError, UnicodeDecodeError) as e:  # e.g. re-saved as UTF-16 by Notepad
+        return ImportResult((), (f"{path.name} unreadable ({e.__class__.__name__}): import again",))
 
 
 def save(path: Path, text: str) -> ImportResult:

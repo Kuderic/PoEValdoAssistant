@@ -2,7 +2,7 @@ name: Windows build
 
 on:
   push:
-    branches: [feat/two-client-assist, main]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -85,7 +85,8 @@ jobs:
             dist/ValdoSniper-Setup.exe
             dist/ValdoSniper-portable.zip
       - name: Publish to the build-latest release
-        if: github.event_name == 'push'
+        # main, or a manual run (to test a branch build before it merges)
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

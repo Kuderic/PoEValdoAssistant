@@ -186,3 +186,36 @@ async def test_pricer_makes_no_calls_while_tabs_open(monkeypatch, tmp_path):
     with contextlib.suppress(TimeoutError):
         await app.trade_price_loop(Pricer())
     assert calls == [] and len(passes) == 3
+
+
+async def test_two_searches_for_one_reward_both_open(monkeypatch, tmp_path):
+    """A connected Headhunter tab can't vouch for both Headhunter searches."""
+    app, path, opened, _ = setup(monkeypatch, tmp_path)
+    hh_a = query_slug("Headhunter")
+    hh_b = (
+        base64.urlsafe_b64encode(
+            gzip.compress(
+                json.dumps(
+                    {
+                        "x": 1,
+                        **json.loads(
+                            gzip.decompress(base64.urlsafe_b64decode(hh_a + "=" * (-len(hh_a) % 4)))
+                        ),
+                    }
+                ).encode()
+            )
+        )
+        .decode()
+        .rstrip("=")
+    )
+    path.write_text(export(hh_a, hh_b))
+    app.server.tabs = {1: tab("live", "Foil Headhunter")}
+    await app.open_live_searches()
+    assert len(opened) == 2
+
+
+async def test_auto_open_never_launches_chrome_on_first_run(monkeypatch, tmp_path):
+    app, path, opened, _ = setup(monkeypatch, tmp_path, first_run=True)
+    path.write_text(export("Aa1"))
+    await app.open_live_searches(auto=True)
+    assert opened == []
