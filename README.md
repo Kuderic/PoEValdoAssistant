@@ -53,8 +53,8 @@ much; a 50-difficulty map half.
 
 Each mod on the map contributes, via `mod_scoring` in `config.yaml`:
 
-- **Base rules** set a floor — `The Feared: min_base 120` means any map with
-  The Feared starts at 120 difficulty. The **highest** base wins; they don't
+- **Base rules** set a floor — `The Feared: min_base 100` means any map with
+  The Feared starts at 100 difficulty. The **highest** base wins; they don't
   add up.
 - **Multipliers** scale the result — `100% Delirious: ×2.0`. These all
   multiply together.
@@ -147,15 +147,27 @@ You need Windows, Chrome and Path of Exile. About five minutes:
 
    <img src="docs/overlay-setup.png" alt="First launch: the overlay says no live searches are connected and lists two clickable steps - install the browser script, open a Valdo live search" width="420">
 
-4. **Install [Tampermonkey](https://www.tampermonkey.net/) in Chrome**, then
-   open `chrome://extensions`, click Tampermonkey's **Details** and turn on
-   **Allow User Scripts** (Chrome blocks userscripts without it).
-5. **Click "Install the browser script"** in the overlay and press
+4. **Install [Tampermonkey](https://www.tampermonkey.net/)** from the Chrome
+   Web Store.
+5. **Enable user scripts for Tampermonkey (required).** Chrome blocks every
+   userscript until you allow it, and Tampermonkey stays installed but
+   silently runs nothing:
+   1. Open `chrome://extensions` in the address bar.
+   2. Find **Tampermonkey** and click **Details**.
+   3. Turn on **Allow User Scripts**.
+
+   On older Chrome, before version 138, there is no such toggle. Turn on
+   **Developer mode** (top-right of `chrome://extensions`) instead.
+   To check it worked, open the Tampermonkey dashboard. It shows no warning
+   about user scripts being disabled. Reload any trade tabs that were already
+   open.
+6. **Click "Install the browser script"** in the overlay and press
    **Install** on the Tampermonkey page that opens. (The app serves it
    itself, at `http://127.0.0.1:8765/valdo-sniper.user.js`.)
-6. **Open your Valdo live searches** on the trade site and press *Live
+7. **Open your Valdo live searches** on the trade site and press *Live
    search*. Each tab connects on its own, and the status strip turns green:
-   `4 tabs · PoE running · Trade prices`.
+   `4 tabs · PoE running · Trade prices`. If it stays at `0 tabs`, step 5
+   is the usual cause.
 
 Run PoE in **windowed fullscreen**, not exclusive fullscreen, or the overlay
 can't stay on top. Sound works either way.
@@ -257,8 +269,8 @@ the trade site rather than in the app.
 
 ### Jackpots
 
-A Valdo listing that is **both** big money and cheap to run (net ≥ 30d
-**and** yield ≥ 50 by default) is a jackpot:
+A Valdo listing that is **both** big money and cheap to run (net ≥ 10d
+**and** yield ≥ 10 by default) is a jackpot:
 
 <img src="docs/overlay-jackpot.png" alt="A jackpot alert: Nimis at 80 divine, +80 net, yield +144, difficulty 55, with a magenta JACKPOT banner and a magenta frame around the alert card" width="420">
 
@@ -330,7 +342,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `hotkey.combo` / `.consume` | Travel key; `all` clears every alert per press, `top` keeps runners-up (a *failed* travel gives them back either way) |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
-| `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (30 / 50), also in the ⚙ panel |
+| `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (10 / 10), also in the ⚙ panel |
 | `trade_pricing.cache_max_age_minutes` | How stale a restored price may be (720) |
 
 ---

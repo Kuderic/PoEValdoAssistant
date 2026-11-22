@@ -13,7 +13,7 @@ thresholds:
   #   NET   = market price - asking price - running_cost
   #   YIELD = NET / difficulty * 100
   # Reads directly as "a 100-difficulty map must net this much".
-  min_yield: 2
+  min_yield: 2.5
   # Keyed by the map's Reward name (the value driver, e.g. "Foil Mageblood");
   # item_name is only the fallback key when a listing has no reward line.
   per_map: {}                  # e.g. "Foil Mageblood": 25
@@ -39,10 +39,10 @@ alerts:
   # half-price Nimis: +80d net, +144 yield). It gets a magenta banner and
   # frame and takes the hotkey's top slot; it sounds like any other alert.
   # Stays magenta in the live feed so a missed one is obvious later.
-  # 30/50 matched ~9 of ~1500 logged alerts. Currency mismatches never count.
+  # Currency mismatches never count.
   # Both bars are also editable in the ⚙ panel (saved to scoring_overrides.yaml).
-  jackpot_min_net: 30          # divines
-  jackpot_min_yield: 50        # divines per 100 difficulty
+  jackpot_min_net: 10          # divines
+  jackpot_min_yield: 10        # divines per 100 difficulty
 
 hotkey:
   combo: "`"
@@ -196,7 +196,7 @@ mod_scoring:
   rules:
     # --- league mechanics and death risks: these also raise an
     #     overlay chip (red = can lose the character, yellow = note)
-    - { label: "VOID", match: "sent to the void", multiplier: 1.5, warning: red }
+    - { label: "VOID", match: "sent to the void", multiplier: 2.0, warning: red }
     - { label: "LEGION", match: "legion", multiplier: 2.0, warning: red }
     # Three-liner: the stabilise-and-close requirement, the extra-breach
     # count ("an"/"2"/"3 additional") and the breach boss line always
@@ -218,7 +218,7 @@ mod_scoring:
     - { label: "BLIGHT", match: "blight", warning: yellow }
 
     # --- base difficulty: the map's floor, highest wins (not summed)
-    - { label: "The Feared", match: "area contains the feared", min_base: 120 }
+    - { label: "The Feared", match: "area contains the feared", min_base: 100 }
     - { label: "Einhar", match: "einhar", min_base: 70 }
     - { label: "The Elderslayers", match: "area contains the elderslayers", min_base: 70 }
     - { label: "The Remembered", match: "area contains the remembered", min_base: 70 }
@@ -242,7 +242,7 @@ mod_scoring:
       match_all:
         - "less damage per equipped item"
         - "less damage per item equipped"
-      multiplier: 2.4
+      multiplier: 3.0
     - { label: "Shroud Walker", match: "shroud walker", multiplier: 1.5 }
     - { label: "100% Delirious", match: "100% delirious", multiplier: 2.0 }
     - { label: "2 random Shrine Buffs", match: "random shrine buffs", multiplier: 1.4 }
@@ -252,7 +252,7 @@ mod_scoring:
     - { label: "Increasingly lethal", match: "increasingly lethal", multiplier: 1.8 }
     - label: "Reduced Non-Curse Auras"
       match: "reduced effect of non-curse auras"
-      multiplier: 2.0
+      multiplier: 1.4
     - { label: "Instability on Kill", match: "instability on kill", multiplier: 1.5 }
     - label: "2-3 Tormented Spirits"
       match: "possessed by 2 to 3 tormented spirits"
@@ -276,14 +276,14 @@ mod_scoring:
         - "runic monsters deal"
         - "runic monsters have"
       multiplier: 1.2
-    - { label: "6 additional projectiles", match: "fire 6 additional projectiles", multiplier: 1.1 }
+    - { label: "6 additional projectiles", match: "fire 6 additional projectiles", multiplier: 1.0 }
     # "apparitions", not "players are assaulted by": Ruinous Ghosts share
     # that opening and are scored on their own below.
     - { label: "Apparitions", match: "apparitions", multiplier: 1.2 }
     - { label: "Ruinous Ghosts", match: "ruinous ghosts", multiplier: 1.5 }
     - { label: "Driven mad", match: "driven mad", multiplier: 1.3 }
     - { label: "Enrage on Low Life", match: "enrage on low life", multiplier: 1.3 }
-    - { label: "Melee-range damage only", match: "within 2 metres of a player", multiplier: 1.3 }
+    - { label: "Melee-range damage only", match: "within 2 metres of a player", multiplier: 1.1 }
     # Replaced the old reflect mods. Two-liner: the physical and elemental
     # thorns lines always appear together. Matched on "thorns" not
     # "reflect" - the lines read "...Thorns reflecting 4000 ... Damage".
