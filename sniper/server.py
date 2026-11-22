@@ -42,8 +42,14 @@ _LANDING = (
     "<!doctype html><meta charset=utf-8><title>Valdo Sniper</title>"
     "<body style='font:15px Segoe UI,sans-serif;background:#0f1216;color:#e6eaef;padding:32px'>"
     "<h2>Valdo Sniper is running</h2>"
-    f"<p><a style='color:#5fd069' href='{INSTALL_PATH}'>Install the browser userscript</a>"
-    " (needs Tampermonkey)</p></body>"
+    "<p><b>Before installing</b>, enable user scripts, or Chrome runs nothing:</p><ol>"
+    "<li>Install Tampermonkey from the Chrome Web Store.</li>"
+    "<li>Open <code>chrome://extensions</code>, click Tampermonkey's <b>Details</b>,"
+    " and turn on <b>Allow User Scripts</b>. On Chrome older than 138, turn on"
+    " <b>Developer mode</b> (top-right) instead.</li>"
+    f"<li><a style='color:#5fd069' href='{INSTALL_PATH}'>Install the browser userscript</a>"
+    " and press <b>Install</b>.</li>"
+    "<li>Reload your trade live-search tabs.</li></ol></body>"
 )
 
 

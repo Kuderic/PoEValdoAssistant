@@ -481,7 +481,8 @@ class Overlay:
                 widget.bind("<Button-1>", lambda e, act=action: act())
         tk.Label(
             self._setup_panel,
-            text="Needs Chrome + Tampermonkey with “Allow User Scripts” on.\n"
+            text="First: chrome://extensions → Tampermonkey → Details →\n"
+            "turn on “Allow User Scripts”. Chrome runs nothing without it.\n"
             "The tabs light turns green once a search tab connects.",
             bg=SURFACE,
             fg=FAINT,
