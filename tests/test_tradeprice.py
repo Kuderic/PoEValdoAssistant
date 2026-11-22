@@ -385,3 +385,16 @@ async def test_foulborn_listing_in_fetch_is_never_priced():
 
     listings, _mode = await pricer_with(handler).fetch_reward_listings("Covens", "Foil Headhunter")
     assert listings == [(269.0, "divine")]
+
+
+def test_six_hour_bucket_does_not_pace_until_half_spent():
+    """Live 2026-11-22 headers. Pacing on 600/6h made every request wait 72s,
+    so a 10-reward pass outlasted the 30-minute refresh."""
+    headers = {
+        "X-Rate-Limit-Rules": "Ip",
+        "X-Rate-Limit-Ip": "5:10:60,15:60:300,30:300:1800,600:21600:3600",
+        "X-Rate-Limit-Ip-State": "1:10:0,1:60:0,6:300:0,57:21600:0",
+    }
+    assert rate_limit_delay(headers) == pytest.approx(20.0)  # 300/30 at half share
+    headers["X-Rate-Limit-Ip-State"] = "1:10:0,1:60:0,6:300:0,160:21600:0"
+    assert rate_limit_delay(headers) == pytest.approx(72.0)

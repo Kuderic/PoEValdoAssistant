@@ -70,6 +70,12 @@ def _buckets(spec: str) -> list[tuple[int, int, int]]:
 # Fraction of the shared per-IP budget the pricer may use; the rest is left
 # for the browser's own trade fetches (Exilium leaves similar headroom).
 IP_SHARE = 0.5
+# A window this long (the 600/6h search bucket) is a daily allowance, not a
+# pace: its sustained rate at IP_SHARE is 72s per request, which stretched one
+# pricing pass past the 30-minute refresh so prices never refreshed on time.
+# It only paces once half our share of it is spent, then at its sustained
+# rate, which can never fill it.
+LONG_WINDOW_S = 3600
 
 
 def rate_limit_delay(headers) -> float | None:
@@ -94,6 +100,8 @@ def rate_limit_delay(headers) -> float | None:
     earned a 429 (60s+ of backoff) every time, while plain sustained pacing
     priced 8 of 8 in 68s with none.
 
+    Windows of LONG_WINDOW_S or more only pace once they are half spent.
+
     The Ip rule is paced at IP_SHARE of its sustained rate: that bucket is
     shared with the browser's live-search tabs, whose own /api/trade/fetch
     calls on every push are the alert path. A pricer running the Ip bucket
@@ -115,7 +123,7 @@ def rate_limit_delay(headers) -> float | None:
         ):
             if restricted_for > 0:
                 delay = float(restricted_for)
-            elif max_hits <= 0:
+            elif max_hits <= 0 or (period >= LONG_WINDOW_S and hits < max_hits * share / 2):
                 continue
             else:
                 sustained = period / max_hits / share
