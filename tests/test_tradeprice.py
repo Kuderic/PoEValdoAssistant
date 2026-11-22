@@ -191,8 +191,18 @@ LIMIT_HEADERS = {
 
 
 def test_rate_limit_delay_uses_the_tightest_sustained_rate():
-    """8/10s -> 1.25s, 15/60s -> 4s, 5/10s -> 2s; the worst one wins."""
-    assert rate_limit_delay(LIMIT_HEADERS) == pytest.approx(4.0)
+    """Ip is paced at half rate (shared with the browser): 8/10s -> 2.5s,
+    15/60s -> 8s; Account 5/10s -> 2s at full rate. The worst one wins."""
+    assert rate_limit_delay(LIMIT_HEADERS) == pytest.approx(8.0)
+
+
+def test_account_rule_is_not_halved():
+    headers = {
+        "X-Rate-Limit-Rules": "Account",
+        "X-Rate-Limit-Account": "5:10:60",
+        "X-Rate-Limit-Account-State": "1:10:0",
+    }
+    assert rate_limit_delay(headers) == pytest.approx(2.0)
 
 
 def test_full_bucket_drains_rather_than_stalling_a_whole_window():
@@ -205,7 +215,8 @@ def test_full_bucket_drains_rather_than_stalling_a_whole_window():
         "X-Rate-Limit-Ip": "8:10:60",
         "X-Rate-Limit-Ip-State": "8:10:0",
     }
-    assert rate_limit_delay(headers) == pytest.approx(2 * 10 / 8)  # 2.5s, not 10s
+    # 2x the half-share sustained rate: 5s, not the whole 10s window
+    assert rate_limit_delay(headers) == pytest.approx(2 * 10 / 8 / 0.5)
 
 
 def test_no_bursting_through_spare_headroom():
@@ -213,7 +224,7 @@ def test_no_bursting_through_spare_headroom():
     Bursting spends a long window's budget up front and leaves nothing for
     the rest of it - measured as 429s and half the rewards unpriced."""
     fresh = dict(LIMIT_HEADERS, **{"X-Rate-Limit-Ip-State": "1:10:0,1:60:0"})
-    assert rate_limit_delay(fresh) == pytest.approx(4.0)  # 60/15, the worst bucket
+    assert rate_limit_delay(fresh) == pytest.approx(8.0)  # 60/15 at half share
 
 
 def test_rate_limit_delay_serves_an_active_restriction():
@@ -250,7 +261,7 @@ async def test_pricer_adopts_the_api_pacing():
     pricer = pricer_with(handler)
     assert pricer._api_spacing == 0.0  # nothing learned yet
     await pricer.fetch_reward_listings("Allflame", "Foil Mageblood")
-    assert pricer._api_spacing == pytest.approx(4.0)  # taught by the headers
+    assert pricer._api_spacing == pytest.approx(8.0)  # taught by the headers
 
 
 @pytest.mark.asyncio
@@ -317,3 +328,39 @@ async def test_search_excludes_foulborn():
     await pricer.fetch_reward_listings("Covens", "Foil Headhunter")
     assert len(sent) == 3  # unid -> identified -> identified+corrupted
     assert all(f["filters"]["mutated"] == {"option": "false"} for f in sent)
+
+
+@pytest.mark.asyncio
+async def test_404_on_one_reward_is_not_a_global_backoff():
+    """One odd reward name must not put every other reward into backoff."""
+
+    def handler(request):
+        return httpx.Response(404, json={})
+
+    pricer = pricer_with(handler)
+    with pytest.raises(httpx.HTTPStatusError):
+        await pricer.fetch_reward_listings("Allflame", "Foil Mageblood")
+    assert not pricer.in_backoff and not pricer.session_invalid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_4xx_enters_backoff_and_flags_bad_session(status):
+    invalid = True
+    """An expired session used to skip the backoff and re-fire every ~15s
+    forever on the budget the browser shares."""
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(status, json={})
+
+    pricer = pricer_with(handler)
+    with pytest.raises(TradeBackoff):
+        await pricer.fetch_reward_listings("Allflame", "Foil Mageblood")
+    assert pricer.in_backoff
+    assert pricer.session_invalid is invalid
+    with pytest.raises(TradeBackoff):  # refused locally, no network
+        await pricer.fetch_reward_listings("Allflame", "Foil Mageblood")
+    assert len(calls) == 1
+

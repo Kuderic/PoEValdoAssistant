@@ -21,6 +21,7 @@ import time
 
 import httpx
 
+from sniper.config import user_agent
 from sniper.logging_setup import event
 
 # fetch this many cheapest listings (trade API max per fetch); the average
@@ -66,6 +67,11 @@ def _buckets(spec: str) -> list[tuple[int, int, int]]:
     return out
 
 
+# Fraction of the shared per-IP budget the pricer may use; the rest is left
+# for the browser's own trade fetches (Exilium leaves similar headroom).
+IP_SHARE = 0.5
+
+
 def rate_limit_delay(headers) -> float | None:
     """Seconds to wait before the next request, from the API's OWN published
     budget rather than a hard-coded guess.
@@ -88,6 +94,11 @@ def rate_limit_delay(headers) -> float | None:
     earned a 429 (60s+ of backoff) every time, while plain sustained pacing
     priced 8 of 8 in 68s with none.
 
+    The Ip rule is paced at IP_SHARE of its sustained rate: that bucket is
+    shared with the browser's live-search tabs, whose own /api/trade/fetch
+    calls on every push are the alert path. A pricer running the Ip bucket
+    at 100% can 429 those fetches and delay or drop listings.
+
     None when the headers are missing or unparseable, so the caller falls
     back to its fixed blind spacing.
     """
@@ -98,6 +109,7 @@ def rate_limit_delay(headers) -> float | None:
     for rule in (r.strip() for r in rules.split(",") if r.strip()):
         limits = _buckets(headers.get(f"X-Rate-Limit-{rule}", ""))
         state = _buckets(headers.get(f"X-Rate-Limit-{rule}-State", ""))
+        share = IP_SHARE if rule.lower() == "ip" else 1.0
         for (max_hits, period, _restrict), (hits, _p, restricted_for) in zip(
             limits, state, strict=False
         ):
@@ -106,13 +118,11 @@ def rate_limit_delay(headers) -> float | None:
             elif max_hits <= 0:
                 continue
             else:
-                sustained = period / max_hits
+                sustained = period / max_hits / share
                 delay = sustained * 2 if hits >= max_hits else sustained
             worst = delay if worst is None else max(worst, delay)
     return worst
 
-
-USER_AGENT = "valdo-map-sniper/0.3 (personal snipe-margin tool; contact: easymccarthy@gmail.com)"
 
 BACKOFF_BASE_S = 60.0
 BACKOFF_CAP_S = 1800.0
@@ -142,7 +152,7 @@ class TradePricer:
         self._listing_status = listing_status
         self._corrupted_uniques = {u.lower() for u in corrupted_uniques}
         self._min_unid_listings = min_unid_listings
-        headers = {"User-Agent": USER_AGENT}
+        headers = {"User-Agent": user_agent("0.3")}
         cookies = {}
         if os.environ.get("POESESSID"):
             cookies["POESESSID"] = os.environ["POESESSID"]
@@ -157,6 +167,7 @@ class TradePricer:
         self._saw_limits = False
         self._fail_count = 0
         self._next_allowed = 0.0
+        self.session_invalid = False  # last response was 401/403
 
     @property
     def in_backoff(self) -> bool:
@@ -229,7 +240,22 @@ class TradePricer:
                 retry_after = rate_limit_delay(resp.headers)
             self._enter_backoff(retry_after)
             raise TradeBackoff(f"HTTP {resp.status_code}")
+        if resp.status_code in (401, 403):
+            # refused auth (expired POESESSID, or a block) used to skip the
+            # backoff entirely and re-fire every ~15s forever on the budget
+            # the browser shares; this one is global, every request would fail
+            self._enter_backoff(None)
+            self.session_invalid = True
+            raise TradeBackoff(f"HTTP {resp.status_code}")
+        # anything else non-2xx (400/404 on one odd reward, a 3xx) belongs to
+        # THIS request only: no global backoff; the caller skips the reward
+        # until its next refresh
         resp.raise_for_status()
+        if resp.status_code >= 300:
+            raise httpx.HTTPStatusError(
+                f"HTTP {resp.status_code}", request=resp.request, response=resp
+            )
+        self.session_invalid = False
         self._fail_count = 0
         self._observe_limits(resp)
         return resp

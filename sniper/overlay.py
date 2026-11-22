@@ -18,15 +18,16 @@ import tkinter as tk
 from collections import deque
 from tkinter import font as tkfont
 
-from sniper import browser
+from sniper import bettertrading, browser
 from sniper import icon as app_icon
-from sniper.alerts import AlertView, jackpots_to_ring
+from sniper.alerts import AlertView, jackpots_to_ring, shown_pin, travel_clipboard_text
 from sniper.bus import (
     AlertsChanged,
     Bus,
     ClickOutcome,
     GameStatus,
     ListingSeen,
+    Notice,
     PriceStatus,
     PricingHealth,
     RewardPrices,
@@ -240,9 +241,17 @@ class Overlay:
         on_price_override=None,
         # Callable[[float, float], None]: jackpot bars (min net, min yield)
         on_jackpot_change=None,
+        # Better Trading searches: open them all as live tabs / save a paste
+        on_open_searches=None,  # Callable[[], None]
+        on_import_searches=None,  # Callable[[str], bettertrading.ImportResult]
+        searches_count=None,  # Callable[[], int]
         overrides_path=None,  # Path for scoring_overrides.yaml persistence
     ):
         self._root = root
+        self._on_open_searches = on_open_searches
+        self._on_import_searches = on_import_searches
+        self._searches_count = searches_count or (lambda: 0)
+        self._import_window: tk.Toplevel | None = None
         self._bus = bus
         self._config = config
         self._on_travel = on_travel
@@ -325,6 +334,7 @@ class Overlay:
         self._tabs_need_install = True
         host = config.server.host if config.server.host not in ("0.0.0.0", "") else "127.0.0.1"
         self._install_url = f"http://{host}:{config.server.port}{INSTALL_PATH}"
+        self._setup_url = f"http://{host}:{config.server.port}/"
 
         # ---- status strip: tabs | game | prices ........... mute  settings
         strip = tk.Frame(root, bg=STRIP)
@@ -475,8 +485,10 @@ class Overlay:
         # tab is connected. Both rows act on a click only.
         self._setup_panel = tk.Frame(card, bg=SURFACE)
         for num, text, action in (
-            ("1", "Install the browser script", self._open_install),
-            ("2", "Open a Valdo live search on the trade site", lambda: self._open_link(TRADE_URL)),
+            ("1", "Open the sniper Chrome (first time: set it up)", self._open_sniper_chrome),
+            ("2", "Install the browser script", self._open_install),
+            ("3", "Import Better Trading searches", self._open_import),
+            ("4", "Open my live searches", self._open_searches),
         ):
             line = tk.Frame(self._setup_panel, bg=SURFACE)
             line.pack(fill="x", pady=(0, 5))
@@ -704,6 +716,8 @@ class Overlay:
         bus.set_waker(self._wake)
         root.after(DRAIN_MS, self._drain)
         root.after(TICK_MS, self._tick)
+        if self._on_import_searches is not None and not self._searches_count():
+            root.after(1500, self._open_import)  # first thing a new user needs
         root.after(30_000, self._refresh_feed_ages)
 
     # ------------------------------------------------------------------ bus
@@ -809,15 +823,23 @@ class Overlay:
                         self._pinned_top = None
                         alerts_dirty = True
                 self._status_line.config(text=text, fg=GOOD if ev.ok else BAD)
+            elif isinstance(ev, Notice):
+                self._status_line.config(text=ev.text, fg=GOOD if ev.ok else BAD)
             elif isinstance(ev, GameStatus):
+                text = "PoE running" if ev.running else "PoE not running"
+                if ev.buyer == "marked":
+                    text += " · buyer ✓"
+                elif ev.buyer == "lost":
+                    text += " · BUYER LOST"
                 self._game_label.config(
-                    text="PoE running" if ev.running else "PoE not running",
-                    fg=GOOD if ev.running else BAD,
+                    text=text,
+                    fg=BAD if not ev.running or ev.buyer == "lost" else GOOD,
                 )
             elif isinstance(ev, Traveled):
                 # keep the traveled listing in the top slot (mods visible
                 # inline) so it's readable during the loading screen
                 self._pin_top(ev.view)
+                self._copy_for_shop_search(ev.view)
                 alerts_dirty = True
             elif isinstance(ev, ListingSeen):
                 self._feed_entries.appendleft(ev.entry)
@@ -958,6 +980,9 @@ class Overlay:
         where the profit numbers come from.
         """
         health = self._pricing_health
+        if health is not None and health.session_invalid:
+            self._price_label.config(text="TRADE API REFUSED US (check POESESSID)", fg=BAD)
+            return
         if health is not None and health.backoff_s > 0:
             self._price_label.config(text=f"RATE LIMITED {health.backoff_s:.0f}s", fg=BAD)
             return
@@ -1082,10 +1107,30 @@ class Overlay:
     def _click_top(self) -> None:
         if self._on_travel is None:
             return
-        if self._pinned_top is None and self._alerts:
+        if self._alerts:
             self._on_travel(self._alerts[0].listing_id)
         elif self._pinned_top is not None:
             self._on_travel(self._pinned_top.listing_id)  # no-ops: already traveled
+
+    def _copy_for_shop_search(self, view: AlertView) -> None:
+        """Map name -> clipboard, for Ctrl+F / Ctrl+V in the seller's shop.
+        Tk thread only (tkinter is not thread-safe). Local; sends nothing."""
+        text = travel_clipboard_text(view)
+        if not self._config.alerts.copy_on_travel or not text:
+            return
+        try:
+            self._root.clipboard_clear()
+            self._root.clipboard_append(text)
+        except tk.TclError as e:
+            event("clipboard_failed", error=repr(e))
+            return
+        event("clipboard_copied", listing_id=view.listing_id, text=text)
+
+    def _shown_pin(self) -> AlertView | None:
+        """The traveled pin, but only while no live alert exists. The hotkey
+        always takes the best LIVE alert, so a pin holding the top slot over
+        a live alert made the big row and the hotkey's target disagree."""
+        return shown_pin(self._pinned_top, self._alerts)
 
     def _pin_top(self, view: AlertView) -> None:
         """Sets pin state only; the caller (drain) renders once per batch."""
@@ -1269,13 +1314,73 @@ class Overlay:
         there. Only ever on a click."""
         self._open_link(self._install_url)
 
+    def _open_sniper_chrome(self) -> None:
+        """First time: the setup checklist (Tampermonkey, login). After
+        that: the trade site."""
+        first = browser.is_first_run()
+        self._open_link(self._setup_url if first else TRADE_URL)
+
+    def _open_searches(self) -> None:
+        if self._on_open_searches is not None:
+            self._on_open_searches()
+
+    def _open_import(self) -> None:
+        """Paste box for Better Trading exports (one string per line)."""
+        if self._on_import_searches is None:
+            return
+        if self._import_window is not None and self._import_window.winfo_exists():
+            self._import_window.lift()
+            return
+        win = tk.Toplevel(self._root)
+        self._import_window = win
+        win.title("Import Better Trading searches")
+        win.configure(bg=BG)
+        win.attributes("-topmost", True)
+        tk.Label(
+            win,
+            text="Better Trading: folder ⋯ → Export, then paste here.\n"
+            "Several folders: one export per line. Saved for next time.",
+            bg=BG,
+            fg=DIM,
+            font=self._font("ui", 9),
+            justify="left",
+        ).pack(fill="x", padx=10, pady=(10, 4))
+        box = tk.Text(win, width=60, height=8, bg=SURFACE, fg=FG, insertbackground=FG, wrap="char")
+        box.pack(fill="both", expand=True, padx=10)
+        note = tk.Label(win, text="", bg=BG, fg=DIM, font=self._font("ui", 9), justify="left")
+        note.pack(fill="x", padx=10, pady=4)
+        saved = self._searches_count()
+        if saved:
+            note.config(text=f"{saved} searches saved. Paste to replace them.")
+        with contextlib.suppress(tk.TclError):  # empty or non-text clipboard
+            clip = self._root.clipboard_get()
+            if bettertrading.parse_exports(clip).searches:
+                box.insert("1.0", clip.strip())
+                note.config(text="Found a Better Trading export on your clipboard.", fg=GOOD)
+
+        def do_import() -> None:
+            result = self._on_import_searches(box.get("1.0", "end"))
+            skipped = f"\nSkipped {len(result.skipped)}: " + "; ".join(result.skipped[:4])
+            if result.searches:
+                text = f"Saved {len(result.searches)} searches ✓ Opening the missing tabs, paced."
+                note.config(text=text + (skipped if result.skipped else ""), fg=GOOD)
+            else:
+                note.config(text="Nothing usable - kept your saved searches." + skipped, fg=BAD)
+
+        btn = tk.Label(
+            win, text="Save & open tabs", bg=HAIR, fg=FG, font=self._font("ui", 10), padx=10, pady=3
+        )
+        btn.configure(cursor="hand2")
+        btn.bind("<Button-1>", lambda e: do_import())
+        btn.pack(anchor="w", padx=10, pady=(0, 10))
+
     def _open_link(self, url: str) -> None:
         """In Chrome, where the live searches and Tampermonkey are - never
         just the Windows default browser (see sniper/browser.py)."""
         event("open_link", url=url, browser=browser.open_url(url))
 
     def _render_alerts(self) -> None:
-        pinned = self._pinned_top
+        pinned = self._shown_pin()
         top_widgets = self._top_widgets
         self._clear_frame(self._pairings)
         self._clear_frame(self._risks)
@@ -1308,10 +1413,10 @@ class Overlay:
         for widget in top_widgets:
             widget.configure(cursor="hand2")
 
-        # while pinned, the traveled listing holds the top slot and live
-        # alerts queue below it
+        # the pin only shows while there is no live alert (_shown_pin), so the
+        # top slot is always exactly what the hotkey would take
         top = pinned if pinned is not None else self._alerts[0]
-        runner_views = self._alerts[:2] if pinned is not None else self._alerts[1:]
+        runner_views = self._alerts[1:]
         if top.mismatch:
             self._banner.config(
                 text=f"⚠  CURRENCY MISMATCH: {top.currency.upper()} ≠ "
@@ -1544,7 +1649,7 @@ class Overlay:
 
     def _draw_countdown(self) -> None:
         self._countdown.delete("all")
-        if self._pinned_top is not None:
+        if self._shown_pin() is not None:
             total = self._config.alerts.traveled_display_seconds
             remaining = max(0.0, self._pinned_until - time.monotonic())
             jackpot = self._pinned_top.jackpot
@@ -1747,7 +1852,23 @@ class Overlay:
         combo_e = field("Hotkey combo", self._current_combo, width=16, search="key travel")
         vol_e = field("Alert volume (0 - 1)", _fmt(self._volume), search="sound")
 
-        # ---- 3. Reward prices. A reference price is occasionally just wrong -
+        # ---- 3. Live searches: Better Trading import and the sniper Chrome
+        heading("Live searches")
+        links = tk.Frame(body, bg=BG)
+        links.grid(row=row_cursor[0], column=0, columnspan=2, sticky="w", padx=10)
+        sections[-1]["rows"].append(("better trading import chrome searches", [links]))
+        row_cursor[0] += 1
+        for label, action in (
+            ("Import Better Trading", self._open_import),
+            ("Open my live searches", self._open_searches),
+            ("Open sniper Chrome", self._open_sniper_chrome),
+        ):
+            link = tk.Label(links, text=label, bg=HAIR, fg=FG, font=self._font("ui", 9), padx=8)
+            link.configure(cursor="hand2")
+            link.bind("<Button-1>", lambda e, act=action: act())
+            link.pack(side="left", padx=(0, 6), pady=2)
+
+        # ---- 4. Reward prices. A reference price is occasionally just wrong -
         # a thin unid market, a reward whose listings the average lands badly
         # on - and every figure downstream inherits the error, so the user can
         # pin the price they know is right. Session-only on purpose: an old
@@ -1783,7 +1904,7 @@ class Overlay:
         else:
             caption("No live searches connected yet.")
 
-        # ---- 4. Failure risks, in percent. A failed map loses what you paid,
+        # ---- 5. Failure risks, in percent. A failed map loses what you paid,
         # so these turn net into an expected value.
         risk_entries: dict[str, tk.Entry] = {}
         if sc.risks:
@@ -1798,7 +1919,7 @@ class Overlay:
                 "100 = never worth buying; 0 = ignore the risk."
             )
 
-        # ---- 5. Deadly pairings: separate dict from the rules, so a pairing
+        # ---- 6. Deadly pairings: separate dict from the rules, so a pairing
         # named like a rule cannot clobber it
         pair_entries: dict[str, tk.Entry] = {}
         if sc.pairings:
@@ -1809,7 +1930,7 @@ class Overlay:
                 )
             caption("Mods that are far worse together than apart.")
 
-        # ---- 6/7. Difficulty. Rules split into two exclusive groups: a rule
+        # ---- 7/8. Difficulty. Rules split into two exclusive groups: a rule
         # either raises the base difficulty (min_base) or multiplies the final
         # score, never both. Warning-only rules have no number to tune and
         # are not listed. Alphabetical: there are dozens of them.

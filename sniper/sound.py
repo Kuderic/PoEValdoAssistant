@@ -22,10 +22,13 @@ import io
 import sys
 import tempfile
 import threading
+import time
 import wave
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from sniper.logging_setup import event
 
 # What the SystemExclamation alias plays. Used when no custom sound is
 # configured, so the default alert is volume-controllable too.
@@ -49,6 +52,8 @@ class SoundCommand:
 
     kind: str
     loop: bool = False
+    # when the overlay asked for it; only for the latency log
+    submitted: float = field(default_factory=time.monotonic, compare=False)
 
 
 class SoundWorker:
@@ -87,8 +92,16 @@ class SoundWorker:
                 self._cond.wait_for(lambda: self._pending is not None)
                 command, self._pending = self._pending, None
                 self._busy = True
+            started = time.monotonic()
             try:
                 self._backend(command)
+                if command.kind != "stop":
+                    event(
+                        "sound_played",
+                        kind=command.kind,
+                        sound_queue_ms=round((started - command.submitted) * 1000, 1),
+                        sound_call_ms=round((time.monotonic() - started) * 1000, 1),
+                    )
             except Exception as e:  # a silent alert is a missed snipe
                 if self._on_error is not None:
                     self._on_error(e)

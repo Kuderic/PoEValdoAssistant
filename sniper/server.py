@@ -30,7 +30,7 @@ _ROUTE_CAP = 1000
 # tab silently loses whatever the new version added - new fields simply
 # arrive missing, which reads as a broken feature rather than an old script.
 # KEEP IN SYNC with @version in userscript/valdo-sniper.user.js.
-EXPECTED_USERSCRIPT_VERSION = "0.8.0"
+EXPECTED_USERSCRIPT_VERSION = "0.9.0"
 
 # The app serves its own userscript over plain HTTP on the websocket port, so
 # installing is one click (Tampermonkey intercepts any *.user.js URL) and the
@@ -38,18 +38,29 @@ EXPECTED_USERSCRIPT_VERSION = "0.8.0"
 # on exactly the version this running app expects.
 INSTALL_PATH = "/valdo-sniper.user.js"
 USERSCRIPT_FILE = Path(__file__).resolve().parent.parent / "userscript" / "valdo-sniper.user.js"
+TAMPERMONKEY_URL = (
+    "https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo"
+)
+# The sniper Chrome opens this page on its first run: a fresh profile has no
+# Tampermonkey and no trade login, and without both nothing is captured.
 _LANDING = (
-    "<!doctype html><meta charset=utf-8><title>Valdo Sniper</title>"
-    "<body style='font:15px Segoe UI,sans-serif;background:#0f1216;color:#e6eaef;padding:32px'>"
-    "<h2>Valdo Sniper is running</h2>"
-    "<p><b>Before installing</b>, enable user scripts, or Chrome runs nothing:</p><ol>"
-    "<li>Install Tampermonkey from the Chrome Web Store.</li>"
-    "<li>Open <code>chrome://extensions</code>, click Tampermonkey's <b>Details</b>,"
-    " and turn on <b>Allow User Scripts</b>. On Chrome older than 138, turn on"
-    " <b>Developer mode</b> (top-right) instead.</li>"
-    f"<li><a style='color:#5fd069' href='{INSTALL_PATH}'>Install the browser userscript</a>"
-    " and press <b>Install</b>.</li>"
-    "<li>Reload your trade live-search tabs.</li></ol></body>"
+    "<!doctype html><meta charset=utf-8><title>Valdo Sniper setup</title>"
+    "<body style='font:15px Segoe UI,sans-serif;background:#0f1216;color:#e6eaef;"
+    "padding:32px;max-width:640px;line-height:1.6'>"
+    "<h2>Valdo Sniper: set up this Chrome</h2>"
+    "<p>This is the sniper's own Chrome. Do these once:</p><ol>"
+    f"<li><a style='color:#5fd069' href='{TAMPERMONKEY_URL}'>Install Tampermonkey</a></li>"
+    "<li>Open <code>chrome://extensions</code> (paste it in the address bar),"
+    " Tampermonkey, Details, turn on <b>Allow User Scripts</b>. On Chrome older"
+    " than 138, turn on <b>Developer mode</b> (top-right) instead</li>"
+    f"<li><a style='color:#5fd069' href='{INSTALL_PATH}'>Install the browser script</a></li>"
+    "<li><a style='color:#5fd069' href='https://www.pathofexile.com/login'>Log in to"
+    " pathofexile.com</a> as your <b>buyer</b> account only</li>"
+    "<li>Settings, Performance: add <code>pathofexile.com</code> to"
+    " <i>Always keep these sites active</i>; turn Energy Saver off</li></ol>"
+    "<p>Then click <b>Open my live searches</b> in the overlay. When Chrome asks whether"
+    " the trade site may access devices on your local network, click <b>Allow</b>.</p>"
+    "</body>"
 )
 
 
@@ -115,6 +126,9 @@ class SniperServer:
         self.tabs: dict[str, TabState] = {}
         self._listing_tab: OrderedDict[str, str] = OrderedDict()  # listing_id -> tab_id
         self._recent_rewards: dict[str, float] = {}  # reward -> last seen monotonic
+        # rewards of the imported Better Trading searches: priced from launch,
+        # before (and whether or not) their tabs connect
+        self.saved_rewards: frozenset[str] = frozenset()
         self._net_stats: dict[str, dict] = {}  # tab_id -> last capture counters
 
     def set_scoring(self, scoring: ModScoring) -> None:
@@ -248,6 +262,9 @@ class SniperServer:
             # how long it was already live before we saw it: the head start
             # every other sniper had. Null on DOM-captured listings.
             index_lag_ms=None if listing.index_lag_ms is None else round(listing.index_lag_ms),
+            # live-socket push -> forwarded by the userscript (tab clock):
+            # the page's own fetch round trip on the net path
+            push_to_send_ms=listing.push_to_send_ms,
             mods=list(listing.mods),  # raw wording, for tuning match patterns
         )
 
@@ -307,12 +324,12 @@ class SniperServer:
     # ------------------------------------------------------------------ misc
 
     def active_rewards(self) -> set[str]:
-        """Rewards the trade pricer should track: what connected tabs search
-        for, plus rewards seen in recent listings (fallback when a tab's
-        reward scrape failed)."""
+        """Rewards the trade pricer should track: imported searches, what
+        connected tabs search for, plus rewards seen in recent listings
+        (fallback when a tab's reward scrape failed)."""
         now = time.monotonic()
         self._recent_rewards = {r: t for r, t in self._recent_rewards.items() if now - t < 1800}
-        rewards = set(self._recent_rewards)
+        rewards = set(self._recent_rewards) | self.saved_rewards
         rewards.update(t.search_reward for t in self.tabs.values() if t.search_reward)
         return rewards
 

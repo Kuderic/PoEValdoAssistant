@@ -39,8 +39,17 @@ class ClickOutcome:
 
 
 @dataclass(frozen=True)
+class Notice:
+    """A one-line message for the overlay's status line."""
+
+    text: str
+    ok: bool = True
+
+
+@dataclass(frozen=True)
 class GameStatus:
     running: bool
+    buyer: str = ""  # "" not marked | "marked" | "lost" (two-client setups)
 
 
 @dataclass(frozen=True)
@@ -112,6 +121,7 @@ class PricingHealth:
     backoff_s: float
     unpriced: int
     total: int
+    session_invalid: bool = False  # 401/403: bad POESESSID (or a 403 block)
 
 
 @dataclass(frozen=True)

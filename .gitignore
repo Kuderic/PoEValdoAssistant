@@ -16,3 +16,7 @@ price_cache.json
 .venv/
 # per-user tuning saved by the settings panel (merged over config.yaml)
 scoring_overrides.yaml
+*.egg-info/
+searches.txt
+dist/
+build/

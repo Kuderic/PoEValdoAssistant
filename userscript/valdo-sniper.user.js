@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.8.0
+// @version      0.9.0
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
-// @run-at       document-idle
+// @sandbox      raw
+// @run-at       document-start
 // @updateURL    http://127.0.0.1:8765/valdo-sniper.user.js
 // @downloadURL  http://127.0.0.1:8765/valdo-sniper.user.js
 // ==/UserScript==
@@ -66,7 +67,7 @@ const CONFIRM_WINDOW_MS = 3_000;
    script it loaded with until it is reloaded, so this is the only way to
    tell from logs/ whether a live tab is on a stale userscript.
    KEEP IN SYNC with the @version header above. */
-const SCRIPT_VERSION = '0.8.0';
+const SCRIPT_VERSION = '0.9.0';
 
 const WS_URL = 'ws://127.0.0.1:8765';
 const HEARTBEAT_MS = 30_000;
@@ -77,6 +78,10 @@ const SENTINEL_MS = 2_000;
    the DOM path's silent attach) */
 const NETWORK_SILENT_MS = 4_000;
 const TRADE_FETCH_RE = /\/api\/trade\/fetch\//;
+/* the trade page's own live-search socket (PoE1 /trade/live/, PoE2
+   /trade2/live/poe2/); frames announcing new listings are {"new": [ids]} */
+const LIVE_WS_RE = /\/api\/trade2?\/live\//;
+const PUSHED_CAP = 500;
 /* rows whose price/seller render a tick after insertion retry on this
    schedule (first retry is a rAF) instead of waiting for the 2s sweep */
 const RETRY_DELAYS_MS = [50, 100, 200, 400];
@@ -89,6 +94,71 @@ const PENDING_MAX_AGE_MS = 60_000;
    that a search is not a Valdo one (see isGenericSearch). Enough that a
    half-rendered page cannot momentarily look generic. */
 const GENERIC_ROW_EVIDENCE = 5;
+
+// ---------------------------------------------------------------------------
+// Live-socket push hook. Installed at document-start (before the page opens
+// its socket), separately from main(), which still waits for the DOM.
+// ---------------------------------------------------------------------------
+
+/* The browser's own WebSocket, captured BEFORE the patch below: with
+   @grant none the page and this script share one window, so our own
+   ws://127.0.0.1 connection must not go through the hook. */
+const NativeWebSocket = window.WebSocket;
+
+/* listing id -> performance.now() when the page's live socket announced it.
+   Real evidence that a listing is a push (not a page-load seed), and the
+   start of the push -> forward timing. One clock (the tab's), so the delta
+   is exact, unlike detected_at vs indexed_at. */
+const pushedAt = new Map();
+let pushFrames = 0;
+
+function notePushFrame(data) {
+  let msg;
+  try {
+    msg = JSON.parse(data);
+  } catch {
+    return; // not JSON: not ours to judge
+  }
+  if (!msg || !Array.isArray(msg.new)) return; // auth acks etc.
+  const now = performance.now();
+  pushFrames += 1;
+  for (const id of msg.new) {
+    if (typeof id !== 'string') continue;
+    pushedAt.delete(id); // re-announced ids move to the back of the FIFO
+    pushedAt.set(id, now);
+    if (pushedAt.size > PUSHED_CAP) pushedAt.delete(pushedAt.keys().next().value);
+  }
+}
+
+/** ms since the live socket announced `id`, or null if it never did. */
+function msSincePush(id) {
+  const t = pushedAt.get(id);
+  return t === undefined ? null : Math.round(performance.now() - t);
+}
+
+function hookLiveSocket() {
+  if (!NativeWebSocket || window.__VALDO_TEST__) return;
+  // A Proxy with only a construct trap: instanceof, WebSocket.OPEN and the
+  // prototype all forward to the native class untouched, and the instance
+  // returned is a real native WebSocket.
+  window.WebSocket = new Proxy(NativeWebSocket, {
+    construct(target, args, newTarget) {
+      const sock = Reflect.construct(target, args, newTarget);
+      try {
+        if (LIVE_WS_RE.test(String(args[0]))) {
+          // registered before the page sets onmessage, so it runs first;
+          // a tiny handler that can never throw into the page
+          sock.addEventListener('message', (ev) => {
+            try {
+              notePushFrame(ev.data);
+            } catch { /* never break the page */ }
+          });
+        }
+      } catch { /* never break the page */ }
+      return sock;
+    },
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Pure functions (no DOM mutation, no network) - exercised by the harness.
@@ -268,7 +338,7 @@ function main() {
   const pendingListings = []; // queued while disconnected: {frame, queuedAt}
 
   function send(obj) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (ws && ws.readyState === NativeWebSocket.OPEN) {
       ws.send(JSON.stringify(obj));
       return;
     }
@@ -424,7 +494,7 @@ function main() {
       search_reward: lastSentReward,
       search_kind: isGenericSearch() ? 'any' : 'valdo',
       version: SCRIPT_VERSION,
-      net_stats: { ...netStats },
+      net_stats: { ...netStats, pushFrames },
     });
   }
 
@@ -439,7 +509,7 @@ function main() {
   }
 
   function connect() {
-    ws = new WebSocket(WS_URL);
+    ws = new NativeWebSocket(WS_URL);
     ws.addEventListener('open', () => {
       reconnectDelay = RECONNECT_MIN_MS;
       console.info('[valdo] connected');
@@ -506,6 +576,7 @@ function main() {
       generic,
       capture: 'dom',
       row_index: rows.indexOf(rowEl),
+      push_to_send_ms: msSincePush(id),
       detected_at: new Date().toISOString(),
     });
     return true;
@@ -520,8 +591,9 @@ function main() {
 
   /**
    * handleRow with a fast retry ladder: a row that is not parseable yet
-   * (price/seller still rendering) is re-tried on a rAF then short
-   * timeouts, so it forwards within ~50ms instead of waiting up to 2s for
+   * (price/seller still rendering) is re-tried on a zero timeout then short
+   * timeouts (NOT requestAnimationFrame: rAF never fires in a hidden tab,
+   * and most live-search tabs are hidden, so the ladder never started), so it forwards within ~50ms instead of waiting up to 2s for
    * the safety sweep (which remains the net for rows that outlast the
    * ladder). `silent` is sticky per attempt chain.
    */
@@ -539,7 +611,7 @@ function main() {
       setTimeout(retry, RETRY_DELAYS_MS[attempt]);
       attempt += 1;
     };
-    requestAnimationFrame(retry);
+    setTimeout(retry, 0);
   }
 
   let observedContainer = null;
@@ -575,6 +647,16 @@ function main() {
   // The click path is unaffected: entry.id === the row's data-id.
 
   let networkSilentUntil = Date.now() + NETWORK_SILENT_MS;
+  // main() now runs at DOMContentLoaded (0.9.0), earlier than the old
+  // document-idle: restart the page-load window at `load` so slow seed
+  // fetches still land inside it
+  if (document.readyState !== 'complete') {
+    window.addEventListener(
+      'load',
+      () => { networkSilentUntil = Date.now() + NETWORK_SILENT_MS; },
+      { once: true },
+    );
+  }
 
   /* Why the network path did or did not forward a listing, reported in
      every hello and logged server-side. The two capture paths share the
@@ -610,7 +692,12 @@ function main() {
       return;
     }
     seen.add(key);
-    if (Date.now() < networkSilentUntil) {
+    const pushMs = msSincePush(parsed.id);
+    // An id the live socket announced is a push, whatever the clock says:
+    // that is evidence, the silent window only a heuristic. The window
+    // still covers ids we never saw announced (socket opened before our
+    // hook, or page-load seeds), exactly as before.
+    if (pushMs === null && Date.now() < networkSilentUntil) {
       netStats.silent += 1;
       return; // page-load fetch, not a push
     }
@@ -628,6 +715,7 @@ function main() {
       indexed_at: indexed, // GGG's index time; null on the DOM path
       capture: 'net',
       row_index: -1, // no DOM row yet
+      push_to_send_ms: pushMs, // live-socket push -> forwarded, one clock
       detected_at: new Date().toISOString(),
     });
   }
@@ -871,8 +959,14 @@ function main() {
 if (window.__VALDO_TEST__) {
   window.__valdo = {
     SELECTORS, fnv1a32, extractMods, parsePrice, seenKey,
-    parseRow, parseFetchItem, listingId, SeenSet,
+    parseRow, parseFetchItem, listingId, SeenSet, notePushFrame, msSincePush,
   };
 } else {
-  main();
+  hookLiveSocket(); // now, at document-start: the page has not opened its socket yet
+  // everything else needs the DOM, and ran at document-idle before 0.9.0
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', main, { once: true });
+  } else {
+    main();
+  }
 }

@@ -4,6 +4,10 @@ Reads logs/sniper-*.jsonl (or a given file) and prints percentiles for:
 - decide_ms:           frame received -> decision made (pure Python)
 - frame_to_ui_ms:      frame received -> alert rendered + sound (trustworthy,
                        single monotonic clock; the <150ms M5 target)
+- push_to_send_ms:     page's live-socket push -> userscript forwarded it
+                       (one browser clock; mostly the page's own fetch)
+- sound_queue_ms:      sound submitted -> PlaySound called (worker thread)
+- sound_call_ms:       PlaySound call duration (load + interrupt cost)
 - detected_to_decided_ms: browser detected_at -> decision (cross-clock,
                        approximate; useful for spotting browser-side delays)
 
@@ -17,7 +21,14 @@ import statistics
 import sys
 from pathlib import Path
 
-METRICS = ("decide_ms", "frame_to_ui_ms", "detected_to_decided_ms")
+METRICS = (
+    "push_to_send_ms",
+    "decide_ms",
+    "frame_to_ui_ms",
+    "sound_queue_ms",
+    "sound_call_ms",
+    "detected_to_decided_ms",
+)
 
 
 def collect(paths: list[Path]) -> dict[str, list[float]]:

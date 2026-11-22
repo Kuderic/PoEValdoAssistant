@@ -1,4 +1,4 @@
-"""Open overlay links in Chrome, not the Windows default browser.
+"""Open overlay links in the dedicated sniper Chrome, not the default browser.
 
 The live searches and Tampermonkey live in Chrome (the only supported
 browser), so the userscript installer and the trade-site link must open
@@ -41,19 +41,49 @@ def chrome_path() -> str | None:
     return None
 
 
-def open_url(url: str) -> str:
-    """Open `url` in Chrome if installed, else the default browser. Returns
-    which one was used ("chrome" | "default"), for the log."""
+# The sniper Chrome: its own profile folder, so it is a separate Chrome
+# process that honours these flags even while your normal Chrome is open
+# (a second profile made in Chrome's menu shares the running process and
+# silently drops them). Live-search tabs are mostly hidden, and Chrome
+# otherwise throttles hidden tabs.
+SNIPER_FLAGS = (
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-features=IntensiveWakeUpThrottling",
+    "--no-first-run",
+    "--no-default-browser-check",
+)
+
+
+def sniper_profile_dir() -> Path:
+    base = os.environ.get("LOCALAPPDATA")
+    return Path(base) / "ValdoSniperChrome" if base else Path.home() / ".valdo-sniper-chrome"
+
+
+def is_first_run() -> bool:
+    """No sniper profile yet: Tampermonkey and the trade login are still to do."""
+    return not sniper_profile_dir().exists()
+
+
+def open_url(*urls: str) -> str:
+    """Open `urls` in the sniper Chrome (same profile every time, so a
+    running one just gets new tabs), else the default browser. Returns which
+    one was used ("chrome" | "default"), for the log."""
     path = chrome_path()
     if path is not None:
         try:
-            # a running Chrome takes the URL as a new tab in its existing
-            # window; this process exits immediately either way
+            # this process exits immediately; a running sniper Chrome takes
+            # the URLs as new tabs in its existing window
             subprocess.Popen(
-                [path, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True
+                [path, f"--user-data-dir={sniper_profile_dir()}", *SNIPER_FLAGS, *urls],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
             )
             return "chrome"
         except OSError:
             pass
-    webbrowser.open(url)
+    for url in urls:
+        webbrowser.open(url)
     return "default"

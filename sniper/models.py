@@ -65,6 +65,10 @@ class Listing:
     # carries indexed_at) or "dom" (the rendered row). Logged so a silent
     # regression in either path is visible instead of guessed at.
     capture: str = ""
+    # ms from the page's live-socket push announcing this id to the
+    # userscript forwarding it, measured on the tab's one clock (0.9.0+);
+    # None when the push was not seen (old script, page-load seed)
+    push_to_send_ms: float | None = None
 
     @property
     def index_lag_ms(self) -> float | None:
@@ -202,6 +206,7 @@ def parse_frame(msg: object) -> Frame:
         row_index = msg.get("row_index")
         indexed_at = msg.get("indexed_at")
         type_line = msg.get("type_line")
+        push_ms = msg.get("push_to_send_ms")
         return Listing(
             search_id=search_id,
             tab_id=tab_id,
@@ -217,6 +222,9 @@ def parse_frame(msg: object) -> Frame:
             capture=msg.get("capture") if msg.get("capture") in ("net", "dom") else "",
             generic=msg.get("generic") is True,
             type_line=type_line if isinstance(type_line, str) and type_line else None,
+            push_to_send_ms=float(push_ms)
+            if isinstance(push_ms, int | float) and not isinstance(push_ms, bool) and push_ms >= 0
+            else None,
         )
 
     return FrameError(reason=f"unknown frame type {mtype!r}", raw=msg)

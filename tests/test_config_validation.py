@@ -133,3 +133,14 @@ def test_duplicate_rule_label_rejected(tmp_path):
 def test_distinct_labels_are_fine(tmp_path):
     rules = '[{ label: "X", match: "a", min_base: 10 }, { label: "Y", match: "b", min_base: 20 }]'
     assert len(load_config(write(tmp_path, scoring=rules)).mod_scoring.rules) == 2
+
+
+def test_mark_buyer_key_must_differ_from_travel_key(tmp_path):
+    import pytest
+
+    from sniper.config import ConfigError, load_config
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text('hotkey:\n  combo: "`"\n  mark_buyer: "`"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="mark_buyer"):
+        load_config(cfg)
