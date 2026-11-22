@@ -370,7 +370,8 @@ poe.ninja is still used for currency rates and to resolve `league: auto`.
 - **Rate limits are respected from the API's own headers**, so pacing adapts
   instead of guessing. If you get limited anyway, the header pill turns red
   (`RATE LIMITED 47s`) and unpriced rewards show as `Est. prices 5/8`.
-- Prices refresh every `refresh_minutes` (30 by default); the panel shows `↻`
+- Prices refresh automatically every `refresh_minutes` (30 by default), for
+  every imported search from launch, whether or not its tab is open yet; the panel shows `↻`
   on whichever reward is being recalculated, and both the panel and the
   *Watching* line's tooltip show how long ago each price was calculated. Every
   active reward re-prices each cycle, so lowering this multiplies the request
@@ -415,6 +416,66 @@ searches you aren't actually racing for.
   `python tools/replay.py [file]` feeds them back through the pipeline.
   `python tools/echo_server.py` is a bare frame viewer for userscript work.
 
+### Two accounts, two clients
+
+Short step-by-step version: [SETUP.md](SETUP.md).
+
+Run a dedicated **buyer** account next to the one you play on. The sniper
+travels whichever account is logged into the trade site, so the setup is
+about keeping that one account in one place.
+
+GGG staff posts allow two clients per PC, each on its own account, with no
+software sending input to several clients. That is from forum posts, not an
+official rules page, so check a current GGG statement yourself. The sniper
+never sends input into either client: the hotkey makes one click on the
+trade site, and focusing the game window synthesizes no keypress.
+
+1. **Account A = buyer.** It holds the currency and does every purchase.
+   Account B is your second client, doing whatever you like.
+2. **A dedicated Chrome for sniping.** The overlay's **Open the sniper
+   Chrome** launches Chrome with its own profile folder
+   (`%LOCALAPPDATA%\ValdoSniperChrome`) and the background-throttling flags
+   (`sniper/browser.py`). It runs as a separate Chrome process, so the flags
+   apply even while your normal Chrome is open. Every overlay link opens
+   there. The first time, it shows a setup page.
+3. In that Chrome: log into pathofexile.com as **Account A only** (logging
+   B in here replaces A's session, and travel then moves the wrong
+   account). Install Tampermonkey, turn on **Allow User Scripts**, and install
+   the script. Then import your **Better Trading** folder export
+   (⚙ → *Import Better Trading*; it pops up by itself while nothing is
+   saved, and pre-fills from your clipboard) and click **Save & open tabs**.
+   Each search that has no tab yet opens live for the current league, paced
+   under the trade site's search limit (5/10s, 15/60s, 30/5 min per IP) with
+   reward pricing paused meanwhile. On later launches the app reopens any
+   missing tabs by itself, about 20 s after start.
+4. **Allow local network access.** The first time a trade tab connects,
+   Chrome asks whether pathofexile.com may access devices on your local
+   network. Click **Allow**: without it the tab never reaches the app
+   (`ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS` in the tab's console). If
+   you dismissed it, re-enable it from the site settings (lock icon).
+5. **Keep the tabs alive.** Settings → Performance: add `pathofexile.com`
+   to Memory Saver's *Always keep these sites active*, and turn Energy
+   Saver off. A discarded tab receives nothing.
+6. **Clients:** start client A on Account A and park it in your hideout;
+   client B on Account B. Focus client A and press the **mark-buyer key**
+   (`hotkey.mark_buyer`, default `ctrl+alt+b`). The status strip shows
+   `PoE running · buyer ✓`. From then on travel always brings client A
+   forward, and is refused (`BUYER LOST`) if client A closes; mark again
+   after restarting it.
+7. **Keys:** both keys also reach the focused game, so pick combos PoE
+   does not use.
+8. **Pricing session (`.env`):** the price lookups share your IP's rate
+   limit with the browser either way (the pricer uses at most half of
+   it). To keep any account penalty off the buyer, either leave
+   `POESESSID` empty or use Account B's, copied from an incognito window
+   that you then close **without logging out** (logging out kills the
+   cookie). `TRADE API REFUSED US` in the status strip means the cookie
+   expired.
+
+On travel the map's name goes to the clipboard (`alerts.copy_on_travel`):
+in the seller's shop press Ctrl+F, Ctrl+V to find it. Whether the shop's
+search matches map names is not verified yet; check it once.
+
 ---
 
 ## Troubleshooting
@@ -429,7 +490,9 @@ searches you aren't actually racing for.
 | `start.bat` says Python not found | Install Python 3.12+ with *Add to PATH* ticked, then run it again. Delete the `.venv` folder to force a clean reinstall |
 | `RATE LIMITED` / `Est. prices N/M` | Trade API refused us; margins fall back to poe.ninja medians and every affected alert is flagged. Close some searches |
 | Alert shows no latency | The DOM path captured it, or the tab is on an old userscript. `python tools/capture_report.py` says which |
-| Alerts but hotkey does nothing | `PoE not running` in the status strip — the hotkey is deliberately inert without the game |
+| Alerts but hotkey does nothing | `PoE not running` in the status strip — the hotkey is deliberately inert without the game. `BUYER LOST`: the marked buyer client closed; focus it and press the mark key again |
+| Tab never connects, console shows `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS` | Chrome's local network permission was denied: allow it in the site settings for pathofexile.com, then reload |
+| `TRADE API REFUSED US` | The trade API answered 401/403: the `POESESSID` in `.env` expired or was logged out (replace it or leave it empty), or GGG is blocking requests |
 | Travel says `item no longer available` | Someone beat you to it — the runner-up is promoted to the top slot, press again to take it. Check the latency figure on the alerts you're losing |
 | Config error on startup naming a rule | Two `mod_scoring` rules share a label; labels must be unique (the ⚙ panel keys on them) |
 | Firefox | Not supported — Chrome only (`ws://127.0.0.1` from HTTPS pages) |

@@ -58,7 +58,8 @@ Userscript -> Python:
   "indexed_at": "ISO-8601 or null: GGG's own index time (network capture only)",
   "capture": "\"net\" | \"dom\": which path produced this listing",
   "type_line": "string or null: the item's base type (\"Vermillion Ring\")",
-  "generic": false
+  "generic": false,
+  "push_to_send_ms": "number or null: page live-socket push -> forwarded (0.9.0+)"
 }
 ```
 
@@ -147,6 +148,27 @@ real response (2026-08-10, sanitized copy in
 - The DOM MutationObserver + retry ladder + 2 s sweep stay on as the
   authority behind the hook; whichever path sees a listing first wins,
   `seen` dedupes the other.
+
+### Live-socket push hook (0.9.0)
+
+The userscript runs at `document-start` and wraps `window.WebSocket` in a
+Proxy with only a `construct` trap (so `instanceof`, `WebSocket.OPEN` and
+the prototype stay native). Sockets whose URL matches `/api/trade2?/live/`
+get one extra `message` listener that records each id in `{"new": [ids]}`
+frames with `performance.now()`; every other frame is ignored. The
+script's own `ws://127.0.0.1` connection uses the WebSocket captured before
+the patch. Everything else (`main()`) still waits for `DOMContentLoaded`.
+
+Two uses, zero extra requests:
+
+- **Push evidence.** A fetched listing whose id the socket announced is
+  forwarded even inside the 4 s page-load silent window; un-announced
+  fetches still follow the window, so a socket opened before the hook
+  degrades to the pre-0.9.0 behaviour.
+- **Timing.** `push_to_send_ms` (both capture paths) is measured on the
+  tab's single clock; on the net path it is mostly the page's own fetch
+  round trip. `tools/latency_report.py` summarizes it with the sound
+  worker's `sound_queue_ms` / `sound_call_ms`.
 
 Python -> Userscript:
 
@@ -295,13 +317,20 @@ for regex, `match_all` for combos where every pattern must hit):
   the **average** in the PriceBook.
 - Cadence: the loop wakes every 15s so a newly-opened live search is
   priced within seconds; each reward re-prices every
-  `trade_pricing.refresh_minutes` (30 min default, floor 5). Every active
-  reward re-prices each cycle, so the request rate scales with the number
+  `trade_pricing.refresh_minutes` (30 min default, floor 5). Active rewards
+  are the imported Better Trading searches (their 1.9+ slugs embed the query,
+  so the reward is known before any tab opens), connected tabs, and recently
+  seen listings. Pricing pauses while the app opens live-search tabs, which
+  spend the same per-IP search budget. Every active reward re-prices each cycle, so the request rate scales with the number
   of open live searches — 10 min earned a 30-minute API backoff on a busy
   session. Requests are paced from the API's own `X-Rate-Limit-*` headers
   (a blind 3s only until the first response teaches us the real budget),
-  and 429/Retry-After backs off exponentially. `POESESSID` from .env is
-  attached when present.
+  and 429/Retry-After backs off exponentially. The **Ip** rule is paced at
+  half its sustained rate (`tradeprice.IP_SHARE`): that bucket is shared
+  with the browser's own `/api/trade/fetch` calls on every live push,
+  which are the alert path. 401/403 also back off globally and show
+  `TRADE API REFUSED US`; a 400/404 on one reward skips only that reward
+  until its next refresh. `POESESSID` from .env is attached when present.
 - ToS stance: these are supplementary PRICING queries like poe.ninja was
   — a handful of requests per refresh cycle — not listing polling for
   snipes (which remains push-only via the live-search tabs).
@@ -444,6 +473,22 @@ section; rows are hidden with `grid_remove()` so they return in place.
   only thing automated besides the single click bound to the press.
 - Hotkey is inert (no-op with a soft warning) if the PoE process is not
   detected.
+- **Two clients (buyer marking).** Both clients' windows are titled "Path
+  of Exile", so `hotkey.mark_buyer` records the focused PoE window as the
+  buyer by hwnd + pid + process start time (`gamewindow.BuyerWindow`).
+  With a buyer marked, a press or overlay click first checks that exact
+  client is alive (`App._buyer_gate`, on a dedicated win32 thread) and is
+  refused before anything is consumed if not (`BUYER LOST`): any PoE
+  process passing the gate would otherwise send the trade-site account to
+  a hideout with only the other client in game. Focus then targets the
+  buyer only, never "whichever PoE window is on top".
+- **No synthetic input.** Focusing uses `AttachThreadInput` to the
+  foreground thread + `SetForegroundWindow`; nothing is typed or clicked
+  in any game client. A refusal flashes the taskbar button instead.
+- The overlay's top slot is always the hotkey's target: the traveled pin
+  only shows while no live alert exists (`alerts.shown_pin`).
+- On travel the map name goes to the clipboard (`alerts.copy_on_travel`)
+  for Ctrl+F in the seller's shop; local only.
 
 ## Known risks / open questions
 
