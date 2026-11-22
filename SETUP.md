@@ -30,11 +30,10 @@ under x64 emulation. Use a real Windows PC.
    - Download `ValdoSniper-Setup.exe` from
      https://github.com/andrewli8/PoEValdoAssistant/releases/tag/build-latest
    - Run it. Windows SmartScreen warns because the installer isn't code-signed: click **More info**, then **Run anyway**.
+   - The app itself runs on python.org's `pythonw.exe`, which is signed, so Defender has no packed exe to flag. If anything is still blocked, see **If Windows says it's malicious** below.
    - The installer needs no admin rights and installs to `%LOCALAPPDATA%\Programs\ValdoSniper`. Your `config.yaml`, `.env`, logs and saved searches live there too.
 3. **Leave "Start Valdo Sniper now" ticked** on the last page.
 4. Later, start it from the Start menu: **Valdo Sniper**.
-
-   **If Windows Defender blocks the installer**, install from source instead (see below).
 5. **Open the sniper Chrome:** in the overlay, click **Open the sniper Chrome**.
    - The app launches its own Chrome with its own profile and the right flags, so there's no shortcut to make.
    - It's a fresh Chrome with no extensions yet, and it opens a setup page with these steps:
@@ -50,9 +49,33 @@ under x64 emulation. Use a real Windows PC.
 7. **Tabs open by themselves.** Each search opens as a live tab for the current league: 6 seconds apart for the first 10, then 15 seconds apart, so you never hit the trade site's search limit. Price checks pause while tabs open.
    - When Chrome asks whether the site may access devices on your local network, click **Allow**.
 
+## If Windows says it's malicious
+
+This is a false positive on an unsigned download. It's a known problem for small open-source apps that can't pay for a code-signing certificate. Only override it for files you downloaded from the `build-latest` release on this GitHub page.
+
+**Chrome blocks the download** ("dangerous file" or "virus detected"):
+open the downloads list (Ctrl+J), click **⋮** on the file, then **Keep** or **Download dangerous file**.
+
+**Defender deleted the installer:**
+
+1. Open **Windows Security**, then **Virus & threat protection**, then **Protection history**.
+2. Open the Valdo Sniper entry. Check that the file path is your Downloads folder.
+3. Choose **Actions**, then **Allow on device**, and download it again.
+
+**Easiest way round it: the portable zip** (no installer to block):
+
+1. From the same release page, download `ValdoSniper-portable.zip`.
+2. Before unzipping, right-click the zip, choose **Properties**, tick **Unblock**, then click **OK**. Skip this and Windows warns on every start.
+3. Unzip it anywhere you can write to, for example `Documents\ValdoSniper`.
+4. Double-click **`Valdo Sniper.cmd`**.
+
+Your `config.yaml`, `.env` and saved searches stay in that folder. To update, unzip a new copy and copy those files across.
+
+You can also report the false positive to Microsoft at https://www.microsoft.com/wdsi/filesubmission (choose "Incorrectly detected as malware"). They usually clear it within a few days.
+
 ## Install from source (no exe)
 
-Use this if Defender flags the installer. It runs the same code with a normal
+Use this if both the installer and the zip are blocked. It runs the same code with a normal
 Python, so there's no packed exe for Defender to misjudge.
 
 1. Install **Python 3.12** from python.org and tick **Add python.exe to PATH**.
@@ -66,7 +89,7 @@ Then continue from step 5 above.
 
 ## Every session
 
-1. Start **Valdo Sniper** from the Start menu, or `start.bat` if you installed from source.
+1. Start **Valdo Sniper** from the Start menu (`Valdo Sniper.cmd` for the portable zip, `start.bat` from source).
 2. Missing live tabs reopen by themselves about 45 seconds after start. Tabs that are already open are skipped.
 3. Start **client A** on account A and park it in your hideout.
 4. Start **client B** on account B.
