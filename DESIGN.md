@@ -197,10 +197,13 @@ exactly as it always did.
 jackpot. It outranks every non-jackpot, generic hits included: it clears
 both bars, and a newer generic hit must not steal the press meant for it.
 Generic hits and currency mismatches are never jackpots (the scam guard's
-case must not be pushed to the top). A jackpot is visual only - magenta
-banner, frame and feed row; it plays the ordinary alert sound and does not
-pull the window forward (an earlier looping alarm and bring-to-front were
-removed on request). None of this touches the click path: one press is
+case must not be pushed to the top). A jackpot gets a magenta banner,
+frame and feed row, and loops an alarm (`SoundWorker` keeps play/stop
+ordered) while any live jackpot is unsilenced (`alerts.jackpots_to_ring`).
+Travel and expiry end it by removing the alert; clicking the banner
+silences the jackpots on screen, per listing, so a new one still rings.
+While it rings, routine alert sounds are skipped so they cannot cut it
+off. The window is never pulled forward. The banner click is sound-only. None of this touches the click path: one press is
 still one travel.
 
 ## Scam guard

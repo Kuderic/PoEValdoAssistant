@@ -17,8 +17,8 @@ import pytest
 from conftest import make_config, make_listing_frame
 from test_config_validation import write
 
-from sniper import margin
-from sniper.alerts import AlertStore
+from sniper import margin, sound
+from sniper.alerts import AlertStore, jackpots_to_ring
 from sniper.config import AlertsConfig, ConfigError, load_config
 from sniper.models import Listing, parse_frame
 from sniper.modrules import ModRules
@@ -158,14 +158,63 @@ def test_jackpot_keys_load_and_validate(tmp_path):
         load_config(path)
 
 
-def test_removed_jackpot_alarm_keys_are_rejected(tmp_path):
-    """jackpot_sound / jackpot_volume no longer exist; a config that still
-    sets them gets a clear error naming the allowed keys."""
+def test_alarm_keys_load(tmp_path):
+    path = write(tmp_path)
+    text = path.read_text(encoding="utf-8").replace(
+        "volume: 0.5 }", "volume: 0.5, jackpot_alarm: false, jackpot_sound: 'x.wav' }"
+    )
+    path.write_text(text, encoding="utf-8")
+    alerts = load_config(path).alerts
+    assert (alerts.jackpot_alarm, alerts.jackpot_sound) == (False, "x.wav")
+    assert DEFAULTS.jackpot_alarm is True and DEFAULTS.jackpot_sound == ""
+
+
+def test_removed_jackpot_volume_key_is_rejected(tmp_path):
+    """jackpot_volume no longer exists (the alarm plays at the volume
+    slider); a config that still sets it gets a clear error naming the
+    allowed keys."""
     path = write(tmp_path)
     old = path.read_text(encoding="utf-8")
     path.write_text(old.replace("volume: 0.5 }", "volume: 0.5, jackpot_volume: 1 }"), "utf-8")
     with pytest.raises(ConfigError, match="unknown key"):
         load_config(path)
+
+
+# ------------------------------------------------------------------ alarm
+
+
+def _views(*specs):
+    """(listing_id, net, difficulty) -> the store's ranked views."""
+    s = store()
+    for lid, net, diff in specs:
+        s.insert(decision(lid, net, diff))
+    return s.views()
+
+
+def test_alarm_rings_for_a_live_jackpot_only():
+    assert jackpots_to_ring(_views(("jp", 80, 55), ("meh", 10, 100)), set()) == {"jp"}
+    assert jackpots_to_ring(_views(("meh", 10, 100)), set()) == set()
+
+
+def test_silencing_stops_that_jackpot_but_a_new_one_still_rings():
+    """The banner click: 'I am not going to this one'. It must not also
+    swallow the next, different jackpot."""
+    silenced = {"jp"}
+    assert jackpots_to_ring(_views(("jp", 80, 55)), silenced) == set()
+    assert jackpots_to_ring(_views(("jp", 80, 55), ("jp2", 90, 50)), silenced) == {"jp2"}
+
+
+def test_travel_ends_the_alarm():
+    """Traveling consumes the alert, so nothing is left to ring for."""
+    s = store()
+    s.insert(decision("jp", 80, 55))
+    s.consume_best()
+    assert jackpots_to_ring(s.views(), set()) == set()
+
+
+def test_jackpot_alarm_has_its_own_default_sound():
+    assert sound.JACKPOT_WAV not in (sound.DEFAULT_WAV, sound.GENERIC_WAV)
+    assert sound.source_path("", sound.JACKPOT_WAV) == sound.JACKPOT_WAV
 
 
 # ------------------------------------------------------------------ sound

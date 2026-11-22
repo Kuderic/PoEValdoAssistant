@@ -142,10 +142,13 @@ class AlertsConfig:
     traveled_display_seconds: float = 10.0  # keep the traveled map's mods readable
     feed_rows: int = 40  # live-feed history rows (the area scrolls)
     # Jackpot: net AND yield both at or above these (see margin.is_jackpot).
-    # Gets its own colour and the hotkey's top slot; it sounds like any
-    # other alert.
+    # Gets its own colour and the hotkey's top slot.
     jackpot_min_net: float = 30.0
     jackpot_min_yield: float = 50.0
+    # Loop an alarm while a jackpot is live; clicking its banner silences it.
+    # jackpot_sound empty -> sound.JACKPOT_WAV. Plays at `volume`.
+    jackpot_alarm: bool = True
+    jackpot_sound: str = ""
 
 
 @dataclass(frozen=True)

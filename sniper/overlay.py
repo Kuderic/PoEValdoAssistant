@@ -20,7 +20,7 @@ from tkinter import font as tkfont
 
 from sniper import browser
 from sniper import icon as app_icon
-from sniper.alerts import AlertView
+from sniper.alerts import AlertView, jackpots_to_ring
 from sniper.bus import (
     AlertsChanged,
     Bus,
@@ -38,7 +38,13 @@ from sniper.config import Config
 from sniper.logging_setup import event
 from sniper.margin import net_yield
 from sniper.server import EXPECTED_USERSCRIPT_VERSION, INSTALL_PATH
-from sniper.sound import GENERIC_WAV, SoundCommand, SoundWorker, alert_wav_path
+from sniper.sound import (
+    GENERIC_WAV,
+    JACKPOT_WAV,
+    SoundCommand,
+    SoundWorker,
+    alert_wav_path,
+)
 
 try:
     import winsound
@@ -262,6 +268,11 @@ class Overlay:
         self._alerts: tuple[AlertView, ...] = ()
         self._muted = False
         self._volume = config.alerts.volume
+        # Jackpot alarm: loops while any live jackpot is unsilenced (see
+        # _sync_jackpot_alarm). Clicking the banner adds the live jackpots
+        # to _jp_silenced; travel or expiry ends it by removing the alert.
+        self._jp_ringing = False
+        self._jp_silenced: set[str] = set()
         # (kind, sound path, volume) -> playable WAV | None; see _alert_wav.
         # A DICT, not a single slot: the alert kinds alternate, and a
         # one-entry cache would rescale a ~240 KB WAV on the alert path
@@ -391,6 +402,10 @@ class Overlay:
             self._jackpot_banner, text="", bg=JACKPOT_BANNER, fg="white", font=self._font("num", 12)
         )
         self._jp_right.pack(side="right", padx=(0, 12))
+        # clicking the banner silences the alarm - never travels: the
+        # hotkey stays the only way to act on a listing
+        for widget in (self._jackpot_banner, self._jp_left, self._jp_right):
+            widget.bind("<Button-1>", lambda e: self._silence_jackpot())
         # currency-mismatch banner (the scam guard)
         self._banner = tk.Label(
             card, text="", bg=BAD_FILL, fg="white", font=self._font("ui", 11, "bold"), pady=4
@@ -827,11 +842,17 @@ class Overlay:
                 listing_id=view.listing_id,
                 frame_to_ui_ms=round((time.monotonic() - view.created_monotonic) * 1000, 1),
             )
-        if new_alert:  # one sound per batch: SND_ASYNC bursts cancel anyway
+        for view in new_views:
+            if view.jackpot:
+                event("jackpot_alert", listing_id=view.listing_id, key=view.key)
+        if alerts_dirty:
+            self._sync_jackpot_alarm()
+        # one sound per batch: SND_ASYNC bursts cancel anyway. A ringing
+        # jackpot alarm owns the speaker - a routine woop would cut it off.
+        if new_alert and not self._jp_ringing:
             # A batch carrying a generic hit plays the generic sound: those
             # are the rare, hand-picked ones, so if a batch mixes kinds the
-            # one worth interrupting for wins. A jackpot is shown, not
-            # sounded: it plays the ordinary alert sound.
+            # one worth interrupting for wins.
             self._play_sound("generic" if any(v.generic for v in new_views) else "valdo")
 
     # ----------------------------------------------------------------- fonts
@@ -1941,6 +1962,10 @@ class Overlay:
                 threading.Thread(
                     target=self._warm_alert_wavs, name="alert-sound-warmup", daemon=True
                 ).start()
+                if self._jp_ringing:  # restart at the new volume (or stop at 0)
+                    self._jp_ringing = False
+                    self._sound.submit(SoundCommand("stop"))
+                self._sync_jackpot_alarm()
             # price pins go out per changed reward and are NOT persisted with
             # the rest of the panel - they are a correction for right now
             if new_overrides != self._price_overrides:
@@ -2159,6 +2184,36 @@ class Overlay:
             text=self._glyph["mute" if self._muted else "volume"], fg=BAD if self._muted else DIM
         )
         event("mute_toggled", muted=self._muted)
+        self._sync_jackpot_alarm()  # mute stops a ringing alarm; unmute resumes it
+
+    def _silence_jackpot(self) -> None:
+        """Banner click: stop the alarm for every jackpot on screen now. A
+        later, different jackpot still rings. Only touches sound."""
+        live = jackpots_to_ring(self._alerts, self._jp_silenced)
+        if not live:
+            return
+        self._jp_silenced |= live
+        event("jackpot_silenced", listing_ids=sorted(live))
+        self._sync_jackpot_alarm()
+
+    def _sync_jackpot_alarm(self) -> None:
+        """Start or stop the looping alarm to match what is on screen, and
+        show the 'click to silence' hint only while it rings."""
+        live_ids = {a.listing_id for a in self._alerts}
+        self._jp_silenced &= live_ids  # forget listings that are gone
+        want = (
+            bool(jackpots_to_ring(self._alerts, self._jp_silenced))
+            and self._config.alerts.jackpot_alarm
+            and not self._muted
+            and self._volume > 0
+            and winsound is not None
+        )
+        if want != self._jp_ringing:
+            self._jp_ringing = want
+            self._sound.submit(SoundCommand("jackpot", loop=True) if want else SoundCommand("stop"))
+        self._jp_left.config(text="★  JACKPOT  ·  click to silence" if want else "★  JACKPOT")
+        for widget in (self._jackpot_banner, self._jp_left, self._jp_right):
+            widget.configure(cursor="hand2" if want else "")
 
     # ----------------------------------------------------------------- sound
 
@@ -2173,6 +2228,7 @@ class Overlay:
         alerts = self._config.alerts
         configured, default = {
             "generic": (alerts.generic_sound, GENERIC_WAV),
+            "jackpot": (alerts.jackpot_sound, JACKPOT_WAV),
         }.get(kind, (alerts.sound, None))
         volume = self._volume
         # `kind` belongs in the key even though `configured` usually
@@ -2187,7 +2243,7 @@ class Overlay:
     def _warm_alert_wavs(self) -> None:
         """Rescale every alert sound off the UI thread. Called at startup and
         after a volume change, which invalidates every cached key."""
-        for kind in ("valdo", "generic"):
+        for kind in ("valdo", "generic", "jackpot"):
             self._alert_wav(kind)
 
     def _play_sound(self, kind: str = "valdo") -> None:

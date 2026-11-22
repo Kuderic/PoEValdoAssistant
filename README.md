@@ -280,7 +280,12 @@ A Valdo listing that is **both** big money and cheap to run (net ≥ 10d
 - it stays magenta with `★ JACKPOT` in the live feed, so one you missed is
   obvious later.
 
-It plays the normal alert sound and never pulls the overlay to the front.
+It also **loops an alarm** (`Alarm02.wav`, at the volume slider) until you
+travel, it expires, or you **click the magenta banner** ("click to silence").
+That only stops the sound: it never travels, and a different jackpot
+arriving later still rings. The speaker icon mutes everything. The overlay
+is never pulled to the front. Set `alerts.jackpot_alarm: false` to have
+jackpots play the ordinary alert sound instead.
 
 Tune the bars in the ⚙ panel under **Alerts** (applied live and saved), or
 with `alerts.jackpot_min_net` / `jackpot_min_yield` in `config.yaml`. A
@@ -343,6 +348,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (10 / 10), also in the ⚙ panel |
+| `alerts.jackpot_alarm` / `jackpot_sound` | Loop an alarm on jackpots (click the banner to silence) / its .wav |
 | `trade_pricing.cache_max_age_minutes` | How stale a restored price may be (720) |
 
 ---

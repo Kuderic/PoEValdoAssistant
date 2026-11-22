@@ -328,3 +328,13 @@ class AlertStore:
         self._consumed[lid] = time.monotonic()
         while len(self._consumed) > _CONSUMED_CAP:
             self._consumed.popitem(last=False)
+
+
+def jackpots_to_ring(alerts: tuple[AlertView, ...], silenced: set[str]) -> set[str]:
+    """Listing ids of live jackpots the alarm should ring for: every jackpot
+    still on screen that the user has not silenced. Empty -> alarm off.
+
+    Travel consumes the alert and expiry drops it, so either one ends the
+    alarm by itself; silencing is per listing, so a NEW jackpot arriving
+    after you silenced one still rings."""
+    return {a.listing_id for a in alerts if a.jackpot and a.listing_id not in silenced}

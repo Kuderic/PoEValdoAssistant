@@ -36,12 +36,16 @@ DEFAULT_WAV = Path(r"C:\Windows\Media\Windows Exclamation.wav")
 # seconds and the next one cancels this one, so a 5s alarm would still be
 # playing after the travel it announced.
 GENERIC_WAV = Path(r"C:\Windows\Media\tada.wav")
+# Jackpot (big net AND big yield): an alarm LOOPED until the alert is
+# traveled to, expires, or is silenced by clicking its banner. Its length
+# does not matter: the overlay stops it the moment there is nothing to ring for.
+JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm02.wav")
 
 
 @dataclass(frozen=True)
 class SoundCommand:
-    """kind: "valdo" | "generic" plays that alert's WAV; "stop" silences
-    whatever is playing. `loop` repeats until the next command."""
+    """kind: "valdo" | "generic" | "jackpot" plays that alert's WAV; "stop"
+    silences whatever is playing. `loop` repeats until the next command."""
 
     kind: str
     loop: bool = False
