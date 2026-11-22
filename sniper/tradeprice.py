@@ -336,6 +336,11 @@ class TradePricer:
         fetched = await asyncio.get_running_loop().run_in_executor(None, resp.json)
         prices: list[tuple[float, str]] = []
         for item in fetched.get("result") or []:
+            # second guard behind the search's mutated=false: a Foulborn
+            # Headhunter (195d) listed under the plain name would drag the
+            # real one (270d) down if the filter were ever dropped or ignored
+            if ((item or {}).get("item") or {}).get("mutated"):
+                continue
             price = ((item or {}).get("listing") or {}).get("price") or {}
             amount, currency = price.get("amount"), price.get("currency")
             if isinstance(amount, int | float) and amount > 0 and currency:

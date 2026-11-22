@@ -364,3 +364,24 @@ async def test_4xx_enters_backoff_and_flags_bad_session(status):
         await pricer.fetch_reward_listings("Allflame", "Foil Mageblood")
     assert len(calls) == 1
 
+
+async def test_foulborn_listing_in_fetch_is_never_priced():
+    """Live 2026-11-22: without the filter, 2 of the 3 cheapest identified
+    'Headhunter' listings were Foulborn (195d, 200d vs 269d+)."""
+    fetched = {
+        "result": [
+            {
+                "listing": {"price": {"amount": 195, "currency": "divine"}},
+                "item": {"mutated": True},
+            },
+            {"listing": {"price": {"amount": 269, "currency": "divine"}}, "item": {}},
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/api/trade/search/"):
+            return httpx.Response(200, json={"id": "q1", "total": 25, "result": ["h0", "h1"]})
+        return httpx.Response(200, json=fetched)
+
+    listings, _mode = await pricer_with(handler).fetch_reward_listings("Covens", "Foil Headhunter")
+    assert listings == [(269.0, "divine")]
