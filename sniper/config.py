@@ -187,9 +187,10 @@ class TradePricingConfig:
     enabled: bool = True
     # Every active reward is re-priced each cycle, so the request rate scales
     # with how many live searches are open. At 10 a busy session earned a
-    # 30-minute API backoff; 30 cuts the sustained load to a third and still
-    # re-prices well inside the cached-price staleness window.
-    refresh_minutes: float = 30.0
+    # 30-minute API backoff, and at 30 twenty-odd rewards outgrew the 6h
+    # search allowance. Until a price is this old the cached one is used,
+    # across restarts too; Valdo reward prices move over hours, not minutes.
+    refresh_minutes: float = 180.0
     max_listings: int = 3  # cheapest N listings averaged (after outlier drop)
     # listings below this fraction of the sample median are price-fixers
     # (the perennial 2-chaos Mageblood) and are dropped before averaging

@@ -228,7 +228,10 @@ class App:
                 price = f"{ref.display_amount:g} {ref.display_currency}"
                 if not primary:
                     price = f"~{price}"  # fallback estimate, not settled yet
-            rows.append((reward, state, price, self.book.price_age_s(reward)))
+            # minute steps: the overlay redraws the panel whenever a row
+            # changes, and a per-second age made it redraw every 2s poll
+            age = self.book.price_age_s(reward)
+            rows.append((reward, state, price, None if age is None else age // 60 * 60))
         return tuple(rows)
 
     def _on_decision(self, decision: Decision) -> None:
@@ -687,6 +690,16 @@ class App:
 
         interval_s = self.config.trade_pricing.refresh_minutes * 60
         last_priced: dict[str, float] = {}
+
+        def age_s(reward: str, now: float) -> float:
+            if reward in last_priced:
+                return now - last_priced[reward]
+            # a price restored from the cache is due when its ORIGINAL fetch
+            # ages past the interval, not at once: re-pricing every reward
+            # on each restart spent a whole pass of searches for nothing
+            cached = self.book.trade_age_s(reward)
+            return interval_s if cached is None else cached
+
         while True:
             league = self.book.league  # resolves via the first ninja refresh
             # tab loads spend the same search budget: price after they open
@@ -701,11 +714,12 @@ class App:
                 await asyncio.sleep(2 if self._warmup_active else 15)
                 continue
             now = time.monotonic()
-            due = [
-                r
-                for r in sorted(self.server.active_rewards())
-                if now - last_priced.get(r, -interval_s) >= interval_s
-            ]
+            # a reward that just had a listing goes first (Exilium prices on
+            # demand): that is the price an alert is waiting on right now
+            due = sorted(
+                (r for r in self.server.active_rewards() if age_s(r, now) >= interval_s),
+                key=lambda r: (-self.server.last_seen(r), r),
+            )
             for reward in due:
                 if self._opening:
                     break  # unpriced rewards stay due; resume after the tabs
@@ -732,10 +746,15 @@ class App:
                     # the rest of the batch is still worth pricing
                     event("trade_price_error", reward=reward, error=repr(e))
                     # an HTTP refusal for THIS reward (400/404) would repeat
-                    # every 15s pass: retry it at its next refresh instead.
-                    # Anything else (a bad payload) may be transient: retry soon.
+                    # every 15s pass: retry it at its next refresh instead,
+                    # and stop the warm-up waiting on it. Anything else (a
+                    # bad payload) may be transient: retry soon.
                     if isinstance(e, httpx.HTTPStatusError):
                         last_priced[reward] = time.monotonic()
+                        self._warmup_settled.add(reward)
+                    self._pricing_now = None
+                    # the failed request still spent budget: keep the pace
+                    await pricer.pause_between_rewards()
                     continue
                 last_priced[reward] = time.monotonic()
                 div_prices = [

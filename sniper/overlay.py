@@ -125,7 +125,7 @@ def _ago(seconds: float | None) -> str:
     if seconds is None:
         return ""
     if seconds < 60:
-        return f"{seconds:.0f}s ago"
+        return "just now"
     if seconds < 3600:
         return f"{seconds / 60:.0f}m ago"
     return f"{seconds / 3600:.0f}h ago"

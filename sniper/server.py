@@ -323,6 +323,10 @@ class SniperServer:
 
     # ------------------------------------------------------------------ misc
 
+    def last_seen(self, reward: str) -> float:
+        """Monotonic time of the reward's latest listing; 0 if none."""
+        return self._recent_rewards.get(reward, 0.0)
+
     def active_rewards(self) -> set[str]:
         """Rewards the trade pricer should track: imported searches, what
         connected tabs search for, plus rewards seen in recent listings

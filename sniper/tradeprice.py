@@ -72,7 +72,7 @@ def _buckets(spec: str) -> list[tuple[int, int, int]]:
 IP_SHARE = 0.5
 # A window this long (the 600/6h search bucket) is a daily allowance, not a
 # pace: its sustained rate at IP_SHARE is 72s per request, which stretched one
-# pricing pass past the 30-minute refresh so prices never refreshed on time.
+# pricing pass past the then 30-minute refresh so prices never refreshed on time.
 # It only paces once half our share of it is spent, then at its sustained
 # rate, which can never fill it.
 LONG_WINDOW_S = 3600

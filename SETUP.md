@@ -45,7 +45,7 @@ under x64 emulation. Use a real Windows PC.
 6. **Import your searches.** In Better Trading, open your Valdo folder's ⋯ menu and choose **Export**.
    - The import box opens by itself shortly after launch while nothing is saved and no tab is connected. It fills in from your clipboard. Otherwise click **Import Better Trading searches**.
    - Click **Save & open tabs**. For several folders, put one export per line.
-   - The searches are saved in `searches.txt` for next time, and their prices refresh on their own every 30 minutes.
+   - The searches are saved in `searches.txt` for next time, and their prices refresh on their own every 3 hours. Until then the saved price is used, also after a restart.
    - To skip some items, open ⚙ and untick them under *Live searches*. Unticked searches are neither opened nor priced, which also leaves more of the search limit for the rest.
 7. **Tabs open by themselves.** Each search opens as a live tab for the current league: 6 seconds apart for the first 10, then 15 seconds apart, so you never hit the trade site's search limit. Price checks pause while tabs open.
    - When Chrome asks whether the site may access devices on your local network, click **Allow**.

@@ -78,8 +78,9 @@ ninja:
 trade_pricing:
   enabled: true
   # every active reward is re-priced each cycle, so the request rate scales
-  # with the number of open live searches; 10 earned a 30-minute API backoff
-  refresh_minutes: 30
+  # with the number of open live searches; 10 earned a 30-minute API backoff.
+  # Until a price is this old the cached one is used, also across restarts.
+  refresh_minutes: 180
   max_listings: 3          # average of the cheapest N listings (after outlier drop)
   min_unid_listings: 10
   # last session's prices are reloaded on startup (price_cache.json) so

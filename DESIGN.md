@@ -317,7 +317,9 @@ for regex, `match_all` for combos where every pattern must hit):
   the **average** in the PriceBook.
 - Cadence: the loop wakes every 15s so a newly-opened live search is
   priced within seconds; each reward re-prices every
-  `trade_pricing.refresh_minutes` (30 min default, floor 5). Active rewards
+  `trade_pricing.refresh_minutes` (180 min default, floor 5), counted from
+  the original fetch, so a cached price restored at startup is only re-fetched
+  once it is that old. Active rewards
   are the imported Better Trading searches (their 1.9+ slugs embed the query,
   so the reward is known before any tab opens), connected tabs, and recently
   seen listings. Pricing pauses while the app opens live-search tabs, which

@@ -370,13 +370,14 @@ poe.ninja is still used for currency rates and to resolve `league: auto`.
 - **Rate limits are respected from the API's own headers**, so pacing adapts
   instead of guessing. If you get limited anyway, the header pill turns red
   (`RATE LIMITED 47s`) and unpriced rewards show as `Est. prices 5/8`.
-- Prices refresh automatically every `refresh_minutes` (30 by default), for
+- Prices refresh automatically every `refresh_minutes` (180 by default), for
   every imported search from launch, whether or not its tab is open yet; the panel shows `↻`
   on whichever reward is being recalculated, and both the panel and the
   *Watching* line's tooltip show how long ago each price was calculated. Every
   active reward re-prices each cycle, so lowering this multiplies the request
   rate by however many live searches you have open — 10 minutes was enough to
-  earn a 30-minute API backoff.
+  earn a 30-minute API backoff. Until a price is that old the cached one is
+  used, also after a restart (`price_cache.json`).
 
 - **A price that's plainly wrong is fixable on the spot.** The ⚙ panel's
   **Reward prices** section pins your own figure (in divine) for any active

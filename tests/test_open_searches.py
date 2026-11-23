@@ -219,3 +219,100 @@ async def test_auto_open_never_launches_chrome_on_first_run(monkeypatch, tmp_pat
     path.write_text(export("Aa1"))
     await app.open_live_searches(auto=True)
     assert opened == []
+
+
+class _Pricer:
+    in_backoff = False
+    backoff_remaining = 0.0
+    session_invalid = False
+
+    def __init__(self, fail=None):
+        self.calls, self.pauses, self._fail = [], 0, fail
+
+    async def fetch_reward_listings(self, league, reward):
+        self.calls.append(reward)
+        if self._fail:
+            raise self._fail
+        return [(100.0, "divine")], "unid"
+
+    async def pause_between_rewards(self):
+        self.pauses += 1
+
+
+async def _one_pass(monkeypatch, app, pricer):
+    async def sleep(s):  # the end-of-pass sleep stops the endless loop
+        raise TimeoutError
+
+    monkeypatch.setattr(main_mod.asyncio, "sleep", sleep)
+    monkeypatch.setattr(app, "_push_pricing_health", lambda p: None)
+    with contextlib.suppress(TimeoutError):
+        await app.trade_price_loop(pricer)
+
+
+async def test_restart_does_not_reprice_fresh_cached_rewards(monkeypatch, tmp_path):
+    import time
+
+    app, _, _, _ = setup(monkeypatch, tmp_path)
+    app.server.saved_rewards = frozenset({"Foil Headhunter", "Foil Mageblood"})
+    app.book.set_trade_price("Foil Headhunter", 250.0, cached=True, priced_at=time.time() - 60)
+    pricer = _Pricer()
+    await _one_pass(monkeypatch, app, pricer)
+    assert pricer.calls == ["Foil Mageblood"]
+
+
+async def test_refused_reward_still_paces_and_settles(monkeypatch, tmp_path):
+    import httpx
+
+    app, _, _, _ = setup(monkeypatch, tmp_path)
+    app.server.saved_rewards = frozenset({"Foil Headhunter", "Foil Mageblood"})
+    req = httpx.Request("POST", "https://x.invalid")
+    refused = httpx.HTTPStatusError("400", request=req, response=httpx.Response(400, request=req))
+    pricer = _Pricer(fail=refused)
+    await _one_pass(monkeypatch, app, pricer)
+    assert len(pricer.calls) == 2 and pricer.pauses == 2  # no back-to-back searches
+    assert app._warmup_settled == {"Foil Headhunter", "Foil Mageblood"}
+
+
+async def test_unchecked_search_is_neither_opened_nor_priced(monkeypatch, tmp_path):
+    app, path, opened, _ = setup(monkeypatch, tmp_path)
+    path.write_text(export(query_slug("Foil Headhunter"), query_slug("Foil Mageblood")))
+    app.set_search_enabled(query_slug("Foil Headhunter"), False)
+    assert app.server.saved_rewards == {"Foil Mageblood"}
+    await app.open_live_searches()
+    assert len(opened) == 1 and query_slug("Foil Mageblood") in opened[0]
+    app.set_search_enabled(query_slug("Foil Headhunter"), True)
+    assert app.server.saved_rewards == {"Foil Headhunter", "Foil Mageblood"}
+
+
+async def test_reward_with_a_fresh_listing_is_priced_first(monkeypatch, tmp_path):
+    app, _, _, _ = setup(monkeypatch, tmp_path)
+    app.server.saved_rewards = frozenset({"Foil Headhunter", "Foil Mageblood"})
+    app.server._recent_rewards["Foil Mageblood"] = __import__("time").monotonic()
+    pricer = _Pricer()
+    await _one_pass(monkeypatch, app, pricer)
+    assert pricer.calls == ["Foil Mageblood", "Foil Headhunter"]
+
+
+def test_progress_rows_do_not_change_every_second(tmp_path):
+    import time
+
+    app = App(make_config(), Bus())
+    app.book.set_trade_price("Foil Headhunter", 250.0, cached=True, priced_at=time.time() - 130)
+    first = app._pricing_rows(["Foil Headhunter"])
+    app.book.set_trade_price("Foil Headhunter", 250.0, cached=True, priced_at=time.time() - 131)
+    assert app._pricing_rows(["Foil Headhunter"]) == first
+
+
+async def test_cached_price_is_used_for_three_hours_then_refreshed(monkeypatch, tmp_path):
+    import time
+
+    app, _, _, _ = setup(monkeypatch, tmp_path)
+    assert app.config.trade_pricing.refresh_minutes == 180
+    app.server.saved_rewards = frozenset({"Foil Headhunter", "Foil Mageblood"})
+    app.book.set_trade_price(
+        "Foil Headhunter", 250.0, cached=True, priced_at=time.time() - 2 * 3600
+    )
+    app.book.set_trade_price("Foil Mageblood", 300.0, cached=True, priced_at=time.time() - 4 * 3600)
+    pricer = _Pricer()
+    await _one_pass(monkeypatch, app, pricer)
+    assert pricer.calls == ["Foil Mageblood"]
