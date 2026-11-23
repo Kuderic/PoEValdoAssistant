@@ -77,6 +77,8 @@ class App:
             max_display=config.alerts.max_display,
             jackpot_min_net=config.alerts.jackpot_min_net,
             jackpot_min_yield=config.alerts.jackpot_min_yield,
+            super_jackpot_min_net=config.alerts.super_jackpot_min_net,
+            super_jackpot_min_yield=config.alerts.super_jackpot_min_yield,
         )
         self.server = SniperServer(
             config,
@@ -211,6 +213,8 @@ class App:
                         # verdict-gated: a blocked/below-threshold row must
                         # never be painted as the one worth chasing
                         jackpot=decision.verdict == "alert" and self.store.is_jackpot(decision),
+                        super_jackpot=decision.verdict == "alert"
+                        and self.store.is_super_jackpot(decision),
                         risks=decision.risks,
                         fail_chance=decision.fail_chance,
                     )
@@ -225,6 +229,7 @@ class App:
                 key=decision.key,
                 net_div=round(decision.net_div or 0, 2),
                 jackpot=self.store.is_jackpot(decision),
+                super_jackpot=self.store.is_super_jackpot(decision),
                 active_alerts=len(self.store),
             )
             self._push_alerts(
@@ -364,10 +369,22 @@ class App:
             },
         )
 
-    def set_jackpot_thresholds(self, min_net: float, min_yield: float) -> None:
-        """Settings panel jackpot bars; runs on the asyncio thread."""
-        self.store.set_jackpot_thresholds(min_net, min_yield)
-        event("jackpot_thresholds_updated", min_net=min_net, min_yield=min_yield)
+    def set_jackpot_thresholds(
+        self,
+        min_net: float,
+        min_yield: float,
+        super_min_net: float | None = None,
+        super_min_yield: float | None = None,
+    ) -> None:
+        """Settings panel jackpot + super jackpot bars; asyncio thread."""
+        self.store.set_jackpot_thresholds(min_net, min_yield, super_min_net, super_min_yield)
+        event(
+            "jackpot_thresholds_updated",
+            min_net=min_net,
+            min_yield=min_yield,
+            super_min_net=super_min_net,
+            super_min_yield=super_min_yield,
+        )
 
     def set_price_override(self, reward: str, divine: float | None) -> None:
         """Pin (or unpin, with None) a reward's reference price for this
@@ -637,8 +654,12 @@ def run_with_overlay(config: Config, config_path: str) -> None:
     def on_price_override(reward: str, divine: float | None) -> None:
         loop.call_soon_threadsafe(app.set_price_override, reward, divine)
 
-    def on_jackpot_change(min_net: float, min_yield: float) -> None:
-        loop.call_soon_threadsafe(app.set_jackpot_thresholds, min_net, min_yield)
+    def on_jackpot_change(
+        min_net: float, min_yield: float, super_net: float, super_yield: float
+    ) -> None:
+        loop.call_soon_threadsafe(
+            app.set_jackpot_thresholds, min_net, min_yield, super_net, super_yield
+        )
 
     # Our own taskbar identity: without it Windows groups the window under
     # python.exe and shows the Python logo instead of the app's icon.

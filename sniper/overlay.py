@@ -16,11 +16,12 @@ import threading
 import time
 import tkinter as tk
 from collections import deque
+from dataclasses import dataclass
 from tkinter import font as tkfont
 
 from sniper import browser
 from sniper import icon as app_icon
-from sniper.alerts import AlertView, jackpots_to_ring
+from sniper.alerts import AlertView, alarm_kind, jackpots_to_ring
 from sniper.bus import (
     AlertsChanged,
     Bus,
@@ -41,6 +42,7 @@ from sniper.server import EXPECTED_USERSCRIPT_VERSION, INSTALL_PATH
 from sniper.sound import (
     GENERIC_WAV,
     JACKPOT_WAV,
+    SUPER_JACKPOT_WAV,
     SoundCommand,
     SoundWorker,
     alert_wav_path,
@@ -87,15 +89,128 @@ LAG_OK_MS, LAG_BAD_MS = 2000.0, 5000.0
 # Windows clock drift ran for 8 hours and rendered as "latency -18000ms" in
 # GREEN, i.e. "we saw this the instant it listed, go race it".
 CLOCK_SKEW_MS = -1000.0
-# Hover help for the latency readout, as a _render_mods row triple.
-LATENCY_HELP = (
-    "Latency: how long this listing had already been live before it "
-    "reached you — the head start every other sniper had on it. Measured "
-    "from the trade site's own index time. Low is worth racing; several "
-    "seconds means it is probably already gone.",
-    "",
-    "none",
-)
+# Hover help: what each part of the overlay means, as (title, body). Shown
+# after HELP_DELAY_MS so sweeping the mouse across the window does not flash
+# popups; parts whose numbers can be worked through for the listing on
+# screen add a third, live line (see the _*_help methods).
+HELP_DELAY_MS = 350
+HELP_WRAP = 340
+HELP = {
+    "tabs": (
+        "Live-search tabs",
+        "Chrome tabs on the trade site running the Valdo Sniper script. Each one is a "
+        "live search: the trade site pushes new listings into the tab and the script "
+        "forwards them here the same instant. Green = connected. “stale” = a tab "
+        "stopped checking in (reload it). Red = none connected; click to install the "
+        "script.",
+    ),
+    "game": (
+        "Game client",
+        "Whether Path of Exile is running. The teleport hotkey only works while it "
+        "is, so a stray key press can never travel you.",
+    ),
+    "prices": (
+        "Reward prices",
+        "Where each reward unique's value comes from. Trade prices = the average of "
+        "the cheapest instant-buyout listings on the trade site (the accurate source). "
+        "“Est.” = some rewards fell back to poe.ninja's median, which can be well "
+        "off. RATE LIMITED = the trade site asked us to slow down; prices resume by "
+        "themselves.",
+    ),
+    "mute": ("Sound", "Mute or unmute alert sounds, including the jackpot alarm."),
+    "settings": (
+        "Settings",
+        "Alert bars, hotkey, how hard each mod is, deadly pairings and reward prices.",
+    ),
+    "watching": (
+        "Watching",
+        "The reward of each Valdo live search you have open, with what it sells for "
+        "right now and how long ago that price was fetched from the trade site. Prices "
+        "refresh in the background; NET and YIELD are worked out from them.",
+    ),
+    "latency": (
+        "Listing delay",
+        "How long this listing had already been up when your Chrome tab received it: "
+        "from the moment the trade site indexed the seller's listing to the moment the "
+        "live search delivered it. It is the head start every other sniper had, not "
+        "your reaction time. Green under 2s is worth racing, amber 2-5s, red over 5s "
+        "is probably already sold.",
+    ),
+    "price": (
+        "Asking price",
+        "What the seller wants, in the currency they listed it in. You pay it at "
+        "Faustus in their hideout. Turns red when that currency is not the one the "
+        "reward is priced in, a common bait (e.g. 80 chaos dressed up as 80 divine).",
+    ),
+    "net": (
+        "Net profit",
+        "Divine you expect to keep after buying: what the reward sells for, minus the "
+        "asking price, minus the flat running cost per map. With a failure risk "
+        "(“NET · EXPECTED”) only the share of maps that succeed counts.",
+    ),
+    "yield": (
+        "Yield",
+        "Profit per unit of difficulty: net ÷ difficulty × 100. This is what decides "
+        "an alert and which listing the hotkey takes, so an easy map with modest "
+        "profit can beat a brutal one with more. Same number as the YIELD column in "
+        "the list below.",
+    ),
+    "difficulty": (
+        "Difficulty",
+        "How hard and risky the map's mods make it; 100 is a typical map. It starts "
+        "from the base of the toughest encounter mod (or the clean-map default), then "
+        "every dangerous mod and deadly pairing multiplies it. Each mod's part is "
+        "shown beside it below. Amber over 100, red over 300.",
+    ),
+    "reward_value": (
+        "Reward value",
+        "What this map's reward unique sells for, and how long ago that price was "
+        "fetched. NET is worked out from it.",
+    ),
+    "feed": (
+        "Recent listings",
+        "Every listing your searches caught, newest first. Bright rows alerted; dim "
+        "rows did not clear the yield bar.\n"
+        "PRICE  asking price\n"
+        "NET  expected profit, in divine\n"
+        "YIELD  net per 100 difficulty\n"
+        "DIFF  difficulty (100 = a typical map)\n"
+        "AGE  how long ago it arrived\n"
+        "Hover a row for its mods; click it to teleport.",
+    ),
+    "pairing": (
+        "Deadly pairing",
+        "These mods together are far worse than either one alone, so difficulty is "
+        "multiplied again on top of their own multipliers.",
+    ),
+    "risk": (
+        "Failure risk",
+        "Chance the map cannot be completed with these mods. A failed map pays nothing "
+        "back, so NET already counts only the share of maps that succeed.",
+    ),
+    "ESTIMATED PRICE": (
+        "Estimated price",
+        "The reward value is poe.ninja's median, not live trade listings, and can be "
+        "well off. Worth a look before travelling.",
+    ),
+    "CACHED PRICE": (
+        "Cached price",
+        "The reward value is from your last session and has not been re-checked yet this run.",
+    ),
+    "YOUR PRICE": (
+        "Your price",
+        "The reward value is one you pinned in ⚙ Settings, not the market's.",
+    ),
+}
+# reference sources as the reward-value line names them
+SOURCE_WORDS = {
+    "trade": "trade listings",
+    "cached": "last session",
+    "live": "poe.ninja estimate",
+    "stale": "poe.ninja estimate",
+    "override": "your price",
+    "manual": "config price",
+}
 # Reference sources that are poe.ninja's per-map median - the documented
 # INACCURATE fallback. Anything priced from these is flagged so a rate-limited
 # session can never look like a healthy one.
@@ -133,6 +248,88 @@ def _ago(seconds: float | None) -> str:
 def _display_name(key: str) -> str:
     """Reward keys keep their 'Foil ' prefix internally; the UI drops it."""
     return key.removeprefix("Foil ")
+
+
+def _num(value: float) -> str:
+    """A number for a worked example: one decimal at most, no trailing .0."""
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def _money(amount: float, currency: str) -> str:
+    """160d / 40c / 3 exalted: the compact form the feed already uses."""
+    short = {"divine": "d", "chaos": "c"}.get(currency)
+    return f"{amount:g}{short}" if short else f"{amount:g} {currency}"
+
+
+def _price_tag(entry, age_s: float | None) -> str:
+    """What sits next to a reward's name on the Watching line."""
+    if entry.amount is None:
+        return "(pricing…)"
+    money = _money(entry.amount, entry.currency)
+    if entry.override_div is not None:
+        return f"{money} (yours)"
+    ago = _ago(age_s)
+    return f"{money} ({ago})" if ago else money
+
+
+def _net_breakdown(view, running_cost: float) -> str:
+    """NET worked through for this listing, e.g. '160 worth − 52 price − 1
+    running = +107d'. Empty when it cannot be shown exactly: another currency
+    is involved (the conversion is not on screen), or the parts do not add up
+    to the net shown - a sum that disagrees with the number above it would
+    explain nothing."""
+    if view.generic or view.net_div is None:
+        return ""
+    if view.currency != "divine" or view.reference_currency != "divine":
+        return ""
+    keep = 1.0 - view.fail_chance
+    if abs(view.reference_amount * keep - view.amount - running_cost - view.net_div) > 0.5:
+        return ""
+    worth = f"{_num(view.reference_amount)} worth"
+    if view.fail_chance:
+        worth += f" × {keep:.0%} succeed"
+    return (
+        f"{worth} − {_num(view.amount)} price − {_num(running_cost)} running\n"
+        f"= {view.net_div:+.1f}d"
+    )
+
+
+def _yield_breakdown(net_div: float | None, difficulty: float, bar: float) -> str:
+    ratio = net_yield(net_div, difficulty)
+    if ratio is None or net_div is None:
+        return ""
+    verdict = "alerts" if ratio >= bar else "below the bar"
+    return (
+        f"{net_div:+.1f} net ÷ {_num(difficulty)} difficulty × 100 = {ratio:+.1f}\n"
+        f"alert bar is ≥ {bar:g}, so this {verdict}"
+    )
+
+
+def _difficulty_breakdown(view, base_default: float) -> str:
+    """Difficulty rebuilt from the notes beside each mod: max(default, mod
+    bases) × every multiplier × every pairing. Empty unless it reproduces the
+    score shown (a mod matching two lines notes its multiplier on both)."""
+    bases: list[float] = []
+    mults: list[float] = []
+    try:
+        for _text, note, _level in view.mods:
+            for part in note.split(" · ") if note else ():
+                if part.startswith("base "):
+                    bases.append(float(part[5:]))
+                elif part.startswith("×"):
+                    mults.append(float(part[1:]))
+    except ValueError:
+        return ""
+    mults += [mult for _label, _note, mult in view.pairings]
+    base = max([base_default, *bases])
+    score = base
+    for mult in mults:
+        score *= mult
+    if abs(score - view.difficulty) > max(0.5, 0.01 * view.difficulty):
+        return ""
+    start = f"base {_num(base)}" if base in bases else f"clean map {_num(base)}"
+    steps = "".join(f" × {m:g}" for m in mults if m != 1)
+    return f"{start}{steps} = {view.difficulty:.0f}"
 
 
 # Palette - design A, "Refined". One slate ground, one surface for the alert
@@ -175,6 +372,58 @@ JACKPOT_SOFT = "#e7a8ff"  # name and numbers on the dark card
 JACKPOT_BANNER = "#a634d1"  # banner fill: dark enough for white text
 JACKPOT_YIELD_BG = "#2c1838"
 JACKPOT_BTN_FG = "#1c0626"
+# super jackpot: gold, the tier above magenta
+SUPER = "#ffc233"
+SUPER_SOFT = "#ffe08a"
+SUPER_BANNER = "#8a5c00"  # dark enough for white text
+SUPER_YIELD_BG = "#33280f"
+SUPER_BTN_FG = "#2a1d00"
+
+
+@dataclass(frozen=True)
+class _Tier:
+    """Everything that styles one jackpot tier, so each painter picks the
+    tier once instead of branching on two flags."""
+
+    accent: str  # frame, countdown, feed row, button
+    soft: str  # name and numbers on the dark card
+    banner: str  # banner fill
+    yield_bg: str  # tinted yield cell
+    cap: str  # caption on the tinted cell
+    btn_fg: str  # text on the accent-coloured button
+    title: str  # banner text
+    feed_note: str
+
+
+JACKPOT_TIER = _Tier(
+    JACKPOT,
+    JACKPOT_SOFT,
+    JACKPOT_BANNER,
+    JACKPOT_YIELD_BG,
+    "#d9b8e8",
+    JACKPOT_BTN_FG,
+    "★  JACKPOT",
+    "  ★ JACKPOT",
+)
+SUPER_TIER = _Tier(
+    SUPER,
+    SUPER_SOFT,
+    SUPER_BANNER,
+    SUPER_YIELD_BG,
+    "#ecd9a8",
+    SUPER_BTN_FG,
+    "★★  SUPER JACKPOT",
+    "  ★★ SUPER",
+)
+
+
+def _tier(item) -> _Tier | None:
+    """The jackpot tier of an AlertView or FeedEntry; None for neither."""
+    if getattr(item, "super_jackpot", False):
+        return SUPER_TIER
+    return JACKPOT_TIER if item.jackpot else None
+
+
 TITLE = "Valdo Sniper"
 TRADE_URL = "https://www.pathofexile.com/trade/search"
 # Font roles -> the first installed family. Every _font() call names a role,
@@ -205,6 +454,7 @@ class _Pill:
         self._dot.pack(side="left", padx=(0, 6))
         self._label = tk.Label(self.frame, text="", bg=STRIP, fg=DIM, font=font)
         self._label.pack(side="left")
+        self.widgets = (self.frame, self._dot, self._label)  # for hover help
 
     def config(self, text: str | None = None, fg: str | None = None) -> None:
         if text is not None:
@@ -251,6 +501,8 @@ class Overlay:
         self._on_jackpot_change = on_jackpot_change
         self._jackpot_net = config.alerts.jackpot_min_net
         self._jackpot_yield = config.alerts.jackpot_min_yield
+        self._super_net = config.alerts.super_jackpot_min_net
+        self._super_yield = config.alerts.super_jackpot_min_yield
         self._overrides_path = overrides_path
         # reward -> divine, the session price corrections currently applied.
         # Kept here so the panel only pushes what actually changed and can be
@@ -265,14 +517,20 @@ class Overlay:
         self._current_combo = config.hotkey.combo
         self._tune_window: tk.Toplevel | None = None
         self._tooltip: tk.Toplevel | None = None
+        # hover help: the widget group whose help is showing or pending,
+        # and the pending after() id (see _bind_help)
+        self._help_group: tuple | None = None
+        self._help_after: str | None = None
         self._alerts: tuple[AlertView, ...] = ()
         self._muted = False
         self._volume = config.alerts.volume
         # Jackpot alarm: loops while any live jackpot is unsilenced (see
         # _sync_jackpot_alarm). Clicking the banner adds the live jackpots
         # to _jp_silenced; travel or expiry ends it by removing the alert.
-        self._jp_ringing = False
+        # None | "jackpot" | "super": which alarm is looping right now
+        self._jp_ringing: str | None = None
         self._jp_silenced: set[str] = set()
+        self._jp_tier: _Tier = JACKPOT_TIER  # the banner's current tier
         # (kind, sound path, volume) -> playable WAV | None; see _alert_wav.
         # A DICT, not a single slot: the alert kinds alternate, and a
         # one-entry cache would rescale a ~240 KB WAV on the alert path
@@ -362,6 +620,11 @@ class Overlay:
         )
         self._mute_btn.pack(side="right", padx=(0, 12))
         self._mute_btn.bind("<Button-1>", lambda e: self._toggle_mute())
+        self._bind_help(self._tabs_label.widgets, HELP["tabs"])
+        self._bind_help(self._game_label.widgets, HELP["game"])
+        self._bind_help(self._price_label.widgets, HELP["prices"])
+        self._bind_help((self._mute_btn,), HELP["mute"])
+        self._bind_help((tune_btn,), HELP["settings"])
         tk.Frame(root, bg=HAIR, height=1).pack(fill="x")
 
         # reward names being live-searched, on their own line (the strip is
@@ -378,7 +641,12 @@ class Overlay:
         )
         self._searches_label.pack(fill="x", padx=12, pady=(6, 0))
         self._reward_prices: tuple = ()
-        self._bind_tooltip(self._searches_label, self._reward_price_rows)
+        # RewardPrice.age_s is as of the push; ages shown are counted on
+        # from when it arrived so "4m ago" keeps ticking between pushes
+        self._reward_prices_at = time.monotonic()
+        self._watch_names: list[str] = []  # reward names, from the tabs
+        self._watch_extra: list[str] = []  # generic / unidentified tab notes
+        self._bind_help((self._searches_label,), self._watching_help)
 
         # ---- the alert card. Every block inside it is optional except the
         # title row; _show_alert_body packs the visible ones in _card_blocks
@@ -406,6 +674,7 @@ class Overlay:
         # hotkey stays the only way to act on a listing
         for widget in (self._jackpot_banner, self._jp_left, self._jp_right):
             widget.bind("<Button-1>", lambda e: self._silence_jackpot())
+        self._bind_help((self._jackpot_banner, self._jp_left, self._jp_right), self._jackpot_help)
         # currency-mismatch banner (the scam guard)
         self._banner = tk.Label(
             card, text="", bg=BAD_FILL, fg="white", font=self._font("ui", 11, "bold"), pady=4
@@ -441,12 +710,13 @@ class Overlay:
             padx=5,
         )
         self._travel_enabled = False
-        self._travel_jackpot = False
+        self._travel_jackpot: _Tier | None = None
         for widget in (self._travel_btn, self._travel_text, self._travel_key):
             widget.bind("<Button-1>", lambda e: self._travel_enabled and self._click_top())
             widget.bind("<Enter>", lambda e: self._paint_travel(hover=True))
             widget.bind("<Leave>", lambda e: self._paint_travel(hover=False))
         self._travel_btn.pack(side="right", padx=(10, 0))
+        self._bind_help((self._travel_btn, self._travel_text, self._travel_key), self._travel_help)
         # How stale the listing already was when we first saw it. Sits next
         # to the travel button because it is a go/no-go signal: the longer it
         # was live before reaching us, the more likely it is already sold.
@@ -461,14 +731,24 @@ class Overlay:
             highlightthickness=0,
         )
         self._age_label.pack(side="right")
-        self._bind_tooltip(self._age_label, (LATENCY_HELP,))
+        self._bind_help((self._age_label,), HELP["latency"])
         self._set_travel_button(has_target=False, pinned=False)  # nothing yet at startup
 
         # Identity line for a generic (non-Valdo) alert: a rare's own name
         # and the seller. Valdo alerts do not need it - the reward IS the
         # identity.
+        # For a Valdo alert it says what the reward is worth and how old
+        # that price is - the number NET is worked out from.
         self._subtitle = tk.Label(
             card, text="", bg=SURFACE, fg=DIM, font=self._font("ui", 10), anchor="w"
+        )
+        self._bind_help(
+            (self._subtitle,),
+            lambda: (
+                None
+                if self._top_view() is None or self._top_view().generic
+                else HELP["reward_value"]
+            ),
         )
 
         # First-run guide: shown in place of the numbers while no live-search
@@ -530,6 +810,8 @@ class Overlay:
             self._stat_cells[key] = cell
             self._stat_caps[key] = cap
             self._stat_vals[key] = val
+            # below the whole row, so it never covers the numbers being read
+            self._bind_help((cell, cap, val), lambda k=key: self._stat_help(k), anchor=self._stats)
 
         self._chips = tk.Frame(card, bg=SURFACE)  # warning chips
         # Deadly mod pairings get their own full-width rows rather than a
@@ -543,6 +825,7 @@ class Overlay:
         # the top listing's mods, always visible (no hover needed)
         self._top_mods = tk.Frame(card, bg=MODS_BG, pady=6)
         self._countdown = tk.Canvas(card, height=4, bg=COUNTDOWN_BG, highlightthickness=0)
+        self._bind_help((self._countdown,), self._countdown_help)
 
         self._card_blocks = (
             (self._jackpot_banner, {"fill": "x"}),
@@ -585,7 +868,15 @@ class Overlay:
         )
         self._threshold_note.pack(fill="x", pady=(0, 4))
         self._update_threshold_note()
-        tk.Label(
+        self._bind_help(
+            (self._threshold_note,),
+            lambda: (
+                "Alert bar",
+                f"A listing alerts when its YIELD is at least {self._current_threshold:g}. "
+                "Change it in ⚙ Settings (Alert at YIELD ≥).",
+            ),
+        )
+        feed_header = tk.Label(
             feed_box,
             # yield = net per 100 difficulty: the same unit as the threshold
             # noted directly above, and the alert ranking key
@@ -595,7 +886,9 @@ class Overlay:
             font=self._font("mono", 8, "bold"),
             anchor="w",
             padx=6,
-        ).pack(fill="x")
+        )
+        feed_header.pack(fill="x")
+        self._bind_help((feed_header,), HELP["feed"])
         tk.Frame(feed_box, bg=HAIR, height=1).pack(fill="x", pady=(3, 0))
 
         # The history is longer than the window, so the rows live on a
@@ -780,14 +1073,13 @@ class Overlay:
                     for t in ev.tabs
                     if not t.get("search_reward") and t.get("search_kind") != "any"
                 )
-                parts = []
-                if rewards:
-                    parts.append(", ".join(rewards))
+                extra = []
                 if generic:
-                    parts.append(f"⚡{generic} live search" + ("es" if generic > 1 else ""))
+                    extra.append(f"⚡{generic} live search" + ("es" if generic > 1 else ""))
                 if unknown and n:  # tabs whose reward is not yet known
-                    parts.append(f"+{unknown} unidentified")
-                self._searches_label.config(text=f"Watching  {' · '.join(parts)}" if parts else "")
+                    extra.append(f"+{unknown} unidentified")
+                self._watch_names, self._watch_extra = rewards, extra
+                self._render_watching()
             elif isinstance(ev, PriceStatus):
                 self._ninja_status = ev.status
                 self._render_price_pill()
@@ -824,7 +1116,10 @@ class Overlay:
                 feed_dirty = True
             elif isinstance(ev, RewardPrices):
                 self._reward_prices = ev.entries
+                self._reward_prices_at = time.monotonic()
                 self._refresh_price_editor()
+                self._render_watching()
+                self._refresh_reward_value()
             elif isinstance(ev, WarmupStatus):
                 warmup = (ev.calculating, ev.priced, ev.total, ev.rewards)
                 if warmup != self._warmup:
@@ -903,7 +1198,7 @@ class Overlay:
                 waiting = "rate limited" if health and health.backoff_s > 0 else "pricing…"
                 rows.append((f"{name}: {waiting}", "", "yellow"))
                 continue
-            note = _ago(entry.age_s)
+            note = _ago(self._live_age(entry))
             if entry.override_div is not None:
                 note = "your price"
             rows.append(
@@ -915,6 +1210,51 @@ class Overlay:
                 )
             )
         return tuple(rows)
+
+    def _live_age(self, entry) -> float | None:
+        if entry.age_s is None:
+            return None
+        return entry.age_s + (time.monotonic() - self._reward_prices_at)
+
+    def _render_watching(self) -> None:
+        """Watching line: each searched reward with its price and how long ago
+        that price was fetched, then any non-reward tabs."""
+        prices = {_display_name(e.reward): e for e in self._reward_prices}
+        names = []
+        for name in self._watch_names:
+            entry = prices.get(name)
+            item = f"{name} {_price_tag(entry, self._live_age(entry))}" if entry else name
+            # non-breaking spaces inside an item: the line wraps BETWEEN
+            # rewards, never between a name and its price or age
+            names.append(item.replace(" ", " "))
+        parts = ([",  ".join(names)] if names else []) + self._watch_extra
+        self._searches_label.config(text=f"Watching  {' · '.join(parts)}" if parts else "")
+
+    def _reward_value_text(self, view: AlertView) -> str:
+        """The line under a Valdo alert's name: what its reward is worth, where
+        that figure came from and how long ago it was fetched."""
+        if view.generic or not view.reference_amount:
+            return ""
+        bits = [f"Reward worth {_money(view.reference_amount, view.reference_currency)}"]
+        source = SOURCE_WORDS.get(view.reference_source)
+        if source:
+            bits.append(source)
+        entry = next((e for e in self._reward_prices if e.reward == view.key), None)
+        ago = _ago(self._live_age(entry)) if entry is not None else ""
+        if ago:
+            bits.append(f"fetched {ago}")
+        return "  ·  ".join(bits)
+
+    def _refresh_reward_value(self) -> None:
+        """Keep the reward-value line's age current without a full re-render."""
+        top = self._top_view()
+        if top is not None and not top.generic:
+            self._subtitle.config(text=self._reward_value_text(top))
+
+    def _top_view(self) -> AlertView | None:
+        if self._pinned_top is not None:
+            return self._pinned_top
+        return self._alerts[0] if self._alerts else None
 
     def _price_editor_text(self, entry) -> str:
         """Label for one row of the settings panel's price editor: the reward
@@ -1129,11 +1469,11 @@ class Overlay:
         if top.fail_chance > 0:
             # net is an expected value once a failure risk is in play
             self._stat_caps["profit"].config(text="NET · EXPECTED")
-        jp = top.jackpot
+        jp = _tier(top)
         self._paint_cell(
             TINTED_STAT,
-            JACKPOT_YIELD_BG if jp else YIELD_BG,
-            cap_fg="#d9b8e8" if jp else YIELD_CAP,
+            jp.yield_bg if jp else YIELD_BG,
+            cap_fg=jp.cap if jp else YIELD_CAP,
         )
         self._stat_caps["price"].config(
             text=f"PRICE · {top.currency.upper()}",
@@ -1144,7 +1484,7 @@ class Overlay:
         self._stat_vals["price"].config(text=f"{top.amount:g}", fg=BAD if top.mismatch else PRICE)
         self._stat_vals["profit"].config(
             text=f"{top.net_div:+.0f}",
-            fg=JACKPOT_SOFT if jp else GOOD if top.net_div > 0 else BAD,
+            fg=jp.soft if jp else GOOD if top.net_div > 0 else BAD,
         )
         if ratio is None:
             ratio_text = "?"
@@ -1152,7 +1492,7 @@ class Overlay:
             ratio_text = f"{ratio:+.0f}" if abs(ratio) >= 100 else f"{ratio:+.1f}"
         clears = ratio is not None and ratio >= self._current_threshold
         self._stat_vals["ratio"].config(
-            text=ratio_text, fg=JACKPOT_SOFT if jp else YIELD_FG if clears else WARN
+            text=ratio_text, fg=jp.soft if jp else YIELD_FG if clears else WARN
         )
         self._stat_vals["difficulty"].config(
             # whole numbers only: the fractional part is noise at this size
@@ -1233,12 +1573,14 @@ class Overlay:
         self._skew_logged = True
         event("clock_skew", behind_s=round(-lag_ms / 1000, 1), note="latency readings unusable")
 
-    def _set_travel_button(self, has_target: bool, pinned: bool, jackpot: bool = False) -> None:
+    def _set_travel_button(
+        self, has_target: bool, pinned: bool, jackpot: _Tier | None = None
+    ) -> None:
         """Three states: armed (shows the hotkey as a keycap), already
-        traveling, and nothing to travel to. Armed on a jackpot it turns
-        magenta like the rest of the card."""
+        traveling, and nothing to travel to. Armed on a jackpot it takes the
+        tier's colour like the rest of the card."""
         self._travel_enabled = has_target and not pinned
-        self._travel_jackpot = jackpot and self._travel_enabled
+        self._travel_jackpot = jackpot if self._travel_enabled else None
         self._travel_text.config(text="TRAVELING…" if pinned else "TELEPORT")
         if self._travel_enabled:
             self._travel_key.config(text=self._current_combo)
@@ -1250,9 +1592,10 @@ class Overlay:
     def _paint_travel(self, hover: bool) -> None:
         if not self._travel_enabled:
             bg, fg, key_bg, key_fg, cursor = BTN_OFF, FAINT, BTN_OFF, FAINT, ""
-        elif self._travel_jackpot:
-            bg = JACKPOT_SOFT if hover else JACKPOT
-            fg, key_bg, key_fg, cursor = JACKPOT_BTN_FG, JACKPOT_BTN_FG, JACKPOT_SOFT, "hand2"
+        elif self._travel_jackpot is not None:
+            t = self._travel_jackpot
+            bg = t.soft if hover else t.accent
+            fg, key_bg, key_fg, cursor = t.btn_fg, t.btn_fg, t.soft, "hand2"
         else:
             bg = GOOD_BRIGHT if hover else GOOD
             fg, key_bg, key_fg, cursor = BTN_FG, BTN_FG, GOOD, "hand2"
@@ -1295,7 +1638,7 @@ class Overlay:
             self._clear_frame(self._top_mods)
             self._clear_frame(self._runners)
             self._countdown.delete("all")
-            self._paint_card(jackpot=False)
+            self._paint_card(None)
             # collapse the card: with nothing to show, that space belongs to
             # the history list below (or the warm-up panel / setup guide)
             self._show_alert_body(
@@ -1317,22 +1660,27 @@ class Overlay:
                 text=f"⚠  CURRENCY MISMATCH: {top.currency.upper()} ≠ "
                 f"ref {top.reference_currency.upper()}"
             )
-        if top.jackpot:
+        tier = _tier(top)
+        if tier is not None:
             ratio = net_yield(top.net_div, top.difficulty) or 0.0
             self._jp_right.config(text=f"{top.net_div:+.0f}d net  ·  {ratio:+.0f} yield")
-        self._paint_card(jackpot=top.jackpot)
+            self._jp_tier = tier
+            self._paint_jp_banner()
+        self._paint_card(tier)
 
         prefix = "➜ " if pinned is not None else ""
         self._key_label.config(
-            text=f"{prefix}{_display_name(top.key)}", fg=JACKPOT_SOFT if top.jackpot else FG
+            text=f"{prefix}{_display_name(top.key)}", fg=tier.soft if tier else FG
         )
         if top.generic:
             bits = [b for b in (top.item_name, top.seller) if b and b != top.key]
             self._subtitle.config(text="  ·  ".join(bits))
+        else:
+            self._subtitle.config(text=self._reward_value_text(top))
         self._warmup_panel.pack_forget()  # a live alert outranks the progress list
         self._set_stats(top)
         self._set_age(top.index_lag_ms)
-        self._set_travel_button(has_target=True, pinned=pinned is not None, jackpot=top.jackpot)
+        self._set_travel_button(has_target=True, pinned=pinned is not None, jackpot=tier)
         for label, note, mult in top.pairings:
             row = tk.Frame(self._pairings, bg=PAIR_BG)
             row.pack(fill="x", pady=(0, 2))
@@ -1358,6 +1706,14 @@ class Overlay:
                 ).pack(side="right")
 
         self._render_risks(top)
+        # hover help on the rows just built (bound after their labels exist)
+        title, body = HELP["pairing"]
+        for row, (_label, _note, mult) in zip(
+            self._pairings.winfo_children(), top.pairings, strict=True
+        ):
+            self._bind_help((row,), (title, f"{body} This one: ×{mult:g}."), descendants=True)
+        for row in self._risks.winfo_children():
+            self._bind_help((row,), HELP["risk"], descendants=True)
 
         self._clear_frame(self._top_mods)
         self._render_mods(self._top_mods, top.mods, MODS_BG, wrap=360)
@@ -1365,7 +1721,7 @@ class Overlay:
         chip_font = self._font("ui", 8, "bold")
 
         def chip(text: str, fg: str, bg: str = SURFACE, edge: str | None = None) -> None:
-            tk.Label(
+            label = tk.Label(
                 self._chips,
                 text=text,
                 bg=bg,
@@ -1376,7 +1732,10 @@ class Overlay:
                 highlightthickness=1 if edge else 0,
                 highlightbackground=edge or bg,
                 highlightcolor=edge or bg,
-            ).pack(side="left", padx=(0, 6))
+            )
+            label.pack(side="left", padx=(0, 6))
+            if text in HELP:
+                self._bind_help((label,), HELP[text])
 
         if top.generic:
             chip("⚡ LIVE SEARCH", FG, bg=BOX)
@@ -1399,7 +1758,7 @@ class Overlay:
             chips=bool(self._chips.winfo_children()),
             mods=bool(top.mods),
             countdown=True,
-            subtitle=top.generic,
+            subtitle=bool(self._subtitle.cget("text")),
             jackpot=top.jackpot,
             mismatch=top.mismatch,
         )
@@ -1466,11 +1825,12 @@ class Overlay:
             anchor="w",
         ).pack(fill="x", pady=(1, 0))
 
-    def _paint_card(self, jackpot: bool) -> None:
-        """2px magenta outline for a jackpot, 1px hairline otherwise."""
-        color = JACKPOT if jackpot else HAIR
+    def _paint_card(self, tier: _Tier | None) -> None:
+        """2px outline in the tier's colour for a jackpot, 1px hairline
+        otherwise."""
+        color = tier.accent if tier else HAIR
         self._card.config(
-            highlightthickness=2 if jackpot else 1,
+            highlightthickness=2 if tier else 1,
             highlightbackground=color,
             highlightcolor=color,
         )
@@ -1484,12 +1844,13 @@ class Overlay:
         is what ranked it here), a travel arrow, and a hover lift so the
         click target is unambiguous.
         """
+        tier = _tier(a)
         band = tk.Frame(
             self._runners,
             bg=RUNNER_BG,
             highlightthickness=1,
-            highlightbackground=JACKPOT if a.jackpot else HAIR,
-            highlightcolor=JACKPOT if a.jackpot else HAIR,
+            highlightbackground=tier.accent if tier else HAIR,
+            highlightcolor=tier.accent if tier else HAIR,
         )
         band.pack(fill="x", pady=(0, 4))
         ratio = net_yield(a.net_div, a.difficulty)
@@ -1504,7 +1865,7 @@ class Overlay:
             f"{a.difficulty:<8g}{_display_name(a.key)}"
             + (f"  ⚠{a.fail_chance:.0%}" if a.fail_chance > 0 else ""),
             bg=RUNNER_BG,
-            fg=JACKPOT_SOFT if a.jackpot else FG,
+            fg=tier.soft if tier else FG,
             font=self._font("mono", 9),
             anchor="w",
         )
@@ -1513,7 +1874,7 @@ class Overlay:
             band,
             text="→",
             bg=RUNNER_BG,
-            fg=JACKPOT if a.jackpot else GOOD,
+            fg=tier.accent if tier else GOOD,
             font=self._font("ui", 11, "bold"),
         )
         arrow.pack(side="right", padx=(6, 10))
@@ -1547,18 +1908,18 @@ class Overlay:
         if self._pinned_top is not None:
             total = self._config.alerts.traveled_display_seconds
             remaining = max(0.0, self._pinned_until - time.monotonic())
-            jackpot = self._pinned_top.jackpot
+            tier = _tier(self._pinned_top)
         elif self._alerts:
             total = self._config.alerts.expiry_seconds
             remaining = max(0.0, self._alerts[0].expires_at_monotonic - time.monotonic())
-            jackpot = self._alerts[0].jackpot
+            tier = _tier(self._alerts[0])
         else:
             return
         width = self._countdown.winfo_width() or 465
         frac = remaining / total if total else 0
         color = GOOD if frac > 0.5 else WARN if frac > 0.25 else BAD
-        if jackpot:
-            color = JACKPOT
+        if tier is not None:
+            color = tier.accent
         self._countdown.create_rectangle(0, 0, width * frac, 4, fill=color, width=0)
 
     def _tick(self) -> None:
@@ -1569,6 +1930,9 @@ class Overlay:
         """Keep the feed's minutes-ago column current between listings."""
         if self._feed_entries:
             self._render_feed()
+        # the price ages next to each reward tick on too
+        self._render_watching()
+        self._refresh_reward_value()
         self._root.after(30_000, self._refresh_feed_ages)
 
     # ---------------------------------------------------------- tuning panel
@@ -1740,7 +2104,17 @@ class Overlay:
             "becomes the hotkey's top pick.",
         )
         jp_yield_e = field("Jackpot at YIELD ≥", _fmt(self._jackpot_yield), search="jackpot")
-        caption("Jackpot needs both (e.g. +80d net at yield 144).")
+        sjp_net_e = field(
+            "Super jackpot at NET ≥",
+            _fmt(self._super_net),
+            hint="The tier above: a jackpot that ALSO clears these bars gets a\n"
+            "gold banner and frame, its own alarm, and outranks a jackpot.",
+            search="super jackpot",
+        )
+        sjp_yield_e = field(
+            "Super jackpot at YIELD ≥", _fmt(self._super_yield), search="super jackpot"
+        )
+        caption("Each tier needs both (e.g. +80d net at yield 144).")
 
         # ---- 2. Hotkey & sound
         heading("Hotkey & sound", "Value")
@@ -1907,6 +2281,8 @@ class Overlay:
                 new_volume = float(vol_e.get())
                 new_jp_net = float(jp_net_e.get())
                 new_jp_yield = float(jp_yield_e.get())
+                new_sjp_net = float(sjp_net_e.get())
+                new_sjp_yield = float(sjp_yield_e.get())
                 # start from the pins already in force: a reward whose live
                 # search opened after this panel did has no row here, and
                 # must not be silently un-pinned by an unrelated edit
@@ -1937,7 +2313,7 @@ class Overlay:
             if bad_risk is not None:
                 note.config(text=f"{bad_risk}: fail % must be 0-100", fg=BAD)
                 return
-            if new_jp_net < 0 or new_jp_yield < 0:
+            if min(new_jp_net, new_jp_yield, new_sjp_net, new_sjp_yield) < 0:
                 note.config(text="Jackpot bars must be >= 0", fg=BAD)
                 return
 
@@ -1951,10 +2327,12 @@ class Overlay:
             self._current_threshold = new_threshold
             self._current_running_cost = new_flat
             self._current_combo = new_combo
-            if (new_jp_net, new_jp_yield) != (self._jackpot_net, self._jackpot_yield):
-                self._jackpot_net, self._jackpot_yield = new_jp_net, new_jp_yield
+            bars = (new_jp_net, new_jp_yield, new_sjp_net, new_sjp_yield)
+            current = (self._jackpot_net, self._jackpot_yield, self._super_net, self._super_yield)
+            if bars != current:
+                self._jackpot_net, self._jackpot_yield, self._super_net, self._super_yield = bars
                 if self._on_jackpot_change is not None:
-                    self._on_jackpot_change(new_jp_net, new_jp_yield)
+                    self._on_jackpot_change(*bars)
             if new_volume != self._volume:
                 self._volume = new_volume
                 # rescale off-thread; the cache keys on volume so this both
@@ -1963,7 +2341,7 @@ class Overlay:
                     target=self._warm_alert_wavs, name="alert-sound-warmup", daemon=True
                 ).start()
                 if self._jp_ringing:  # restart at the new volume (or stop at 0)
-                    self._jp_ringing = False
+                    self._jp_ringing = None
                     self._sound.submit(SoundCommand("stop"))
                 self._sync_jackpot_alarm()
             # price pins go out per changed reward and are NOT persisted with
@@ -1989,6 +2367,8 @@ class Overlay:
                     running_cost=new_flat,
                     jackpot_min_net=new_jp_net,
                     jackpot_min_yield=new_jp_yield,
+                    super_jackpot_min_net=new_sjp_net,
+                    super_jackpot_min_yield=new_sjp_yield,
                 )
             # never claim a pinned price was saved: it lives for this session
             # only, and "Saved" would read as a promise the app does not keep
@@ -2120,8 +2500,9 @@ class Overlay:
                 note = "  [search]"
             if e.fail_chance > 0 and not e.generic:
                 note += f"  ⚠{e.fail_chance:.0%} fail"
-            if e.jackpot:
-                note = "  ★ JACKPOT"
+            tier = _tier(e)
+            if tier is not None:
+                note = tier.feed_note
             if e.received_monotonic > 0:
                 age = f"{max(0, int((time.monotonic() - e.received_monotonic) / 60))}m ago"
             else:
@@ -2133,7 +2514,7 @@ class Overlay:
                 bg=ZEBRA if idx % 2 else BG,
                 # a jackpot keeps its colour for its whole life in the feed,
                 # so one that went by unseen is unmistakable minutes later
-                fg=JACKPOT if e.jackpot else FG if e.verdict == "alert" else FAINT,
+                fg=tier.accent if tier else FG if e.verdict == "alert" else FAINT,
             )
             if idx >= self._feed_mapped:
                 row.pack(fill="x")
@@ -2170,9 +2551,174 @@ class Overlay:
         self._tooltip = win
 
     def _hide_tooltip(self) -> None:
+        if self._help_after is not None:
+            self._root.after_cancel(self._help_after)
+            self._help_after = None
+        self._help_group = None
         if self._tooltip is not None:
             self._tooltip.destroy()
             self._tooltip = None
+
+    # ------------------------------------------------------------ hover help
+
+    def _bind_help(self, widgets, content, anchor=None, descendants: bool = False) -> None:
+        """Explain a part of the UI on hover.
+
+        content: (title, body[, live]) or a callable returning one (or None
+        for nothing to say right now) - callables let the live line work the
+        numbers through for the listing on screen. The widgets are one
+        target: moving between them neither hides nor restarts the popup.
+        It opens below `anchor` (default: the hovered widget). Bound with
+        add="+" so it never displaces a widget's own hover handlers.
+        """
+        if descendants:  # a row of labels: the pointer is on a child
+            found, stack = [], list(widgets)
+            while stack:
+                widget = stack.pop()
+                found.append(widget)
+                stack.extend(widget.winfo_children())
+            widgets = found
+        group = tuple(widgets)
+        provider = content if callable(content) else (lambda: content)
+
+        def enter(_e, widget) -> None:
+            if self._help_group == group:
+                return  # already showing / pending for this target
+            self._hide_tooltip()
+            self._help_group = group
+            self._help_after = self._root.after(
+                HELP_DELAY_MS, lambda: self._show_help(widget, anchor, provider())
+            )
+
+        def leave(e) -> None:
+            try:
+                under = self._root.winfo_containing(e.x_root, e.y_root)
+            except (KeyError, tk.TclError):
+                under = None
+            if under not in group:
+                self._hide_tooltip()
+
+        for widget in group:
+            widget.bind("<Enter>", lambda e, w=widget: enter(e, w), add="+")
+            widget.bind("<Leave>", leave, add="+")
+            widget.bind("<ButtonPress>", lambda e: self._hide_tooltip(), add="+")
+
+    def _show_help(self, widget: tk.Widget, anchor, content) -> None:
+        self._help_after = None
+        if not content or not widget.winfo_exists():
+            return
+        title, body, *rest = content
+        live = rest[0] if rest else ""
+        wrap = round(HELP_WRAP * self._font_scale)
+        win = tk.Toplevel(self._root)
+        win.wm_overrideredirect(True)
+        win.attributes("-topmost", True)
+        frame = tk.Frame(
+            win, bg=MODS_BG, highlightthickness=1, highlightbackground="#3a4550", padx=10, pady=7
+        )
+        frame.pack()
+        tk.Label(
+            frame, text=title, bg=MODS_BG, fg=FG, font=self._font("ui", 9, "bold"), anchor="w"
+        ).pack(fill="x")
+        tk.Label(
+            frame,
+            text=body,
+            bg=MODS_BG,
+            fg=DIM,
+            font=self._font("ui", 9),
+            justify="left",
+            anchor="w",
+            wraplength=wrap,
+        ).pack(fill="x", pady=(2, 0))
+        if live:
+            tk.Label(
+                frame,
+                text=live,
+                bg=MODS_BG,
+                fg=PRICE,
+                font=self._font("mono", 9),
+                justify="left",
+                anchor="w",
+                wraplength=wrap,
+            ).pack(fill="x", pady=(6, 0))
+        below = anchor if anchor is not None and anchor.winfo_exists() else widget
+        win.update_idletasks()
+        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+        # kept inside the overlay's width (whatever monitor it is on), and
+        # flipped above the target when it would run off the screen bottom
+        left = self._root.winfo_rootx()
+        right = left + self._root.winfo_width()
+        x = max(left, min(widget.winfo_rootx(), right - w))
+        y = below.winfo_rooty() + below.winfo_height() + 2
+        if y + h > win.winfo_screenheight():
+            y = max(0, widget.winfo_rooty() - h - 2)
+        win.geometry(f"+{x}+{y}")
+        self._tooltip = win
+
+    def _stat_help(self, column: str):
+        """column: a STAT_COLUMNS key (price / profit / ratio / difficulty)."""
+        key = {"profit": "net", "ratio": "yield"}.get(column, column)
+        title, body = HELP[key]
+        top = self._top_view()
+        if top is not None and top.generic and key != "price":
+            return None  # the column is blank for a non-Valdo listing
+        live = ""
+        if top is not None and key == "price" and top.mismatch:
+            live = (
+                f"Listed in {top.currency}, but the reward is priced in "
+                f"{top.reference_currency}: check the number before travelling."
+            )
+        elif top is not None and key == "net":
+            live = _net_breakdown(top, self._current_running_cost)
+        elif top is not None and key == "yield":
+            live = _yield_breakdown(top.net_div, top.difficulty, self._current_threshold)
+        elif top is not None and key == "difficulty":
+            live = _difficulty_breakdown(top, self._scoring_config.base_default)
+        return (title, body, live)
+
+    def _watching_help(self):
+        if not self._watch_names:
+            return None
+        title, body = HELP["watching"]
+        rows = "\n".join(text for text, _note, _level in self._reward_price_rows())
+        return (title, body, rows)
+
+    def _travel_help(self):
+        return (
+            "Teleport",
+            "Travel to the seller's hideout, the same as pressing "
+            f"{self._current_combo}. One click or press sends exactly one travel; buy "
+            "the map from Faustus when you arrive. Clicking the reward name or the "
+            "numbers does the same. Only works while Path of Exile is running.",
+        )
+
+    def _jackpot_help(self):
+        silence = (
+            " Click this banner to silence the alarm. Clicking it never teleports; "
+            "only the button or the hotkey does."
+        )
+        if self._jp_tier is SUPER_TIER:
+            return (
+                "Super jackpot",
+                f"A jackpot that also clears the super bars: net ≥ {self._super_net:g}d "
+                f"and yield ≥ {self._super_yield:g}. It outranks every other alert for "
+                "the hotkey and loops its own alarm." + silence,
+            )
+        return (
+            "Jackpot",
+            f"Net ≥ {self._jackpot_net:g}d and yield ≥ {self._jackpot_yield:g}, rare "
+            "enough to drop what you are doing. It loops an alarm until you teleport, "
+            "it expires, or you silence it." + silence,
+        )
+
+    def _countdown_help(self):
+        seconds = self._config.alerts.expiry_seconds
+        return (
+            "Time left",
+            f"The alert is dropped {seconds:g}s after it arrived. A listing that old "
+            "has usually been bought, and dropping it means a reflex press can never "
+            "send you to a dead one.",
+        )
 
     # --------------------------------------------------------- traveled panel
 
@@ -2201,19 +2747,31 @@ class Overlay:
         show the 'click to silence' hint only while it rings."""
         live_ids = {a.listing_id for a in self._alerts}
         self._jp_silenced &= live_ids  # forget listings that are gone
-        want = (
-            bool(jackpots_to_ring(self._alerts, self._jp_silenced))
-            and self._config.alerts.jackpot_alarm
+        enabled = (
+            self._config.alerts.jackpot_alarm
             and not self._muted
             and self._volume > 0
             and winsound is not None
         )
+        want = alarm_kind(self._alerts, self._jp_silenced) if enabled else None
         if want != self._jp_ringing:
             self._jp_ringing = want
-            self._sound.submit(SoundCommand("jackpot", loop=True) if want else SoundCommand("stop"))
-        self._jp_left.config(text="★  JACKPOT  ·  click to silence" if want else "★  JACKPOT")
+            # a super jackpot arriving over a ringing jackpot swaps the alarm
+            self._sound.submit(SoundCommand(want, loop=True) if want else SoundCommand("stop"))
+        self._paint_jp_banner()
+
+    def _paint_jp_banner(self) -> None:
+        """Banner in the top alert's tier colour, with the 'click to
+        silence' hint only while an alarm rings."""
+        t = self._jp_tier
+        ringing = self._jp_ringing is not None
+        self._jackpot_banner.config(bg=t.banner)
+        self._jp_left.config(
+            text=f"{t.title}  ·  click to silence" if ringing else t.title, bg=t.banner
+        )
+        self._jp_right.config(bg=t.banner)
         for widget in (self._jackpot_banner, self._jp_left, self._jp_right):
-            widget.configure(cursor="hand2" if want else "")
+            widget.configure(cursor="hand2" if ringing else "")
 
     # ----------------------------------------------------------------- sound
 
@@ -2229,6 +2787,7 @@ class Overlay:
         configured, default = {
             "generic": (alerts.generic_sound, GENERIC_WAV),
             "jackpot": (alerts.jackpot_sound, JACKPOT_WAV),
+            "super": (alerts.super_jackpot_sound, SUPER_JACKPOT_WAV),
         }.get(kind, (alerts.sound, None))
         volume = self._volume
         # `kind` belongs in the key even though `configured` usually
@@ -2243,7 +2802,7 @@ class Overlay:
     def _warm_alert_wavs(self) -> None:
         """Rescale every alert sound off the UI thread. Called at startup and
         after a volume change, which invalidates every cached key."""
-        for kind in ("valdo", "generic", "jackpot"):
+        for kind in ("valdo", "generic", "jackpot", "super"):
             self._alert_wav(kind)
 
     def _play_sound(self, kind: str = "valdo") -> None:

@@ -18,7 +18,7 @@ from conftest import make_config, make_listing_frame
 from test_config_validation import write
 
 from sniper import margin, sound
-from sniper.alerts import AlertStore, jackpots_to_ring
+from sniper.alerts import AlertStore, alarm_kind, jackpots_to_ring
 from sniper.config import AlertsConfig, ConfigError, load_config
 from sniper.models import Listing, parse_frame
 from sniper.modrules import ModRules
@@ -287,3 +287,98 @@ def test_live_threshold_change_applies_to_new_alerts_only():
     # the live alert keeps the flag it rang with
     assert flags == {"before": True, "after": False}
     assert s.is_jackpot(decision("big", 80, 55))
+
+
+# ----------------------------------------------------------- super jackpot
+
+
+def super_store(**kw) -> AlertStore:
+    return AlertStore(
+        expiry_s=10,
+        jackpot_min_net=10,
+        jackpot_min_yield=10,
+        super_jackpot_min_net=30,
+        super_jackpot_min_yield=50,
+        **kw,
+    )
+
+
+def test_super_jackpot_needs_both_super_bars_and_implies_jackpot():
+    s = super_store()
+    s.insert(decision("super", 80, 55))  # +80d, yield 145
+    s.insert(decision("rich", 40, 200))  # +40d but yield 20: jackpot only
+    s.insert(decision("easy", 20, 10))  # yield 200 but +20d: jackpot only
+    flags = {v.listing_id: (v.jackpot, v.super_jackpot) for v in s.views()}
+    assert flags == {"super": (True, True), "rich": (True, False), "easy": (True, False)}
+
+
+def test_super_jackpot_outranks_a_jackpot_with_a_better_yield():
+    s = super_store()
+    s.insert(decision("easy", 25, 10))  # jackpot, yield 250
+    s.insert(decision("super", 80, 55))  # super, yield 145
+    assert [v.listing_id for v in s.views()][0] == "super"
+    assert s.consume_best().decision.listing.listing_id == "super"
+
+
+def test_super_bars_below_the_jackpot_bars_cannot_skip_the_jackpot_tier():
+    s = AlertStore(
+        expiry_s=10,
+        jackpot_min_net=50,
+        jackpot_min_yield=50,
+        super_jackpot_min_net=1,
+        super_jackpot_min_yield=1,
+    )
+    s.insert(decision("meh", 20, 100))
+    assert not s.views()[0].super_jackpot
+
+
+def test_currency_mismatch_is_never_a_super_jackpot():
+    s = super_store()
+    assert not s.is_super_jackpot(replace(decision("scam", 150, 25), currency_mismatch=True))
+
+
+def test_super_thresholds_change_live():
+    s = super_store()
+    s.set_jackpot_thresholds(10, 10, 100, 500)
+    s.insert(decision("super", 80, 55))
+    assert not s.views()[0].super_jackpot
+    s.set_jackpot_thresholds(10, 10)  # super bars left as they are
+    assert not s.is_super_jackpot(decision("x", 80, 55))
+
+
+def test_alarm_kind_prefers_super_and_respects_silencing():
+    s = super_store()
+    s.insert(decision("super", 80, 55))
+    s.insert(decision("jp", 40, 200))
+    views = s.views()
+    assert alarm_kind(views, set()) == "super"
+    assert alarm_kind(views, {"super"}) == "jackpot"  # the jackpot still rings
+    assert alarm_kind(views, {"super", "jp"}) is None
+
+
+def test_super_jackpot_has_its_own_sound_and_config(tmp_path):
+    assert sound.SUPER_JACKPOT_WAV not in (sound.JACKPOT_WAV, sound.GENERIC_WAV)
+    path = write(tmp_path)
+    text = path.read_text(encoding="utf-8").replace(
+        "volume: 0.5 }", "volume: 0.5, super_jackpot_min_net: 70, super_jackpot_min_yield: 90 }"
+    )
+    path.write_text(text, encoding="utf-8")
+    alerts = load_config(path).alerts
+    assert (alerts.super_jackpot_min_net, alerts.super_jackpot_min_yield) == (70, 90)
+    path.write_text(text.replace("super_jackpot_min_yield: 90", "super_jackpot_min_yield: -1"))
+    with pytest.raises(ConfigError, match="super_jackpot"):
+        load_config(path)
+
+
+def test_settings_panel_super_bars_round_trip(tmp_path):
+    from sniper.config import ModScoringConfig, save_scoring_overrides
+
+    path = write(tmp_path)
+    save_scoring_overrides(
+        ModScoringConfig(),
+        path.with_name("scoring_overrides.yaml"),
+        super_jackpot_min_net=55,
+        super_jackpot_min_yield=88,
+    )
+    alerts = load_config(path).alerts
+    assert (alerts.super_jackpot_min_net, alerts.super_jackpot_min_yield) == (55, 88)

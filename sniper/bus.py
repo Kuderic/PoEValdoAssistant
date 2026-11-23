@@ -77,6 +77,7 @@ class FeedEntry:
     # an alerting row that was big net AND big yield; the feed keeps it
     # highlighted so a missed one is unmistakable minutes later
     jackpot: bool = False
+    super_jackpot: bool = False  # the tier above (implies jackpot)
     # failure risks (label, note, chance) and their combined chance
     risks: tuple[tuple[str, str, float], ...] = ()
     fail_chance: float = 0.0

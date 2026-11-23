@@ -31,6 +31,8 @@ from sniper.bus import (  # noqa: E402
     GameStatus,
     ListingSeen,
     PriceStatus,
+    RewardPrice,
+    RewardPrices,
     TabsChanged,
 )
 from sniper.config import load_config  # noqa: E402
@@ -39,6 +41,13 @@ from sniper.server import EXPECTED_USERSCRIPT_VERSION  # noqa: E402
 
 OUT = ROOT / "docs"
 REWARDS = ("Foil Nimis", "Foil Mageblood", "Foil Emperor's Mastery", "Foil Progenesis")
+# reward, price, seconds since it was fetched
+PRICES = (
+    ("Foil Nimis", 160.5, 240),
+    ("Foil Mageblood", 290, 720),
+    ("Foil Emperor's Mastery", 101, 95),
+    ("Foil Progenesis", 63, 1500),
+)
 
 NIMIS_MODS = (
     ("Players are assaulted by apparitions of Atziri, Queen of the Vaal", "base 40", "yellow"),
@@ -76,7 +85,7 @@ def view(lid, key, amount, net, difficulty, mods=(), lag=900.0, **kw) -> AlertVi
         special_warnings=(),
         pairings=(),
         mods=mods,
-        reference_amount=amount + net,
+        reference_amount=amount + net + 1,  # + running_cost, so the parts add up
         reference_currency="divine",
         reference_source="trade",
         index_lag_ms=lag,
@@ -164,6 +173,7 @@ def scene(name: str, events, height: int = 800) -> None:
     bus = Bus()
     overlay = Overlay(root, bus, config)
     overlay._play_sound = lambda *a, **k: None  # silent: no alarm while capturing
+    overlay._sound.submit = lambda command: None  # the jackpot alarm bypasses _play_sound
     # on-screen for the moment of the grab (the overlay is always-on-top)
     root.geometry(f"515x{height}+60+60")
     for ev in events:
@@ -180,6 +190,14 @@ def status_events(tabs: int):
     yield TabsChanged(tuple({**tab, "search_reward": r} for r in REWARDS[:tabs]))
     yield GameStatus(running=True)
     yield PriceStatus("live", "Covens")
+    # what each reward is worth and how long ago it was fetched
+    yield RewardPrices(
+        tuple(
+            RewardPrice(reward, amount, "divine", "trade", age)
+            for reward, amount, age in PRICES
+            if reward in REWARDS[:tabs]
+        )
+    )
 
 
 def main() -> None:
@@ -231,6 +249,46 @@ def main() -> None:
             *status_events(4),
             *jp_feed,
             AlertsChanged((nimis, view("m", "Foil Emperor's Mastery", 52, 48, 105.6)), False),
+        ],
+    )
+
+    sup = view(
+        "s",
+        "Foil Nimis",
+        80,
+        79.5,
+        55.2,
+        NIMIS_MODS,
+        lag=1834.0,
+        jackpot=True,
+        super_jackpot=True,
+        life=0.86,
+    )
+    sup_feed = list(feed_events(skip_first=True))
+    sup_feed.append(
+        ListingSeen(
+            FeedEntry(
+                "s",
+                "Foil Nimis",
+                80,
+                "divine",
+                79.5,
+                55.2,
+                "alert",
+                jackpot=True,
+                super_jackpot=True,
+                received_monotonic=time.monotonic(),
+            )
+        )
+    )
+    scene(
+        "super-jackpot",
+        [
+            *status_events(4),
+            *sup_feed,
+            AlertsChanged(
+                (sup, view("j", "Foil Mageblood", 80, 25, 60, jackpot=True)), new_alert=False
+            ),
         ],
     )
 

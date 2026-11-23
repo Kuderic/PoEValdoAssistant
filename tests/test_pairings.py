@@ -116,6 +116,21 @@ def _shipped():
             ],
             "Blight + melee-range only",
         ),
+        (
+            ["Area becomes increasingly lethal", "Players who Die in area are sent to the Void"],
+            "Increasingly lethal + void",
+        ),
+        (
+            [
+                "Area contains an additional Legion Encounter",
+                "Monsters can only be Damaged while within 2 metres of a Player",
+            ],
+            "Legion + melee-range only",
+        ),
+        (
+            ["Area contains Sirus' Deatomisation Storms", "Players' Travel Skills are Disabled"],
+            "Sirus storms + no travel skills",
+        ),
     ],
 )
 def test_shipped_pairings_fire_on_real_mod_text(mods, label):
@@ -198,3 +213,19 @@ def test_the_pairing_does_not_merge_the_two_mod_lines():
     # so assert the SHAPE of the note rather than the current number)
     assert FEARED in rows[0][0] and rows[0][1].startswith("base ")
     assert VOID in rows[1][0] and rows[1][1].startswith("×")
+
+
+@pytest.mark.parametrize(
+    ("mods", "label", "mult"),
+    [
+        (["Area becomes increasingly lethal"], "Increasingly lethal + void", 2.0),
+        (["Players who Die in area are sent to the Void"], "Increasingly lethal + void", 2.0),
+        (["Area contains an additional Legion Encounter"], "Legion + melee-range only", 2.0),
+        (["Area contains Sirus' Deatomisation Storms"], "Sirus storms + no travel skills", 1.5),
+    ],
+)
+def test_new_pairings_need_both_halves_and_carry_their_multiplier(mods, label, mult):
+    sc = _shipped()
+    assert label not in [p for p, _n, _m in sc.evaluate(mods).pairings]
+    shipped = {p.label: p.multiplier for p in sc._config.pairings}
+    assert shipped[label] == mult

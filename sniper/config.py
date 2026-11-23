@@ -18,6 +18,13 @@ class ConfigError(Exception):
 # mod_scoring at load time so quick tweaks survive restarts without
 # rewriting the (commented) main config.
 SCORING_OVERRIDES_NAME = "scoring_overrides.yaml"
+# alerts.* tier bars the settings panel saves (and load_config re-applies)
+JACKPOT_KEYS = (
+    "jackpot_min_net",
+    "jackpot_min_yield",
+    "super_jackpot_min_net",
+    "super_jackpot_min_yield",
+)
 
 
 def apply_scoring_overrides(scoring: ModScoringConfig, path: Path) -> ModScoringConfig:
@@ -66,6 +73,8 @@ def save_scoring_overrides(
     running_cost: float | None = None,
     jackpot_min_net: float | None = None,
     jackpot_min_yield: float | None = None,
+    super_jackpot_min_net: float | None = None,
+    super_jackpot_min_yield: float | None = None,
 ) -> None:
     """Persist tuning-panel values (numbers, hotkey combo, alert volume;
     match patterns stay in config.yaml)."""
@@ -92,6 +101,10 @@ def save_scoring_overrides(
         data["jackpot_min_net"] = jackpot_min_net
     if jackpot_min_yield is not None:
         data["jackpot_min_yield"] = jackpot_min_yield
+    if super_jackpot_min_net is not None:
+        data["super_jackpot_min_net"] = super_jackpot_min_net
+    if super_jackpot_min_yield is not None:
+        data["super_jackpot_min_yield"] = super_jackpot_min_yield
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
@@ -106,8 +119,7 @@ def load_extra_overrides(path: Path) -> dict:
         "hotkey_combo",
         "alert_volume",
         "running_cost",
-        "jackpot_min_net",
-        "jackpot_min_yield",
+        *JACKPOT_KEYS,
     )
     return {k: raw[k] for k in keys if raw.get(k) is not None}
 
@@ -149,6 +161,11 @@ class AlertsConfig:
     # jackpot_sound empty -> sound.JACKPOT_WAV. Plays at `volume`.
     jackpot_alarm: bool = True
     jackpot_sound: str = ""
+    # Super jackpot: a jackpot that also clears these higher bars. Outranks
+    # a jackpot, gold styling, own alarm (empty -> sound.SUPER_JACKPOT_WAV).
+    super_jackpot_min_net: float = 60.0
+    super_jackpot_min_yield: float = 100.0
+    super_jackpot_sound: str = ""
 
 
 @dataclass(frozen=True)
@@ -362,6 +379,8 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         raise ConfigError(f"alerts.volume must be between 0 and 1, got {alerts.volume}")
     if alerts.jackpot_min_net < 0 or alerts.jackpot_min_yield < 0:
         raise ConfigError("alerts.jackpot_min_net / jackpot_min_yield must be >= 0")
+    if alerts.super_jackpot_min_net < 0 or alerts.super_jackpot_min_yield < 0:
+        raise ConfigError("alerts.super_jackpot_min_net / super_jackpot_min_yield must be >= 0")
 
     ninja = build(NinjaConfig, "ninja")
     if ninja.enabled and ninja.refresh_minutes < 1:
@@ -553,7 +572,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     if "alert_volume" in extra:
         volume = min(1.0, max(0.0, float(extra["alert_volume"])))
         alerts = replace(alerts, volume=volume)
-    for key in ("jackpot_min_net", "jackpot_min_yield"):
+    for key in JACKPOT_KEYS:
         if key in extra:
             alerts = replace(alerts, **{key: max(0.0, float(extra[key]))})
 

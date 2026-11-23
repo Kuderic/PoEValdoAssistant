@@ -47,6 +47,12 @@ alerts:
   jackpot_min_yield: 10        # divines per 100 difficulty
   jackpot_alarm: true          # false -> a jackpot plays the ordinary alert sound
   jackpot_sound: ""            # .wav to loop; empty -> C:\Windows\Media\Alarm02.wav
+  # SUPER JACKPOT: the tier above - a jackpot that ALSO clears these higher
+  # bars. Gold banner and frame, its own alarm, and it outranks a jackpot
+  # for the hotkey. Silenced the same way (click the banner). Also in ⚙.
+  super_jackpot_min_net: 30    # divines
+  super_jackpot_min_yield: 50  # divines per 100 difficulty
+  super_jackpot_sound: ""      # empty -> C:\Windows\Media\Alarm03.wav
 
 hotkey:
   combo: "`"
@@ -146,6 +152,18 @@ mod_pairings:
     match_all: ["area contains the feared", "sent to the void"]
     multiplier: 2
     note: "The Feared can one-shot; dying here deletes the character"
+  - label: "Increasingly lethal + void"
+    match_all: ["increasingly lethal", "sent to the void"]
+    multiplier: 2
+    note: "Damage keeps ramping in a map where dying deletes the character"
+  - label: "Legion + melee-range only"
+    match_all: ["legion", "within 2 metres of a player"]
+    multiplier: 2
+    note: "Legion's dense packs must all be fought point-blank"
+  - label: "Sirus storms + no travel skills"
+    match_all: ["deatomisation storms", "travel skills are disabled"]
+    multiplier: 1.5
+    note: "Slowed with no travel skills, so the storms are hard to escape"
 
 # FAILURE RISKS: mods (or combinations) that can make the map FAIL. A failed
 # map pays nothing and what you paid for it is gone, so each risk turns NET

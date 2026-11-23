@@ -40,11 +40,14 @@ GENERIC_WAV = Path(r"C:\Windows\Media\tada.wav")
 # traveled to, expires, or is silenced by clicking its banner. Its length
 # does not matter: the overlay stops it the moment there is nothing to ring for.
 JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm02.wav")
+# Super jackpot (the tier above): a different alarm, so the two tiers can be
+# told apart by ear.
+SUPER_JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm03.wav")
 
 
 @dataclass(frozen=True)
 class SoundCommand:
-    """kind: "valdo" | "generic" | "jackpot" plays that alert's WAV; "stop"
+    """kind: "valdo" | "generic" | "jackpot" | "super" plays that alert's WAV; "stop"
     silences whatever is playing. `loop` repeats until the next command."""
 
     kind: str

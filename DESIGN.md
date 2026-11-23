@@ -203,7 +203,18 @@ ordered) while any live jackpot is unsilenced (`alerts.jackpots_to_ring`).
 Travel and expiry end it by removing the alert; clicking the banner
 silences the jackpots on screen, per listing, so a new one still rings.
 While it rings, routine alert sounds are skipped so they cannot cut it
-off. The window is never pulled forward. The banner click is sound-only. None of this touches the click path: one press is
+off. The window is never pulled forward. The banner click is sound-only.
+
+A **super jackpot** is a jackpot that also clears
+`alerts.super_jackpot_min_net` / `super_jackpot_min_yield`
+(`AlertStore.is_super_jackpot`). Requiring the jackpot first keeps every
+jackpot exclusion and means super bars set below the jackpot bars cannot
+skip a tier. `AlertView.super_jackpot` implies `jackpot`, so code that only
+knows jackpots still treats one correctly. The rank key is (super, jackpot,
+generic order, yield). The overlay styles both tiers through one `_Tier`
+palette (gold for super). `alerts.alarm_kind` picks the super alarm while
+an unsilenced super jackpot is live, else the jackpot alarm; switching
+kinds swaps the loop. None of this touches the click path: one press is
 still one travel.
 
 ## Scam guard
@@ -326,8 +337,8 @@ divine, per active reward; blank means automatic. Rules:
   and keeps refreshing underneath, so clearing the pin returns to a current
   price rather than a frozen one.
 - Anything priced from a pin is flagged `✋ YOUR PRICE` on the alert and
-  `your price` in the Watching tooltip - the profit came from a typed
-  number, not the market.
+  `(yours)` beside the reward on the Watching line - the profit came from a
+  typed number, not the market.
 - **Never persisted.** Unlike the scoring panel, pins are not written to
   `scoring_overrides.yaml`: a correction that outlived the market that
   justified it would be worse than the error it fixed.
@@ -388,6 +399,33 @@ prices, Failure risks, Deadly pairings, Base difficulty, Difficulty
 multipliers (both rule lists alphabetical). The search filters rows by
 label and hover hint; a query matching a section title shows the whole
 section; rows are hidden with `grid_remove()` so they return in place.
+
+## Hover help
+
+Every part of the overlay explains itself on hover (`overlay.HELP`, bound
+with `Overlay._bind_help`):
+- **Delay.** The popup opens after `HELP_DELAY_MS` (350 ms), so sweeping the
+  mouse across the window flashes nothing. It is bound with `add="+"` so it
+  never displaces a widget's own hover handler (the travel button's tint),
+  and any click closes it. Help is display-only: it never acts on a listing.
+- **One target, many widgets.** A stat cell is a frame, a caption and a
+  value. Moving between them neither hides nor restarts the popup.
+- **Never over the numbers.** Stat help opens below the whole stats row.
+  Popups stay inside the overlay's width and flip above when they would
+  leave the screen.
+- **Worked examples must match.** NET, YIELD and DIFFICULTY add a live line
+  that works the sum through for the listing on screen
+  (`_net_breakdown`, `_yield_breakdown`, `_difficulty_breakdown`). Each
+  builder returns nothing unless its parts reproduce the figure shown, for
+  example when a conversion from another currency is not on screen, or when
+  the running cost was changed after the alert was scored.
+
+Reward prices sit next to the reward names: on the Watching line
+(`Nimis 160.5d (4m ago)`, items joined with non-breaking spaces so wraps fall
+between rewards) and under a Valdo alert's name (`Reward worth 101d · trade
+listings · fetched 2m ago`). `RewardPrice.age_s` is the age at push time. The
+overlay counts on from when the push arrived, and re-renders both lines every
+30 s, so the age keeps ticking between pushes.
 
 ## Click-to-travel and the confirmation dialog
 

@@ -85,6 +85,10 @@ note saying what actually goes wrong:
 | No damage + fatal timer | 10 | Impossible unless DPS-check build |
 | Delirium + fatal timer | 10 | Impossible unless DPS-check build |
 | Blight + melee-range only | 2 | Bricks the CC tower strategy |
+| The Feared + void | 2 | The Feared can one-shot; dying deletes the character |
+| Increasingly lethal + void | 2 | Damage keeps ramping where dying deletes the character |
+| Legion + melee-range only | 2 | Legion's dense packs must all be fought point-blank |
+| Sirus storms + no travel skills | 1.5 | Slowed with no travel skills, so the storms are hard to escape |
 
 These stack multiplicatively, so a map with two 10× pairings lands in the
 hundreds of thousands of difficulty and will simply never alert — which is
@@ -188,16 +192,25 @@ too. Developer extras: `pip install pytest pytest-asyncio ruff`.
 ## Reading an alert
 
 See the screenshot at the top: the reward name, the latency badge and the
-**TELEPORT** button (with your hotkey on it), then the four numbers, then
-warnings, then the map's mods.
+**TELEPORT** button (with your hotkey on it), what the reward is worth, then
+the four numbers, then warnings, then the map's mods.
+
+**Hover anything to see what it means.** Every part of the overlay has an
+explanation that pops up after a moment: the status pills, the latency badge,
+each of the four numbers, the price markers, ☠ and ⚠ rows, the jackpot
+banner, the countdown bar and the history's column headers. The four numbers
+also work their sum through for the listing on screen, e.g. NET shows
+`101 worth − 52 price − 1 running = +48.0d` and DIFFICULTY shows
+`base 80 × 1.3 × 1.4 = 146`.
 
 | Element | What it tells you |
 |---|---|
+| **Reward worth …** | What the map's reward unique sells for, where that price came from (trade listings / last session / poe.ninja estimate / your price) and how long ago it was fetched. NET is worked out from it |
 | **PRICE** | What you pay, and in which currency. Turns red on a currency mismatch (the classic "20 exalted, not 20 divine" bait) — a full-width banner also appears |
-| **NET DIV** | Market price − asking price − the running cost. What the map actually leaves you |
-| **YIELD** | The decision number, in the tinted cell: net per 100 difficulty. Green means it clears your threshold |
-| **DIFFICULTY** | Plain ≤100, amber >100, red >300 |
-| **latency badge** | How long the listing was already live before it reached you — the head start every other sniper had. Green under 2s, red past 5s. Hover it for the full explanation |
+| **NET DIV** | Reward value − asking price − the running cost. What the map actually leaves you |
+| **YIELD** | The decision number, in the tinted cell: net ÷ difficulty × 100, i.e. profit per unit of pain. It decides alerts and the hotkey's pick, so an easy map with modest profit can beat a brutal one. Green means it clears your threshold |
+| **DIFFICULTY** | How hard the mods make the map; 100 is a typical map. The toughest encounter's base (or the clean-map default) × every dangerous mod and pairing. Plain ≤100, amber >100, red >300 |
+| **latency badge** | The delay between the seller listing the map (the trade site's own index time) and your Chrome tab receiving it from the live search: the head start every other sniper had. Not your reaction time. Green under 2s, red past 5s |
 | **☠ rows** | Deadly pairings, with the reason |
 | **Mod list** | Each mod with its contribution (`base 120`, `×2.5`), marked red/amber by severity, modifiers right-aligned |
 
@@ -291,6 +304,23 @@ Tune the bars in the ⚙ panel under **Alerts** (applied live and saved), or
 with `alerts.jackpot_min_net` / `jackpot_min_yield` in `config.yaml`. A
 currency mismatch is never a jackpot.
 
+#### Super jackpots
+
+The tier above: a jackpot that **also** clears higher bars (net ≥ 30d **and**
+yield ≥ 50 by default) is a super jackpot:
+
+<img src="docs/overlay-super-jackpot.png" alt="A super jackpot alert: Nimis at 80 divine, +80 net, yield +144, with a gold SUPER JACKPOT banner, gold frame and gold TELEPORT button; a magenta jackpot runner-up sits below it" width="420">
+
+- a gold **★★ SUPER JACKPOT** banner, frame and TELEPORT button;
+- its own alarm (`Alarm03.wav`), so you can tell the tiers apart by ear. A
+  super jackpot arriving while a jackpot rings switches to its alarm;
+- it outranks a jackpot for the hotkey;
+- `★★ SUPER` in gold in the live feed.
+
+Silence it the same way, by clicking the banner. That silences every
+jackpot on screen. Tune the bars in the ⚙ panel (*Super jackpot at NET /
+YIELD*) or with `alerts.super_jackpot_min_net` / `super_jackpot_min_yield`.
+
 ## Tuning it to actually make money
 
 The defaults are a starting point, not an answer. The app logs every listing
@@ -349,6 +379,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (10 / 10), also in the ⚙ panel |
 | `alerts.jackpot_alarm` / `jackpot_sound` | Loop an alarm on jackpots (click the banner to silence) / its .wav |
+| `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 50), also in the ⚙ panel / its alarm .wav |
 | `trade_pricing.cache_max_age_minutes` | How stale a restored price may be (720) |
 
 ---
@@ -371,8 +402,9 @@ poe.ninja is still used for currency rates and to resolve `league: auto`.
   instead of guessing. If you get limited anyway, the header pill turns red
   (`RATE LIMITED 47s`) and unpriced rewards show as `Est. prices 5/8`.
 - Prices refresh every `refresh_minutes` (30 by default); the panel shows `↻`
-  on whichever reward is being recalculated, and both the panel and the
-  *Watching* line's tooltip show how long ago each price was calculated. Every
+  on whichever reward is being recalculated, and the *Watching* line shows
+  each reward's price and how long ago it was fetched, e.g.
+  `Nimis 160.5d (4m ago)` (`(yours)` for a price you pinned). Every
   active reward re-prices each cycle, so lowering this multiplies the request
   rate by however many live searches you have open — 10 minutes was enough to
   earn a 30-minute API backoff.

@@ -4,7 +4,8 @@ ToS-critical semantics (DESIGN.md):
 - best-value-wins: the hotkey consumes the non-expired alert with the
   highest profit per 100 difficulty (see _rank), not the biggest absolute
   profit - except that a jackpot (big net AND big yield) always outranks a
-  non-jackpot: it is the best deal on screen by both measures;
+  non-jackpot, and a super jackpot (higher bars still) outranks a jackpot:
+  it is the best deal on screen by both measures;
 - expiry: a stale listing can never be traveled to by reflex;
 - single consumption: a consumed listing id can never alert or be clicked
   again, even if the tab re-pushes it;
@@ -61,6 +62,9 @@ class AlertView:
     generic: bool = False
     # big net AND big yield (margin.is_jackpot): its own colour, top pick
     jackpot: bool = False
+    # the tier above: a jackpot that also clears the super bars. Always
+    # implies jackpot, so code that only knows jackpots still treats it as one
+    super_jackpot: bool = False
     # failure risks: (label, note, chance); combined chance; its divine cost
     risks: tuple[tuple[str, str, float], ...] = ()
     fail_chance: float = 0.0
@@ -73,6 +77,7 @@ class Alert:
     created_monotonic: float
     expires_at_monotonic: float
     jackpot: bool = False
+    super_jackpot: bool = False
 
     def view(self) -> AlertView:
         d = self.decision
@@ -100,6 +105,7 @@ class Alert:
             expires_at_monotonic=self.expires_at_monotonic,
             generic=d.listing.generic,
             jackpot=self.jackpot,
+            super_jackpot=self.super_jackpot,
             risks=d.risks,
             fail_chance=d.fail_chance,
             risk_cost_div=d.risk_cost_div or 0.0,
@@ -115,10 +121,15 @@ class AlertStore:
         # both None (the default) disables the jackpot tier entirely
         jackpot_min_net: float | None = None,
         jackpot_min_yield: float | None = None,
+        # both None disables the super tier
+        super_jackpot_min_net: float | None = None,
+        super_jackpot_min_yield: float | None = None,
     ):
         self._expiry_s = expiry_s
         self._jackpot_min_net = jackpot_min_net
         self._jackpot_min_yield = jackpot_min_yield
+        self._super_min_net = super_jackpot_min_net
+        self._super_min_yield = super_jackpot_min_yield
         self._consume_mode = consume_mode
         self._max_display = max_display
         self._alerts: dict[str, Alert] = {}
@@ -128,11 +139,21 @@ class AlertStore:
         # Held so a FAILED travel can hand them back - see settle_travel.
         self._in_flight: tuple[str, dict[str, Alert]] | None = None
 
-    def set_jackpot_thresholds(self, min_net: float, min_yield: float) -> None:
+    def set_jackpot_thresholds(
+        self,
+        min_net: float,
+        min_yield: float,
+        super_min_net: float | None = None,
+        super_min_yield: float | None = None,
+    ) -> None:
         """Settings panel. Applies to alerts from now on; a live alert keeps
-        the flag it was raised with, so it never changes colour mid-alert."""
+        the flag it was raised with, so it never changes colour mid-alert.
+        The super bars are left as they are when not given."""
         self._jackpot_min_net = min_net
         self._jackpot_min_yield = min_yield
+        if super_min_net is not None and super_min_yield is not None:
+            self._super_min_net = super_min_net
+            self._super_min_yield = super_min_yield
 
     def is_jackpot(self, decision: Decision) -> bool:
         """Generic hits have no net/yield to judge. A currency mismatch is
@@ -147,6 +168,18 @@ class AlertStore:
             decision.difficulty,
             self._jackpot_min_net,
             self._jackpot_min_yield,
+        )
+
+    def is_super_jackpot(self, decision: Decision) -> bool:
+        """A jackpot that also clears the super bars. Requiring the jackpot
+        too keeps every jackpot exclusion (generic, currency mismatch) and
+        means a super bar set BELOW the jackpot bar cannot create a super
+        jackpot that is not a jackpot."""
+        return self.is_jackpot(decision) and is_jackpot(
+            decision.net_div,
+            decision.difficulty,
+            self._super_min_net,
+            self._super_min_yield,
         )
 
     # ------------------------------------------------------------- mutations
@@ -173,6 +206,7 @@ class AlertStore:
             created_monotonic=now,
             expires_at_monotonic=now + self._expiry_s,
             jackpot=self.is_jackpot(decision),
+            super_jackpot=self.is_super_jackpot(decision),
         )
         return True
 
@@ -291,19 +325,19 @@ class AlertStore:
 
         A jackpot outranks everything: it clears both the big-money and the
         big-yield bar, and a newer generic hit must not quietly steal the
-        press meant for it.
+        press meant for it. A super jackpot outranks a jackpot.
         """
 
-        def key(a: Alert) -> tuple[bool, bool, float]:
+        def key(a: Alert) -> tuple[bool, bool, bool, float]:
             d = a.decision
             if d.listing.generic:
-                return (False, generic_first, a.created_monotonic)
+                return (False, False, generic_first, a.created_monotonic)
             ratio = net_yield(d.net_div, d.difficulty) or 0.0
-            return (a.jackpot, not generic_first, ratio)
+            return (a.super_jackpot, a.jackpot, not generic_first, ratio)
 
         return key
 
-    def _rank(self, a: Alert) -> tuple[bool, bool, float]:
+    def _rank(self, a: Alert) -> tuple[bool, bool, bool, float]:
         return self._rank_key(self._generic_on_top())(a)
 
     def _best(self) -> Alert | None:
@@ -328,6 +362,15 @@ class AlertStore:
         self._consumed[lid] = time.monotonic()
         while len(self._consumed) > _CONSUMED_CAP:
             self._consumed.popitem(last=False)
+
+
+def alarm_kind(alerts: tuple[AlertView, ...], silenced: set[str]) -> str | None:
+    """Which alarm should loop: "super" while any unsilenced super jackpot
+    is live, else "jackpot" while any unsilenced jackpot is, else None."""
+    ringing = jackpots_to_ring(alerts, silenced)
+    if any(a.super_jackpot for a in alerts if a.listing_id in ringing):
+        return "super"
+    return "jackpot" if ringing else None
 
 
 def jackpots_to_ring(alerts: tuple[AlertView, ...], silenced: set[str]) -> set[str]:
