@@ -189,9 +189,9 @@ class PriceBook:
         """
         if reward in self._overrides or self._config.prices.get(reward) is not None:
             return None
-        entry = self._trade_rewards.get(reward)
-        if entry is not None:
-            return max(0.0, time.time() - entry[3])
+        trade_age = self.trade_age_s(reward)
+        if trade_age is not None:
+            return trade_age
         if reward in self._ninja_rewards:
             return self.age_s
         return None
@@ -219,6 +219,12 @@ class PriceBook:
             cached,
             time.time() if priced_at is None else priced_at,
         )
+
+    def trade_age_s(self, reward: str) -> float | None:
+        """Seconds since this reward's trade average (fresh or restored
+        from the cache) was originally fetched; None without one."""
+        entry = self._trade_rewards.get(reward)
+        return None if entry is None else max(0.0, time.time() - entry[3])
 
     def trade_prices(self) -> dict[str, tuple[float, float]]:
         """Everything worth persisting for the next start: reward ->

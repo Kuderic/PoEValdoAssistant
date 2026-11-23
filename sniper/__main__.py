@@ -16,10 +16,13 @@ import contextlib
 import sys
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from sniper import logging_setup, pricecache
+import httpx
+
+from sniper import bettertrading, browser, logging_setup, pricecache
 from sniper.alerts import AlertStore
 from sniper.bus import (
     AlertsChanged,
@@ -28,6 +31,8 @@ from sniper.bus import (
     FeedEntry,
     GameStatus,
     ListingSeen,
+    Notice,
+    OpeningTabs,
     PriceStatus,
     PricingHealth,
     RewardPrice,
@@ -37,7 +42,13 @@ from sniper.bus import (
     WarmupStatus,
 )
 from sniper.config import Config, ConfigError, load_config
-from sniper.gamewindow import GameWatcher, focus_poe_window
+from sniper.gamewindow import (
+    BuyerWindow,
+    GameWatcher,
+    buyer_alive,
+    focus_poe_window,
+    mark_foreground,
+)
 from sniper.logging_setup import event
 from sniper.models import ClickResult, Decision
 from sniper.modrules import ModRules
@@ -51,13 +62,37 @@ from sniper.server import SniperServer
 # large batch can legitimately take minutes, and a fixed deadline would
 # degrade a run that was working fine.
 WARMUP_STALL_S = 90.0
+# Opening imported live-search tabs. Every tab load is one trade SEARCH, and
+# the search limit is per IP (live 2026-11-22: 5/10s, 15/60s with a 300s
+# lockout, 30/300s with a 1800s lockout), shared with the pricer. The first
+# SEARCH_BURST tabs open SEARCH_SPACING_S apart (10 in a minute), the rest
+# SEARCH_SPACING_SLOW_S apart, so even 30 searches stay under 30 per 5 min;
+# the pricer is paused for the whole run.
+# ponytail: fixed schedule, not header-driven; tab loads never show us headers.
+SEARCH_SPACING_S = 6.0
+SEARCH_BURST = 10
+SEARCH_SPACING_SLOW_S = 15.0
+# On launch, give tabs restored by Chrome this long to reconnect before
+# opening the saved searches that are still missing.
+# (the browser script's reconnect backoff tops out at 30s plus jitter)
+AUTO_OPEN_GRACE_S = 45.0
+# A tab this app opened counts as open for this long even before it connects
+# (Chrome's local-network prompt, a slow load), so a second click or the
+# launch auto-open never stacks a duplicate set.
+OPENED_GRACE_S = 120.0
 
 
 class App:
     """Owns the asyncio-side objects; every method here runs on the asyncio
     thread unless noted."""
 
-    def __init__(self, config: Config, bus: Bus | None, cache_path: Path | None = None):
+    def __init__(
+        self,
+        config: Config,
+        bus: Bus | None,
+        cache_path: Path | None = None,
+        searches_path: Path | None = None,
+    ):
         self.config = config
         self.bus = bus
         self.book = PriceBook(config)
@@ -87,6 +122,12 @@ class App:
             on_tabs_changed=self._on_tabs_changed,
         )
         self.watcher = GameWatcher(config.game.process_names)
+        # the marked buyer client (two-client setups); None = any PoE window
+        self.buyer: BuyerWindow | None = None
+        self._buyer_lost = False
+        # win32 calls on the press path get their own thread, so a busy
+        # default executor (pricing, process scans) can never delay a press
+        self._win_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="win32")
         # every recent decision (any verdict) so grayed-out feed rows are
         # clickable too; _traveled_ids guards one-travel-per-listing
         self._recent: OrderedDict[str, Decision] = OrderedDict()
@@ -103,6 +144,13 @@ class App:
         # never get a primary price, so they must not stall the warm-up
         self._warmup_settled: set[str] = set()
         self._pricing_now: str | None = None  # reward being fetched right now
+        self._setup_url = f"http://{config.server.host}:{config.server.port}/"
+        self.searches_path = searches_path
+        self._opening = False  # a live-search open run is in progress
+        self._stop_opening = False  # Stop button / hotkey: open no more tabs
+        self._opened_at: dict[str, float] = {}  # slug -> monotonic, this session
+        self._pricer = None  # TradePricer once trade pricing starts
+        self.reload_saved_rewards()
 
     # ------------------------------------------------------------ callbacks
 
@@ -182,7 +230,10 @@ class App:
                 price = f"{ref.display_amount:g} {ref.display_currency}"
                 if not primary:
                     price = f"~{price}"  # fallback estimate, not settled yet
-            rows.append((reward, state, price, self.book.price_age_s(reward)))
+            # minute steps: the overlay redraws the panel whenever a row
+            # changes, and a per-second age made it redraw every 2s poll
+            age = self.book.price_age_s(reward)
+            rows.append((reward, state, price, None if age is None else age // 60 * 60))
         return tuple(rows)
 
     def _on_decision(self, decision: Decision) -> None:
@@ -260,9 +311,193 @@ class App:
 
     # ------------------------------------------------------------ travel path
 
+    def reload_saved_rewards(self) -> None:
+        """Price every imported search's reward from now on (and so keep it
+        auto-refreshed), whether or not its tab is open yet."""
+        if self.searches_path is None:
+            return
+        self.server.saved_rewards = frozenset(s.reward for s in self._saved_searches() if s.reward)
+
+    def _off_path(self) -> Path:
+        return self.searches_path.with_name(bettertrading.OFF_NAME)
+
+    def search_choices(self) -> list[tuple[bettertrading.SavedSearch, bool]]:
+        """Every imported search and whether it is checked to open (and price)."""
+        if self.searches_path is None:
+            return []
+        off = bettertrading.load_off(self._off_path())
+        return [(s, s.slug not in off) for s in bettertrading.load(self.searches_path).searches]
+
+    def set_search_enabled(self, slug: str, enabled: bool) -> None:
+        off = bettertrading.load_off(self._off_path())
+        bettertrading.save_off(self._off_path(), off - {slug} if enabled else off | {slug})
+        self.reload_saved_rewards()
+
+    def _saved_searches(self):
+        """The checked searches: the only ones opened and priced."""
+        return [s for s, on in self.search_choices() if on]
+
+    def _missing_searches(self, searches) -> list:
+        """Saved searches with no connected tab yet. A tab reports either the
+        slug it loaded or, for a Better Trading 1.9 query slug, its reward.
+        A reward only stands in for a search when no other saved search
+        shares it: two Headhunter searches can't both be "the" Headhunter tab."""
+        tabs = self.server.tabs.values()
+        open_ids = {t.search_id for t in tabs}
+        open_rewards = {t.search_reward for t in tabs if t.search_reward}
+        per_reward = Counter(s.reward for s in self._saved_searches() if s.reward)
+        now = time.monotonic()
+        return [
+            s
+            for s in searches
+            if s.slug not in open_ids
+            and not (per_reward[s.reward] == 1 and s.reward in open_rewards)
+            and now - self._opened_at.get(s.slug, -OPENED_GRACE_S) >= OPENED_GRACE_S
+        ]
+
+    async def open_live_searches(self, auto: bool = False) -> None:
+        """Open every imported Better Trading search that has no live tab yet,
+        in the sniper Chrome. Paced under the trade site's search limit (see
+        SEARCH_SPACING_S), with reward pricing paused meanwhile so the two
+        never add up to a lockout. A second click during a run is ignored."""
+        if self._opening or self.searches_path is None:
+            return
+        searches = self._saved_searches()
+        league = self.book.league
+        if not searches:
+            text = (
+                "Every search is unchecked - tick some under Live searches"
+                if self.search_choices()
+                else "No searches imported yet - paste a Better Trading export first"
+            )
+            self._notice(text, False)
+            return
+        if league is None:
+            if not auto:
+                self._notice("League not known yet - try again in a few seconds", False)
+            return
+        if browser.is_first_run():
+            if auto:  # Chrome only opens on a click until the profile exists
+                return
+            # no Tampermonkey there yet: live tabs would capture nothing
+            await self._run_blocking(browser.open_url, self._setup_url)
+            self._notice("First run: finish the setup page in the new Chrome, then click again")
+            return
+        todo = self._missing_searches(searches)
+        if not todo:
+            if not auto:
+                self._notice(f"All {len(searches)} live searches are already open")
+            return
+        self._opening = True
+        self._stop_opening = False
+        if self.bus:
+            self.bus.put(OpeningTabs(True))
+        try:
+            await self._open_paced(todo, league)
+        finally:
+            self._opening = False
+            if self.bus:
+                self.bus.put(OpeningTabs(False))
+
+    async def stop_opening(self) -> None:
+        """Stop button or hotkey: the current run opens no further tabs.
+        A coroutine so the global hotkey can schedule it like the others."""
+        if self._opening:
+            self._stop_opening = True
+            event("open_live_searches_stopped")
+
+    async def _open_paced(self, todo, league: str) -> None:
+        n = len(todo)
+        event("open_live_searches", count=n, league=league)
+        for i, search in enumerate(todo):
+            if i:
+                await asyncio.sleep(SEARCH_SPACING_S if i < SEARCH_BURST else SEARCH_SPACING_SLOW_S)
+            if not self._missing_searches([search]):
+                continue  # its tab connected while we were waiting
+            while self._pricer is not None and self._pricer.in_backoff and not self._stop_opening:
+                # the IP is locked out: a tab opened now would load empty
+                wait = max(self._pricer.backoff_remaining, 1)
+                self._notice(f"Trade site rate limit - waiting {wait:.0f}s", False)
+                await asyncio.sleep(min(wait, 15))
+            if self._stop_opening:
+                self._notice(f"Stopped opening live searches at {i}/{n}")
+                return
+            await self._run_blocking(browser.open_url, bettertrading.live_url(search, league))
+            self._opened_at[search.slug] = time.monotonic()
+            self._notice(f"Opening live searches {i + 1}/{n}: {search.title}")
+        self._notice(f"Opened the missing live searches ({league})")
+
+    async def auto_open_searches(self) -> None:
+        """On launch: once the league is known and restored tabs have had a
+        moment to reconnect, open the saved searches that are still missing.
+        Only when searches were already saved at launch: a first import
+        opens on the user's click, after they have ticked what they want."""
+        if not self._saved_searches():
+            return
+        await asyncio.sleep(AUTO_OPEN_GRACE_S)
+        while self.book.league is None:
+            await asyncio.sleep(2)
+        await self.open_live_searches(auto=True)
+
+    def _notice(self, text: str, ok: bool = True) -> None:
+        if self.bus:
+            self.bus.put(Notice(text, ok))
+
+    async def _run_blocking(self, fn, *args):
+        return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+
+    async def mark_buyer(self) -> None:
+        """Mark-buyer key: remember the focused PoE client as the buyer.
+        Local only - nothing is sent to the game or the trade site."""
+        title = self.config.game.window_title
+        try:
+            buyer = await asyncio.get_running_loop().run_in_executor(
+                self._win_pool, mark_foreground, title
+            )
+        except Exception as e:  # noqa: BLE001 - a press must always answer
+            event("buyer_mark_failed", error=repr(e))
+            buyer = None
+        if buyer is not None:
+            self.buyer = buyer
+            self._buyer_lost = False
+        if self.bus:
+            self.bus.put(GameStatus(self.watcher.running.is_set(), self._buyer_state()))
+            if buyer is None:
+                self.bus.put(ClickOutcome("", False, "mark buyer: focus a PoE window first"))
+
+    def _buyer_state(self) -> str:
+        if self.buyer is None:
+            return ""
+        return "lost" if self._buyer_lost else "marked"
+
+    async def _buyer_gate(self) -> bool:
+        """With a buyer marked, travel only while THAT client is alive: any
+        PoE process passing the gate would send account A to a hideout with
+        only client B in game. Checked before anything is consumed."""
+        if self.buyer is None:
+            return True
+        try:
+            alive = await asyncio.get_running_loop().run_in_executor(
+                self._win_pool, buyer_alive, self.buyer, self.config.game.window_title
+            )
+        except Exception as e:  # noqa: BLE001 - fail closed, but say so
+            event("buyer_check_failed", error=repr(e))
+            alive = False
+        if alive:
+            self._buyer_lost = False
+            return True
+        self._buyer_lost = True
+        event("travel_blocked", reason="buyer_lost", pid=self.buyer.pid)
+        if self.bus:
+            self.bus.put(GameStatus(self.watcher.running.is_set(), "lost"))
+            self.bus.put(ClickOutcome("", False, "buyer client lost - press mark key again"))
+        return False
+
     async def hotkey_pressed(self) -> None:
         """One user press = at most one click_travel (hard ToS constraint).
         Runs on the asyncio loop, scheduled by the keyboard hook thread."""
+        if not await self._buyer_gate():
+            return
         alert = self.store.consume_best()
         self._push_alerts(new_alert=False)
         if alert is None:
@@ -290,6 +525,8 @@ class App:
             event("travel_click_ignored", reason="poe_not_running", listing_id=listing_id)
             if self.bus:
                 self.bus.put(ClickOutcome(listing_id, False, "PoE not running - click ignored"))
+            return
+        if not await self._buyer_gate():
             return
         if listing_id in self._traveled_ids:
             event("travel_click_noop", reason="already_traveled", listing_id=listing_id)
@@ -319,9 +556,11 @@ class App:
 
     async def _travel(self, alert) -> None:
         lid = alert.decision.listing.listing_id
-        if self.bus:
-            self.bus.put(Traveled(alert.view()))
         ok = await self.server.send_click_travel(lid)
+        # pin + clipboard only for a click that actually left; a dead tab
+        # must not overwrite the clipboard or pin a travel that never happened
+        if ok and self.bus:
+            self.bus.put(Traveled(alert.view()))
         if not ok:
             # the click never left the building, so no click_result is coming:
             # settle it here or the runners-up would be lost to a travel that
@@ -331,9 +570,15 @@ class App:
             if self.bus:
                 self.bus.put(ClickOutcome(lid, False, "tab gone - travel not sent"))
         # click first (latency-critical), then bring the game to front
-        await asyncio.get_running_loop().run_in_executor(
-            None, focus_poe_window, self.config.game.window_title
-        )
+        try:
+            focused = await asyncio.get_running_loop().run_in_executor(
+                self._win_pool, focus_poe_window, self.config.game.window_title, self.buyer
+            )
+        except Exception as e:  # noqa: BLE001
+            event("focus_failed", reason=repr(e))
+            focused = False
+        if not focused and ok and self.bus:
+            self.bus.put(ClickOutcome(lid, True, "travel sent - switch to the game yourself"))
 
     # ------------------------------------------------------------ live tuning
 
@@ -411,6 +656,7 @@ class App:
                 backoff_s=round(pricer.backoff_remaining, 1),
                 unpriced=len(unpriced),
                 total=len(rewards),
+                session_invalid=pricer.session_invalid,
             )
         )
 
@@ -465,9 +711,22 @@ class App:
 
         interval_s = self.config.trade_pricing.refresh_minutes * 60
         last_priced: dict[str, float] = {}
+
+        def age_s(reward: str, now: float) -> float:
+            if reward in last_priced:
+                return now - last_priced[reward]
+            # a price restored from the cache is due when its ORIGINAL fetch
+            # ages past the interval, not at once: re-pricing every reward
+            # on each restart spent a whole pass of searches for nothing
+            cached = self.book.trade_age_s(reward)
+            return interval_s if cached is None else cached
+
         while True:
             league = self.book.league  # resolves via the first ninja refresh
-            if league is None or pricer.in_backoff:
+            # tab loads spend the same search budget: price after they open
+            if league is None or pricer.in_backoff or self._opening:
+                if self._opening:  # a long run must not end the warm-up hold
+                    self._warmup_deadline = time.monotonic() + WARMUP_STALL_S
                 self._update_warmup()  # keeps the stall timer honest
                 self._push_pricing_health(pricer)  # keep the pill counting down
                 # a tab opened while we are stalled is still an active reward
@@ -476,12 +735,15 @@ class App:
                 await asyncio.sleep(2 if self._warmup_active else 15)
                 continue
             now = time.monotonic()
-            due = [
-                r
-                for r in sorted(self.server.active_rewards())
-                if now - last_priced.get(r, -interval_s) >= interval_s
-            ]
+            # a reward that just had a listing goes first (Exilium prices on
+            # demand): that is the price an alert is waiting on right now
+            due = sorted(
+                (r for r in self.server.active_rewards() if age_s(r, now) >= interval_s),
+                key=lambda r: (-self.server.last_seen(r), r),
+            )
             for reward in due:
+                if self._opening:
+                    break  # unpriced rewards stay due; resume after the tabs
                 self._pricing_now = reward  # so the startup panel can say so
                 self._update_warmup()
                 try:
@@ -491,6 +753,8 @@ class App:
                     # backoff lifts, so stop the batch rather than spin. The
                     # unpriced rewards never got a last_priced stamp, so they
                     # are still due and go first on the next pass.
+                    if pricer.session_invalid:
+                        event("trade_session_invalid", reason=str(e))
                     event(
                         "trade_backoff",
                         reason=str(e),
@@ -502,6 +766,16 @@ class App:
                     # only THIS reward is broken (bad payload, odd name);
                     # the rest of the batch is still worth pricing
                     event("trade_price_error", reward=reward, error=repr(e))
+                    # an HTTP refusal for THIS reward (400/404) would repeat
+                    # every 15s pass: retry it at its next refresh instead,
+                    # and stop the warm-up waiting on it. Anything else (a
+                    # bad payload) may be transient: retry soon.
+                    if isinstance(e, httpx.HTTPStatusError):
+                        last_priced[reward] = time.monotonic()
+                        self._warmup_settled.add(reward)
+                    self._pricing_now = None
+                    # the failed request still spent budget: keep the pace
+                    await pricer.pause_between_rewards()
                     continue
                 last_priced[reward] = time.monotonic()
                 div_prices = [
@@ -566,7 +840,7 @@ class App:
     async def run_async(self) -> None:
         def on_game_change(running: bool) -> None:
             if self.bus:
-                self.bus.put(GameStatus(running))
+                self.bus.put(GameStatus(running, self._buyer_state()))
 
         tasks = [
             asyncio.create_task(self.server.serve_forever(), name="ws-server"),
@@ -582,7 +856,7 @@ class App:
         if self.config.trade_pricing.enabled:
             from sniper.tradeprice import TradePricer
 
-            pricer = TradePricer(
+            pricer = self._pricer = TradePricer(
                 base_url=self.config.trade_pricing.base_url,
                 max_listings=self.config.trade_pricing.max_listings,
                 corrupted_uniques=tuple(self.config.trade_pricing.corrupted_uniques),
@@ -590,6 +864,8 @@ class App:
                 listing_status=self.config.trade_pricing.listing_status,
             )
             tasks.append(asyncio.create_task(self.trade_price_loop(pricer), name="trade-price"))
+        if self.searches_path is not None:
+            tasks.append(asyncio.create_task(self.auto_open_searches(), name="auto-open"))
         await asyncio.gather(*tasks)
 
 
@@ -603,7 +879,13 @@ def run_with_overlay(config: Config, config_path: str) -> None:
 
     bus = Bus()
     # the cache lives beside config.yaml, like scoring_overrides.yaml
-    app = App(config, bus, cache_path=Path(config_path).with_name(pricecache.CACHE_NAME))
+    searches_path = Path(config_path).with_name(bettertrading.SEARCHES_NAME)
+    app = App(
+        config,
+        bus,
+        cache_path=Path(config_path).with_name(pricecache.CACHE_NAME),
+        searches_path=searches_path,
+    )
     loop = asyncio.new_event_loop()
 
     def asyncio_thread() -> None:
@@ -619,6 +901,21 @@ def run_with_overlay(config: Config, config_path: str) -> None:
     except HotkeyError as e:
         loop.call_soon_threadsafe(loop.stop)
         raise SystemExit(str(e)) from None
+    mark_key = None
+    if config.hotkey.mark_buyer.strip():
+        try:
+            mark_key = Hotkey(config.hotkey.mark_buyer, loop, app.mark_buyer, app.watcher.running)
+        except HotkeyError as e:
+            event("mark_buyer_unavailable", error=str(e))  # travel still works
+
+    stop_key = None
+    if config.hotkey.stop_opening.strip():
+        always = threading.Event()
+        always.set()  # stopping tab opens needs no game running
+        try:
+            stop_key = Hotkey(config.hotkey.stop_opening, loop, app.stop_opening, always)
+        except HotkeyError as e:
+            event("stop_opening_key_unavailable", error=str(e))  # the button still works
 
     # UI-thread callbacks marshal into the asyncio loop; nothing UI-side
     # touches App state directly.
@@ -630,12 +927,31 @@ def run_with_overlay(config: Config, config_path: str) -> None:
     ) -> str | None:
         """Returns an error string (shown in the panel) or None. The hotkey
         rebinds on this (UI) thread; scoring/threshold swap on the loop."""
-        error = hotkey.rebind(combo)
+        if combo.strip().lower() == config.hotkey.mark_buyer.strip().lower():
+            error = f"{combo!r} is the mark-buyer key - pick another"
+        else:
+            error = hotkey.rebind(combo)
         loop.call_soon_threadsafe(app.apply_tuning, scoring_config, min_yield, running_cost)
         return error
 
     def on_price_override(reward: str, divine: float | None) -> None:
         loop.call_soon_threadsafe(app.set_price_override, reward, divine)
+
+    def on_open_searches() -> None:
+        future = asyncio.run_coroutine_threadsafe(app.open_live_searches(), loop)
+        future.add_done_callback(
+            lambda f: f.exception() and event("open_live_searches_error", error=repr(f.exception()))
+        )
+
+    def on_import_searches(text: str):
+        """UI thread: validate + save the paste (a small local file) and
+        price the new rewards. Tabs open from the import window's button,
+        after the user has ticked which ones."""
+        result = bettertrading.save(searches_path, text)
+        event("searches_imported", count=len(result.searches), skipped=list(result.skipped))
+        if result.searches:
+            loop.call_soon_threadsafe(app.reload_saved_rewards)
+        return result
 
     def on_jackpot_change(min_net: float, min_yield: float) -> None:
         loop.call_soon_threadsafe(app.set_jackpot_thresholds, min_net, min_yield)
@@ -655,12 +971,25 @@ def run_with_overlay(config: Config, config_path: str) -> None:
         on_settings_change=on_settings_change,
         on_price_override=on_price_override,
         on_jackpot_change=on_jackpot_change,
+        on_open_searches=on_open_searches,
+        on_import_searches=on_import_searches,
+        searches_count=lambda: len(bettertrading.load(searches_path).searches),
+        search_choices=app.search_choices,
+        on_stop_opening=lambda: asyncio.run_coroutine_threadsafe(app.stop_opening(), loop),
+        stop_opening_key=config.hotkey.stop_opening,
+        on_toggle_search=lambda slug, on: loop.call_soon_threadsafe(
+            app.set_search_enabled, slug, on
+        ),
         overrides_path=Path(config_path).with_name(SCORING_OVERRIDES_NAME),
     )
     try:
         root.mainloop()
     finally:
         hotkey.unregister()
+        if mark_key is not None:
+            mark_key.unregister()
+        if stop_key is not None:
+            stop_key.unregister()
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
 

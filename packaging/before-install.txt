@@ -1,0 +1,27 @@
+Valdo Sniper - before you install
+
+You need:
+  - Windows 10 or 11 (not a virtual machine)
+  - Google Chrome (installed normally)
+  - Path of Exile
+
+For the two-client setup:
+  - Account A = buyer: holds the currency, does every purchase.
+  - Account B = the account you play on.
+
+After installing, Valdo Sniper opens. Click "Open the sniper Chrome"
+in the overlay and follow the setup page it shows:
+  1. Install Tampermonkey and turn on "Allow User Scripts".
+  2. Install the browser script.
+  3. Log in to pathofexile.com as account A only.
+Then paste your Better Trading export into the import box, click
+"Save", tick the searches you want and click "Open ticked tabs". The
+tabs open paced so the trade site's search limit is never hit. To stop
+partway, click "Stop opening tabs" or press Ctrl+Alt+S.
+
+Every session: park client A in your hideout, click into it and press
+Ctrl+Alt+B to mark it as the buyer. Play on client B. On an alert,
+press the backtick key (`). You buy every item by hand.
+
+Nothing types or clicks inside either game client. One key press
+makes one click on the trade site.

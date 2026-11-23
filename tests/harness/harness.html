@@ -231,13 +231,21 @@ const FETCH_ENTRY = {
 check("parseFetchItem: real fetch entry", () => eq(V.parseFetchItem(FETCH_ENTRY), {
   id: "15523929be5966777cad9140f10b7d0d66f7b859074a1c363f4a0b9a2f73e9cd",
   item_name: "Abandoned Realm",
+  type_line: "Valdo Map",
   price: { amount: 199, currency: "divine" },
   seller: "WhaatColor#2070",
   reward: "Foil Mageblood",
   mods: ["Monsters have +6 to Maximum Power Charges",
          "Monsters gain a Power Charge on Hit",
          "Players cannot Suppress Spell Damage"],
+  indexed: null, // the inline trimmed entry carries no listing.indexed
 }));
+check("notePushFrame: records {new:[ids]}, ignores other frames", () => {
+  V.notePushFrame('{"auth": true}');
+  V.notePushFrame('not json');
+  V.notePushFrame('{"new": ["push-a", 7]}');
+  return eq([V.msSincePush("push-a") !== null, V.msSincePush("never")], [true, null]);
+});
 check("parseFetchItem: string-form explicitMods (public API shape)", () => {
   const e = JSON.parse(JSON.stringify(FETCH_ENTRY));
   e.item.explicitMods = ["Players cannot Evade"];

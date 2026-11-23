@@ -131,3 +131,16 @@ def test_capture_source_recorded():
 def test_capture_source_defaults_blank_for_older_userscripts():
     assert parse_frame(make_listing_frame()).capture == ""
     assert parse_frame(make_listing_frame(capture="nonsense")).capture == ""
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [(134, 134.0), (0, 0.0), (12.5, 12.5), (None, None), (-3, None), (True, None), ("9", None)],
+)
+def test_push_to_send_ms_is_validated(raw, expected):
+    frame = make_listing_frame()
+    if raw is not None:
+        frame["push_to_send_ms"] = raw
+    lst = parse_frame(frame)
+    assert isinstance(lst, Listing)
+    assert lst.push_to_send_ms == expected

@@ -39,8 +39,17 @@ class ClickOutcome:
 
 
 @dataclass(frozen=True)
+class Notice:
+    """A one-line message for the overlay's status line."""
+
+    text: str
+    ok: bool = True
+
+
+@dataclass(frozen=True)
 class GameStatus:
     running: bool
+    buyer: str = ""  # "" not marked | "marked" | "lost" (two-client setups)
 
 
 @dataclass(frozen=True)
@@ -88,6 +97,14 @@ class ListingSeen:
 
 
 @dataclass(frozen=True)
+class OpeningTabs:
+    """A live-search open run started (True) or ended (False): shows the
+    overlay's Stop button."""
+
+    active: bool
+
+
+@dataclass(frozen=True)
 class WarmupStatus:
     """Startup price warm-up. Until a reward has a primary (trade/manual)
     price, its listings are held back rather than judged against poe.ninja's
@@ -112,6 +129,7 @@ class PricingHealth:
     backoff_s: float
     unpriced: int
     total: int
+    session_invalid: bool = False  # 401/403: bad POESESSID (or a 403 block)
 
 
 @dataclass(frozen=True)

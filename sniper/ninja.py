@@ -13,8 +13,9 @@ from typing import Any
 
 import httpx
 
+from sniper.config import user_agent
+
 BASE = "https://poe.ninja"
-USER_AGENT = "valdo-map-sniper/0.1 (personal snipe-margin tool; contact: easymccarthy@gmail.com)"
 
 BACKOFF_BASE_S = 30.0
 BACKOFF_CAP_S = 600.0
@@ -28,7 +29,7 @@ class NinjaClient:
     def __init__(self, base_url: str = BASE, client: httpx.AsyncClient | None = None):
         self._base = base_url.rstrip("/")
         self._client = client or httpx.AsyncClient(
-            timeout=20.0, headers={"User-Agent": USER_AGENT}, follow_redirects=True
+            timeout=20.0, headers={"User-Agent": user_agent("0.1")}, follow_redirects=True
         )
         self._etags: dict[str, tuple[str, Any]] = {}  # url -> (etag, cached json)
         self._fail_count = 0

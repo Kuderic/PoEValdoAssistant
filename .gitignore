@@ -11,8 +11,13 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 price_cache.json
+searches_off.json
 
 # start.bat's private Python environment
 .venv/
 # per-user tuning saved by the settings panel (merged over config.yaml)
 scoring_overrides.yaml
+*.egg-info/
+searches.txt
+dist/
+build/

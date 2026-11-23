@@ -34,6 +34,7 @@ alerts:
   generic_sound: ""
   volume: 0.5                  # 0.0-1.0, also editable in the ⚙ panel
   traveled_display_seconds: 10 # traveled map's mods stay readable this long
+  copy_on_travel: true         # map name -> clipboard on travel (Ctrl+F, Ctrl+V in the shop)
   feed_rows: 40                # live-feed history rows (the area scrolls)
   # JACKPOT: a listing whose NET and YIELD BOTH clear these bars (e.g. a
   # half-price Nimis: +80d net, +144 yield). It gets a magenta banner and
@@ -54,6 +55,12 @@ hotkey:
   # Either way, a travel that FAILS (item sold, row gone) gives the
   # runners-up back so the next-best alert is immediately targetable.
   consume: all
+  # TWO CLIENTS: focus the buyer client and press this once; travel then
+  # always brings THAT client forward (both windows share one title).
+  # Pick keys PoE does not use - both keys also reach the game. "" disables.
+  mark_buyer: "ctrl+alt+b"
+  # stop opening more live-search tabs mid-run (the overlay has a button too)
+  stop_opening: "ctrl+alt+s"
 
 ninja:
   enabled: true
@@ -73,8 +80,9 @@ ninja:
 trade_pricing:
   enabled: true
   # every active reward is re-priced each cycle, so the request rate scales
-  # with the number of open live searches; 10 earned a 30-minute API backoff
-  refresh_minutes: 30
+  # with the number of open live searches; 10 earned a 30-minute API backoff.
+  # Until a price is this old the cached one is used, also across restarts.
+  refresh_minutes: 180
   max_listings: 3          # average of the cheapest N listings (after outlier drop)
   min_unid_listings: 10
   # last session's prices are reloaded on startup (price_cache.json) so
