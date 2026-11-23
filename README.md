@@ -448,6 +448,8 @@ trade site, and focusing the game window synthesizes no keypress.
    under the trade site's search limit (5/10s, 15/60s, 30/5 min per IP) with
    reward pricing paused meanwhile. On later launches the app reopens any
    missing tabs by itself, about 45 s after start.
+   Untick a search under ⚙ → *Live searches* to stop opening and pricing
+   it (saved in `searches_off.json`, kept across re-imports).
 4. **Allow local network access.** The first time a trade tab connects,
    Chrome asks whether pathofexile.com may access devices on your local
    network. Click **Allow**: without it the tab never reaches the app

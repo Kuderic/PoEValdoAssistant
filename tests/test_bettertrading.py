@@ -1,6 +1,7 @@
 import base64
 import json
 
+from sniper import bettertrading
 from sniper.bettertrading import live_url, load, parse_exports, save, slug_reward
 
 
@@ -95,3 +96,12 @@ def test_unreadable_saved_file_does_not_crash_startup(tmp_path):
     path.write_bytes("3:abc".encode("utf-16"))
     result = load(path)
     assert result.searches == () and "unreadable" in result.skipped[0]
+
+
+def test_unchecked_searches_survive_reload_and_corruption(tmp_path):
+    p = tmp_path / bettertrading.OFF_NAME
+    assert bettertrading.load_off(p) == frozenset()
+    bettertrading.save_off(p, frozenset({"Bb2"}))
+    assert bettertrading.load_off(p) == {"Bb2"}
+    p.write_text("not json")
+    assert bettertrading.load_off(p) == frozenset()

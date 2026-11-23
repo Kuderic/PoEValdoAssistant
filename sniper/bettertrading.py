@@ -28,6 +28,9 @@ from pathlib import Path
 from urllib.parse import quote
 
 SEARCHES_NAME = "searches.txt"  # beside config.yaml: one export string per line
+# slugs the user unchecked: kept apart from searches.txt so a re-import of
+# the same export keeps the choices
+OFF_NAME = "searches_off.json"
 TRADE_BASE = "https://www.pathofexile.com/trade/search"
 # A slug is either a short search id ("Ab3cD4") or, from Better Trading
 # 1.9+, the whole query as base64url(gzip(JSON)) ("H4sIAAAA...", ~150-200
@@ -141,3 +144,16 @@ def save(path: Path, text: str) -> ImportResult:
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return result
+
+
+def load_off(path: Path) -> frozenset[str]:
+    """Slugs unchecked in the overlay. Missing or corrupt means all on."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    return frozenset(x for x in raw if isinstance(x, str)) if isinstance(raw, list) else frozenset()
+
+
+def save_off(path: Path, slugs: frozenset[str]) -> None:
+    path.write_text(json.dumps(sorted(slugs)), encoding="utf-8")

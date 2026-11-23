@@ -245,12 +245,17 @@ class Overlay:
         on_open_searches=None,  # Callable[[], None]
         on_import_searches=None,  # Callable[[str], bettertrading.ImportResult]
         searches_count=None,  # Callable[[], int]
+        # Callable[[], list[(SavedSearch, checked)]] / Callable[[slug, bool], None]
+        search_choices=None,
+        on_toggle_search=None,
         overrides_path=None,  # Path for scoring_overrides.yaml persistence
     ):
         self._root = root
         self._on_open_searches = on_open_searches
         self._on_import_searches = on_import_searches
         self._searches_count = searches_count or (lambda: 0)
+        self._search_choices = search_choices or (lambda: [])
+        self._on_toggle_search = on_toggle_search or (lambda slug, on: None)
         self._import_window: tk.Toplevel | None = None
         self._bus = bus
         self._config = config
@@ -1873,6 +1878,37 @@ class Overlay:
             link.configure(cursor="hand2")
             link.bind("<Button-1>", lambda e, act=action: act())
             link.pack(side="left", padx=(0, 6), pady=2)
+        choices = self._search_choices()
+        if choices:
+            caption(
+                "Ticked searches open as live tabs and get priced.\nUnticking does not close a tab."
+            )
+        for search, checked in choices:
+            var = tk.BooleanVar(value=checked)
+            reward = _display_name(search.reward) if search.reward else ""
+            text = (
+                f"{search.title}  ·  {reward}"
+                if reward and reward != search.title
+                else search.title
+            )
+            box = tk.Checkbutton(
+                body,
+                text=text,
+                variable=var,
+                command=lambda s=search.slug, v=var: self._on_toggle_search(s, v.get()),
+                bg=BG,
+                fg=FG,
+                selectcolor=SURFACE,
+                activebackground=BG,
+                activeforeground=FG,
+                font=self._font("ui", 9),
+                anchor="w",
+            )
+            box.grid(row=row_cursor[0], column=0, columnspan=2, sticky="w", padx=6)
+            sections[-1]["rows"].append(
+                (f"{search.title} {reward} {search.folder}".casefold(), [box])
+            )
+            row_cursor[0] += 1
 
         # ---- 4. Reward prices. A reference price is occasionally just wrong -
         # a thin unid market, a reward whose listings the average lands badly

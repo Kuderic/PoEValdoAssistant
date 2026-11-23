@@ -311,11 +311,26 @@ class App:
         auto-refreshed), whether or not its tab is open yet."""
         if self.searches_path is None:
             return
-        searches = bettertrading.load(self.searches_path).searches
-        self.server.saved_rewards = frozenset(s.reward for s in searches if s.reward)
+        self.server.saved_rewards = frozenset(s.reward for s in self._saved_searches() if s.reward)
+
+    def _off_path(self) -> Path:
+        return self.searches_path.with_name(bettertrading.OFF_NAME)
+
+    def search_choices(self) -> list[tuple[bettertrading.SavedSearch, bool]]:
+        """Every imported search and whether it is checked to open (and price)."""
+        if self.searches_path is None:
+            return []
+        off = bettertrading.load_off(self._off_path())
+        return [(s, s.slug not in off) for s in bettertrading.load(self.searches_path).searches]
+
+    def set_search_enabled(self, slug: str, enabled: bool) -> None:
+        off = bettertrading.load_off(self._off_path())
+        bettertrading.save_off(self._off_path(), off - {slug} if enabled else off | {slug})
+        self.reload_saved_rewards()
 
     def _saved_searches(self):
-        return bettertrading.load(self.searches_path).searches if self.searches_path else ()
+        """The checked searches: the only ones opened and priced."""
+        return [s for s, on in self.search_choices() if on]
 
     def _missing_searches(self, searches) -> list:
         """Saved searches with no connected tab yet. A tab reports either the
@@ -342,10 +357,15 @@ class App:
         never add up to a lockout. A second click during a run is ignored."""
         if self._opening or self.searches_path is None:
             return
-        searches = bettertrading.load(self.searches_path).searches
+        searches = self._saved_searches()
         league = self.book.league
         if not searches:
-            self._notice("No searches imported yet - paste a Better Trading export first", False)
+            text = (
+                "Every search is unchecked - tick some under Live searches"
+                if self.search_choices()
+                else "No searches imported yet - paste a Better Trading export first"
+            )
+            self._notice(text, False)
             return
         if league is None:
             if not auto:
@@ -905,6 +925,10 @@ def run_with_overlay(config: Config, config_path: str) -> None:
         on_open_searches=on_open_searches,
         on_import_searches=on_import_searches,
         searches_count=lambda: len(bettertrading.load(searches_path).searches),
+        search_choices=app.search_choices,
+        on_toggle_search=lambda slug, on: loop.call_soon_threadsafe(
+            app.set_search_enabled, slug, on
+        ),
         overrides_path=Path(config_path).with_name(SCORING_OVERRIDES_NAME),
     )
     try:
