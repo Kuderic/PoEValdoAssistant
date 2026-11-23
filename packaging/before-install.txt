@@ -14,9 +14,10 @@ in the overlay and follow the setup page it shows:
   1. Install Tampermonkey and turn on "Allow User Scripts".
   2. Install the browser script.
   3. Log in to pathofexile.com as account A only.
-Then paste your Better Trading export into the import box and click
-"Save & open tabs". The live tabs open by themselves, paced so the
-trade site's search limit is never hit.
+Then paste your Better Trading export into the import box, click
+"Save", tick the searches you want and click "Open ticked tabs". The
+tabs open paced so the trade site's search limit is never hit. To stop
+partway, click "Stop opening tabs" or press Ctrl+Alt+S.
 
 Every session: park client A in your hideout, click into it and press
 Ctrl+Alt+B to mark it as the buyer. Play on client B. On an alert,

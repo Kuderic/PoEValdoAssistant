@@ -28,6 +28,7 @@ from sniper.bus import (
     GameStatus,
     ListingSeen,
     Notice,
+    OpeningTabs,
     PriceStatus,
     PricingHealth,
     RewardPrices,
@@ -248,6 +249,8 @@ class Overlay:
         # Callable[[], list[(SavedSearch, checked)]] / Callable[[slug, bool], None]
         search_choices=None,
         on_toggle_search=None,
+        on_stop_opening=None,  # Callable[[], None]: open no more live tabs
+        stop_opening_key="",  # its global hotkey, shown on the button
         overrides_path=None,  # Path for scoring_overrides.yaml persistence
     ):
         self._root = root
@@ -256,6 +259,8 @@ class Overlay:
         self._searches_count = searches_count or (lambda: 0)
         self._search_choices = search_choices or (lambda: [])
         self._on_toggle_search = on_toggle_search or (lambda slug, on: None)
+        self._on_stop_opening = on_stop_opening or (lambda: None)
+        self._stop_opening_key = stop_opening_key
         self._import_window: tk.Toplevel | None = None
         self._bus = bus
         self._config = config
@@ -589,6 +594,19 @@ class Overlay:
             root, text="", bg=BG, fg=DIM, font=self._font("mono", 9), anchor="w"
         )
         self._status_line.pack(side="bottom", fill="x", padx=12, pady=(2, 6))
+        # shown only while live-search tabs are being opened
+        key = f"  ({self._stop_opening_key})" if self._stop_opening_key else ""
+        self._stop_btn = tk.Label(
+            root,
+            text=f"■ Stop opening tabs{key}",
+            bg=HAIR,
+            fg=FG,
+            font=self._font("ui", 9),
+            padx=8,
+            pady=2,
+            cursor="hand2",
+        )
+        self._stop_btn.bind("<Button-1>", lambda e: self._on_stop_opening())
 
         # live feed: every incoming listing, alerting or not; non-alerting
         # rows render diminished. Newest first. Hover a row for its mods.
@@ -827,6 +845,13 @@ class Overlay:
                         self._pinned_top = None
                         alerts_dirty = True
                 self._status_line.config(text=text, fg=GOOD if ev.ok else BAD)
+            elif isinstance(ev, OpeningTabs):
+                if ev.active:
+                    self._stop_btn.pack(
+                        side="bottom", anchor="w", padx=12, before=self._status_line
+                    )
+                else:
+                    self._stop_btn.pack_forget()
             elif isinstance(ev, Notice):
                 self._status_line.config(text=ev.text, fg=GOOD if ev.ok else BAD)
             elif isinstance(ev, GameStatus):
@@ -1335,6 +1360,27 @@ class Overlay:
         if self._on_import_searches and not self._tab_count and not self._searches_count():
             self._open_import()
 
+    def _search_checkbox(self, parent: tk.Widget, search, checked: bool) -> tk.Checkbutton:
+        """One imported search, ticked = opened and priced."""
+        var = tk.BooleanVar(value=checked)
+        reward = _display_name(search.reward) if search.reward else ""
+        text = f"{search.title}  ·  {reward}" if reward and reward != search.title else search.title
+        box = tk.Checkbutton(
+            parent,
+            text=text,
+            variable=var,
+            command=lambda: self._on_toggle_search(search.slug, var.get()),
+            bg=BG,
+            fg=FG,
+            selectcolor=SURFACE,
+            activebackground=BG,
+            activeforeground=FG,
+            font=self._font("ui", 9),
+            anchor="w",
+        )
+        box.var = var  # keep the variable alive with its widget
+        return box
+
     def _open_import(self) -> None:
         """Paste box for Better Trading exports (one string per line)."""
         if self._on_import_searches is None:
@@ -1369,21 +1415,52 @@ class Overlay:
                 box.insert("1.0", clip.strip())
                 note.config(text="Found a Better Trading export on your clipboard.", fg=GOOD)
 
+        picks = tk.Frame(win, bg=BG)  # the tick list, once something is saved
+
+        def show_picks() -> None:
+            self._clear_frame(picks)
+            choices = self._search_choices()
+            if not choices:
+                return
+            tk.Label(
+                picks,
+                text="Tick the searches to open live (and price):",
+                bg=BG,
+                fg=DIM,
+                font=self._font("ui", 9),
+                anchor="w",
+            ).pack(fill="x")
+            for search, checked in choices:
+                self._search_checkbox(picks, search, checked).pack(fill="x")
+            go = tk.Label(
+                picks,
+                text="Open ticked tabs",
+                bg=HAIR,
+                fg=FG,
+                font=self._font("ui", 10),
+                padx=10,
+                pady=3,
+                cursor="hand2",
+            )
+            go.bind("<Button-1>", lambda e: (self._open_searches(), win.destroy()))
+            go.pack(anchor="w", pady=(6, 0))
+
         def do_import() -> None:
             result = self._on_import_searches(box.get("1.0", "end"))
             skipped = f"\nSkipped {len(result.skipped)}: " + "; ".join(result.skipped[:4])
             if result.searches:
-                text = f"Saved {len(result.searches)} searches ✓ Opening the missing tabs, paced."
+                text = f"Saved {len(result.searches)} searches ✓ Tick the ones to open below."
                 note.config(text=text + (skipped if result.skipped else ""), fg=GOOD)
+                show_picks()
             else:
                 note.config(text="Nothing usable - kept your saved searches." + skipped, fg=BAD)
 
-        btn = tk.Label(
-            win, text="Save & open tabs", bg=HAIR, fg=FG, font=self._font("ui", 10), padx=10, pady=3
-        )
+        btn = tk.Label(win, text="Save", bg=HAIR, fg=FG, font=self._font("ui", 10), padx=10, pady=3)
         btn.configure(cursor="hand2")
         btn.bind("<Button-1>", lambda e: do_import())
-        btn.pack(anchor="w", padx=10, pady=(0, 10))
+        btn.pack(anchor="w", padx=10, pady=(0, 6))
+        picks.pack(fill="x", padx=10, pady=(0, 10))
+        show_picks()  # already-saved searches can be ticked and opened from here too
 
     def _open_link(self, url: str) -> None:
         """In Chrome, where the live searches and Tampermonkey are - never
@@ -1884,30 +1961,9 @@ class Overlay:
                 "Ticked searches open as live tabs and get priced.\nUnticking does not close a tab."
             )
         for search, checked in choices:
-            var = tk.BooleanVar(value=checked)
-            reward = _display_name(search.reward) if search.reward else ""
-            text = (
-                f"{search.title}  ·  {reward}"
-                if reward and reward != search.title
-                else search.title
-            )
-            box = tk.Checkbutton(
-                body,
-                text=text,
-                variable=var,
-                command=lambda s=search.slug, v=var: self._on_toggle_search(s, v.get()),
-                bg=BG,
-                fg=FG,
-                selectcolor=SURFACE,
-                activebackground=BG,
-                activeforeground=FG,
-                font=self._font("ui", 9),
-                anchor="w",
-            )
+            box = self._search_checkbox(body, search, checked)
             box.grid(row=row_cursor[0], column=0, columnspan=2, sticky="w", padx=6)
-            sections[-1]["rows"].append(
-                (f"{search.title} {reward} {search.folder}".casefold(), [box])
-            )
+            sections[-1]["rows"].append((f"{box.cget('text')} {search.folder}".casefold(), [box]))
             row_cursor[0] += 1
 
         # ---- 4. Reward prices. A reference price is occasionally just wrong -

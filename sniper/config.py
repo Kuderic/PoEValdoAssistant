@@ -171,6 +171,8 @@ class HotkeyConfig:
     # Two-client setups: press while the BUYER client is focused to mark it;
     # travel then always focuses that client. Empty disables the key.
     mark_buyer: str = "ctrl+alt+b"
+    # Stops a live-search open run from opening more tabs. Empty disables.
+    stop_opening: str = "ctrl+alt+s"
 
 
 @dataclass(frozen=True)
@@ -400,6 +402,8 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         raise ConfigError("hotkey.combo must not be empty")
     if hotkey.mark_buyer.strip().lower() == hotkey.combo.strip().lower():
         raise ConfigError("hotkey.mark_buyer must differ from hotkey.combo")
+    if hotkey.stop_opening.strip().lower() == hotkey.combo.strip().lower():
+        raise ConfigError("hotkey.stop_opening must differ from hotkey.combo")
 
     rules = []
     for i, entry in enumerate(raw.get("mod_warnings") or []):

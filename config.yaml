@@ -59,6 +59,8 @@ hotkey:
   # always brings THAT client forward (both windows share one title).
   # Pick keys PoE does not use - both keys also reach the game. "" disables.
   mark_buyer: "ctrl+alt+b"
+  # stop opening more live-search tabs mid-run (the overlay has a button too)
+  stop_opening: "ctrl+alt+s"
 
 ninja:
   enabled: true

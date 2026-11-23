@@ -316,3 +316,50 @@ async def test_cached_price_is_used_for_three_hours_then_refreshed(monkeypatch, 
     pricer = _Pricer()
     await _one_pass(monkeypatch, app, pricer)
     assert pricer.calls == ["Foil Mageblood"]
+
+
+async def test_stop_opens_no_more_tabs(monkeypatch, tmp_path):
+    from sniper.bus import OpeningTabs
+
+    app, path, opened, _ = setup(monkeypatch, tmp_path)
+    path.write_text(export("Aa1", "Bb2", "Cc3"))
+
+    async def sleep(s):  # the user hits Stop after the first tab
+        await app.stop_opening()
+
+    monkeypatch.setattr(main_mod.asyncio, "sleep", sleep)
+    await app.open_live_searches()
+    assert [u.split("/")[-2] for u in opened] == ["Aa1"]
+    events = []
+    while not app.bus._q.empty():
+        events.append(app.bus._q.get_nowait())
+    shown = [e.active for e in events if isinstance(e, OpeningTabs)]
+    assert shown == [True, False]  # Stop button shown, then hidden
+    assert any(isinstance(e, Notice) and "Stopped" in e.text for e in events)
+    # the next run starts clean
+    path.write_text(export("Aa1", "Bb2", "Cc3"))
+    monkeypatch.setattr(main_mod.asyncio, "sleep", lambda s: asyncio_noop())
+    await app.open_live_searches()
+    assert len(opened) == 3
+
+
+async def asyncio_noop():
+    return None
+
+
+async def test_fresh_import_waits_for_ticks_instead_of_auto_opening(monkeypatch, tmp_path):
+    app, path, opened, _ = setup(monkeypatch, tmp_path)  # nothing saved at launch
+
+    async def sleep(s):  # the user imports during the launch grace period
+        path.write_text(export("Aa1"))
+
+    monkeypatch.setattr(main_mod.asyncio, "sleep", sleep)
+    await app.auto_open_searches()
+    assert opened == []  # opens only from the import window's button
+
+
+async def test_saved_searches_still_auto_open_at_launch(monkeypatch, tmp_path):
+    app, path, opened, _ = setup(monkeypatch, tmp_path)
+    path.write_text(export("Aa1"))
+    await app.auto_open_searches()
+    assert len(opened) == 1

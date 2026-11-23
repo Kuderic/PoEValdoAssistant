@@ -97,6 +97,14 @@ class ListingSeen:
 
 
 @dataclass(frozen=True)
+class OpeningTabs:
+    """A live-search open run started (True) or ended (False): shows the
+    overlay's Stop button."""
+
+    active: bool
+
+
+@dataclass(frozen=True)
 class WarmupStatus:
     """Startup price warm-up. Until a reward has a primary (trade/manual)
     price, its listings are held back rather than judged against poe.ninja's

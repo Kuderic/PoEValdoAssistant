@@ -444,11 +444,14 @@ trade site, and focusing the game window synthesizes no keypress.
    account). Install Tampermonkey, turn on **Allow User Scripts**, and install
    the script. Then import your **Better Trading** folder export
    (⚙ → *Import Better Trading*; it pops up by itself at launch while
-   nothing is saved and no tab is connected, pre-filled from your clipboard) and click **Save & open tabs**.
-   Each search that has no tab yet opens live for the current league, paced
+   nothing is saved and no tab is connected, pre-filled from your clipboard), click **Save**, tick the searches you
+   want and click **Open ticked tabs**. Each ticked search that has no tab
+   yet opens live for the current league, paced
    under the trade site's search limit (5/10s, 15/60s, 30/5 min per IP) with
    reward pricing paused meanwhile. On later launches the app reopens any
-   missing tabs by itself, about 45 s after start.
+   missing tabs by itself, about 45 s after start. While tabs are opening,
+   **■ Stop opening tabs** (or `hotkey.stop_opening`, Ctrl+Alt+S) opens no
+   more; tabs already open stay.
    Untick a search under ⚙ → *Live searches* to stop opening and pricing
    it (saved in `searches_off.json`, kept across re-imports).
 4. **Allow local network access.** The first time a trade tab connects,
