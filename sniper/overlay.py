@@ -1,8 +1,9 @@
 """Always-on-top tkinter overlay. Runs on the MAIN thread only; all state
-arrives as immutable events from the bus. The asyncio thread wakes the
-drain via a <<BusWake>> Tk event the instant it publishes (a DRAIN_MS
-root.after poll remains as safety net), so the decision -> render delay is
-event-driven, not poll-quantized.
+arrives as immutable events from the bus. Each publish wakes the drain via
+a <<BusWake>> Tk event, sent from a small waker thread so the asyncio thread
+never blocks on Tcl (see _wake_loop); a DRAIN_MS root.after poll remains as
+safety net. The decision -> render delay is event-driven, not
+poll-quantized.
 
 Latency contract: sound + render happen inside the same drain pass that
 delivers AlertsChanged(new_alert=True); the frame->UI delta is logged as
@@ -11,7 +12,6 @@ delivers AlertsChanged(new_alert=True); the frame->UI delta is logged as
 
 from __future__ import annotations
 
-import contextlib
 import threading
 import time
 import tkinter as tk
@@ -1118,19 +1118,36 @@ class Overlay:
         # event-driven drain: the asyncio thread fires <<BusWake>> after each
         # put; the DRAIN_MS poll below only covers a lost/failed wake
         root.bind("<<BusWake>>", lambda e: self._drain_once())
-        bus.set_waker(self._wake)
+        self._wake_flag = threading.Event()
+        threading.Thread(target=self._wake_loop, name="tk-waker", daemon=True).start()
+        bus.set_waker(self._wake_flag.set)
         root.after(DRAIN_MS, self._drain)
         root.after(TICK_MS, self._tick)
         root.after(30_000, self._refresh_feed_ages)
 
     # ------------------------------------------------------------------ bus
 
-    def _wake(self) -> None:
-        """Bus waker, called from the asyncio thread after every put.
-        event_generate is safe cross-thread (thread-enabled Tcl queues it);
-        when the window is tearing down the fallback poll covers the rest."""
-        with contextlib.suppress(tk.TclError, RuntimeError):
-            self._root.event_generate("<<BusWake>>", when="tail")
+    def _wake_loop(self) -> None:
+        """Turns bus puts into <<BusWake>> events, on its own thread.
+
+        The asyncio thread only sets `_wake_flag` and never touches Tcl. A
+        Tcl call from a non-main thread is marshalled to the Tk thread and
+        BLOCKS until the Tk thread runs it - i.e. until the render in
+        progress finishes. Called straight from bus.put, that stalled the
+        detection path behind every overlay render, and each put then
+        rendered on its own instead of batching: a burst of 10 listings/s
+        backed decisions up by seconds. Here the blocking lands on this
+        thread, and every put made while it waits folds into one wake, so a
+        burst costs one drain per render rather than one per listing.
+        When the window is tearing down, the fallback poll covers the rest.
+        """
+        while True:
+            self._wake_flag.wait()
+            self._wake_flag.clear()  # before the wake: a put during it re-arms
+            try:
+                self._root.event_generate("<<BusWake>>", when="tail")
+            except (tk.TclError, RuntimeError):
+                time.sleep(DRAIN_MS / 1000)  # tearing down / not in mainloop yet
 
     def _drain(self) -> None:
         self._drain_once()

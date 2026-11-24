@@ -133,6 +133,13 @@ def _shipped():
         ),
         (["Area contains an additional Legion Encounter", NO_DMG], "Legion + less damage"),
         (["Area contains an additional Legion Encounter", MINION_DMG], "Legion + less damage"),
+        (
+            [
+                "Players gain Instability on Kill\nUnstable Players eventually detonate",
+                "Players who Die in area are sent to the Void",
+            ],
+            "Instability + void",
+        ),
     ],
 )
 def test_shipped_pairings_fire_on_real_mod_text(mods, label):
@@ -226,6 +233,8 @@ def test_the_pairing_does_not_merge_the_two_mod_lines():
         (["Area contains Sirus' Deatomisation Storms"], "Sirus storms + no travel skills", 1.5),
         (["Area contains an additional Legion Encounter"], "Legion + less damage", 2.0),
         ([NO_DMG, MINION_DMG], "Legion + less damage", 2.0),
+        (["Players gain Instability on Kill"], "Instability + void", 2.0),
+        (["Players who Die in area are sent to the Void"], "Instability + void", 2.0),
     ],
 )
 def test_new_pairings_need_both_halves_and_carry_their_multiplier(mods, label, mult):

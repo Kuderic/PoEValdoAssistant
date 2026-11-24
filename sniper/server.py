@@ -30,7 +30,7 @@ _ROUTE_CAP = 1000
 # tab silently loses whatever the new version added - new fields simply
 # arrive missing, which reads as a broken feature rather than an old script.
 # KEEP IN SYNC with @version in userscript/valdo-sniper.user.js.
-EXPECTED_USERSCRIPT_VERSION = "0.8.0"
+EXPECTED_USERSCRIPT_VERSION = "0.8.1"
 
 # The app serves its own userscript over plain HTTP on the websocket port, so
 # installing is one click (Tampermonkey intercepts any *.user.js URL) and the
@@ -211,6 +211,7 @@ class SniperServer:
         finally:
             if tab_id and self.tabs.get(tab_id) and self.tabs[tab_id].ws is ws:
                 del self.tabs[tab_id]
+                self._net_stats.pop(tab_id, None)
                 event("tab_disconnect", tab_id=tab_id)
                 self._notify_tabs()
 

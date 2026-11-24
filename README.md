@@ -87,6 +87,7 @@ note saying what actually goes wrong:
 | Blight + melee-range only | 2 | Bricks the CC tower strategy |
 | The Feared + void | 2 | The Feared can one-shot; dying deletes the character |
 | Increasingly lethal + void | 2 | Damage keeps ramping where dying deletes the character |
+| Instability + void | 2 | Unstable players detonate where dying deletes the character |
 | Legion + melee-range only | 2 | Legion's dense packs must all be fought point-blank |
 | Legion + less damage | 2 | Legion's huge packs with crippled damage take forever to clear |
 | Sirus storms + no travel skills | 1.5 | Slowed with no travel skills, so the storms are hard to escape |
@@ -112,6 +113,7 @@ NET  =  (1 − fail chance) × market price  −  asking price  −  running cos
 | Ultimatum + less damage or delirium | 25% (replaces the 10%) | Protect the Altar, if it rolls, is likely to fail |
 | Ultimatum + fatal timer | 80% (replaces both above) | The fatal timer runs out during the Ultimatum waves |
 | Breach + less damage or delirium | 100% | Breaches can't be stabilised: unclearable |
+| Blight + rares with extra modifiers | 50% | Buffed rares leak through the towers |
 | Bismuth | 30% | Bismuth maps bug out and fail |
 
 A 200d reward listed at 100d with Bismuth on it nets 0.7 × 200 − 100 =

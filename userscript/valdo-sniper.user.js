@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.8.0
+// @version      0.8.1
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
@@ -66,7 +66,7 @@ const CONFIRM_WINDOW_MS = 3_000;
    script it loaded with until it is reloaded, so this is the only way to
    tell from logs/ whether a live tab is on a stale userscript.
    KEEP IN SYNC with the @version header above. */
-const SCRIPT_VERSION = '0.8.0';
+const SCRIPT_VERSION = '0.8.1';
 
 const WS_URL = 'ws://127.0.0.1:8765';
 const HEARTBEAT_MS = 30_000;
@@ -84,6 +84,7 @@ const SEEN_CAP = 500; // holds seenKey()s, so re-prices cost an extra slot each
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const PENDING_CAP = 50; // listings queued during ws reconnects
+const ROW_REFS_CAP = 1_000; // click-path row cache; resolveRow scans the page past it
 const PENDING_MAX_AGE_MS = 60_000;
 /* Rows needed before their lack of a Reward property is treated as proof
    that a search is not a Valdo one (see isGenericSearch). Enough that a
@@ -259,8 +260,23 @@ function main() {
 
   let searchId = location.pathname.split('/').filter(Boolean).pop() || 'unknown';
   const seen = new SeenSet(SEEN_CAP);
-  const rowRefs = new Map(); // listing_id -> WeakRef<Element>
+  const rowRefs = new Map(); // listing_id -> WeakRef<Element>, capped (see rememberRow)
   const clickedIds = new Set(); // one command = one click, forever per id
+  /* row element -> the seenKey it was last handled under. The sweep's skip
+     test must not depend on `seen` alone: that set is FIFO-capped, so on a
+     tab left open until it holds more than SEEN_CAP rows, every sweep would
+     evict old keys, re-parse those rows and RE-SEND them as new listings - a
+     self-sustaining flood of stale alerts. Keyed weakly on the element, so
+     rows the site drops are collected with it; a re-priced row's key changes
+     and it is forwarded again, as before. */
+  const handledRows = new WeakMap();
+
+  function rememberRow(id, rowEl, key) {
+    handledRows.set(rowEl, key);
+    rowRefs.set(id, new WeakRef(rowEl));
+    // only a fast path for resolveRow, which falls back to scanning the page
+    if (rowRefs.size > ROW_REFS_CAP) rowRefs.delete(rowRefs.keys().next().value);
+  }
 
   // --- websocket -----------------------------------------------------------
   let ws = null;
@@ -480,16 +496,27 @@ function main() {
     const native = rowEl.getAttribute(SELECTORS.rowIdAttr);
     if (native) {
       const price = parsePrice(rowEl);
-      if (price && seen.has(seenKey(native, price))) return true;
+      if (price) {
+        const key = seenKey(native, price);
+        if (handledRows.get(rowEl) === key) return true;
+        if (seen.has(key)) {
+          rememberRow(native, rowEl, key); // forwarded by the network path
+          return true;
+        }
+      }
     }
     const parsed = parseRow(rowEl);
     if (!parsed) return false;
     const id = listingId(rowEl, parsed);
     if (!id) return false;
     const key = seenKey(id, parsed.price);
-    if (seen.has(key)) return true;
+    if (handledRows.get(rowEl) === key) return true;
+    if (seen.has(key)) {
+      rememberRow(id, rowEl, key);
+      return true;
+    }
     seen.add(key);
-    rowRefs.set(id, new WeakRef(rowEl));
+    rememberRow(id, rowEl, key);
     if (silent) return true;
     const rows = Array.from(rowEl.parentElement?.children ?? []);
     const generic = isGenericSearch();
@@ -766,9 +793,11 @@ function main() {
     }
     let swept = 0;
     for (const row of observedContainer.querySelectorAll(SELECTORS.rowLoose)) {
-      const native = row.getAttribute(SELECTORS.rowIdAttr);
-      if (native && seen.has(native)) continue;
-      if (handleRow(row, false)) swept += 1;
+      // handleRow's first check (handledRows) makes an already-handled row
+      // cost one price read however long the tab has been open, while a row
+      // re-priced in place still gets a new key and is forwarded again
+      const before = handledRows.get(row);
+      if (handleRow(row, false) && handledRows.get(row) !== before) swept += 1;
     }
     if (swept) console.info(`[valdo] sweep recovered ${swept} missed row(s)`);
     refreshRewardIdentity();

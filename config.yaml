@@ -156,6 +156,10 @@ mod_pairings:
     match_all: ["increasingly lethal", "sent to the void"]
     multiplier: 2
     note: "Damage keeps ramping in a map where dying deletes the character"
+  - label: "Instability + void"
+    match_all: ["instability on kill", "sent to the void"]
+    multiplier: 2
+    note: "Unstable players detonate, in a map where dying deletes the character"
   - label: "Legion + melee-range only"
     match_all: ["legion", "within 2 metres of a player"]
     multiplier: 2
@@ -218,6 +222,12 @@ mod_risks:
     regex: true
     fail_chance: 1.0
     note: "Breaches can't be stabilised: unclearable"
+  # "Rare Monsters each have 2 additional Modifiers" (or "1 ... Modifier"):
+  # extra-tanky rares walk through the Blight towers.
+  - label: "Blight + rares extra modifiers"
+    match_all: ["blight", "rare monsters each have"]
+    fail_chance: 0.50
+    note: "Buffed rares leak through the towers and fail the Blight"
   - label: "Bismuth"
     match: "bismuth"
     fail_chance: 0.30

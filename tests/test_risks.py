@@ -32,6 +32,9 @@ NO_ULTIMATUM = "Area has no chance to contain Ultimatum Encounters"
 BREACH = "All Unstable Breaches must be Stabilised and Closed to claim Reward"
 BISMUTH = "Area contains a Bismuth Ore Deposit"
 FATAL = "Area becomes fatal after some time"
+BLIGHT = "Area contains a Blight Encounter"
+RARES = "Rare Monsters each have 2 additional Modifiers"
+RARES_ONE = "Rare Monsters each have 1 additional Modifier"
 
 
 def shipped() -> ModScoring:
@@ -55,6 +58,8 @@ def risk(label, *patterns, chance, regex=False) -> ModRisk:
         ([BISMUTH], "Bismuth", 0.30),
         ([ULTIMATUM], "Ultimatum", 0.10),  # even a clean one can brick
         ([ULTIMATUM, FATAL], "Ultimatum + fatal timer", 0.80),
+        ([BLIGHT, RARES], "Blight + rares extra modifiers", 0.50),
+        ([BLIGHT, RARES_ONE], "Blight + rares extra modifiers", 0.50),
     ],
 )
 def test_shipped_risks_fire_on_real_mod_text(mods, label, chance):
@@ -70,6 +75,8 @@ def test_shipped_risks_fire_on_real_mod_text(mods, label, chance):
         [BREACH],  # breach alone is fine
         [NO_DMG, DELIRIOUS],  # the penalties alone are difficulty, not failure
         [FATAL],  # the timer alone is difficulty, not failure
+        [BLIGHT],  # Blight alone is fine
+        [RARES],  # tougher rares alone are difficulty, not failure
     ],
 )
 def test_shipped_risks_stay_quiet_otherwise(mods):

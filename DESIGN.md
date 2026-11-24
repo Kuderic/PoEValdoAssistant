@@ -155,7 +155,11 @@ real response (2026-08-10, sanitized copy in
   the DOM path's silent attach). Non-live search pages are excluded.
 - The DOM MutationObserver + retry ladder + 2 s sweep stay on as the
   authority behind the hook; whichever path sees a listing first wins,
-  `seen` dedupes the other.
+  `seen` dedupes the other. `seen` is FIFO-capped (500), so the sweep's
+  "already handled" test is a WeakMap on the row element (`handledRows`),
+  not `seen`: on a tab holding more than 500 live rows the cap would
+  otherwise evict old keys every sweep and re-send those rows as new
+  listings (reproduced: 1,200 rows → 27,400 stale re-sends in 40 s).
 
 Python -> Userscript:
 

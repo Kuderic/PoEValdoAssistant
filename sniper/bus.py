@@ -187,8 +187,10 @@ class Bus:
 
     def set_waker(self, waker) -> None:
         """Register a callback invoked after every put, from the producing
-        thread. The overlay uses it to event_generate a Tk wake so events
-        render immediately instead of on the next poll tick."""
+        thread - so it must never block (the producer is the detection
+        path). The overlay's sets a flag that its waker thread turns into a
+        Tk wake, so events render immediately instead of on the next poll
+        tick."""
         self._waker = waker
 
     def put(self, event: UiEvent) -> None:
