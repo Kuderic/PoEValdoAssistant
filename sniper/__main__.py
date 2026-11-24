@@ -13,13 +13,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import os
 import sys
 import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
 
-from sniper import logging_setup, pricecache
+from sniper import __version__, logging_setup, paths, pricecache
 from sniper.alerts import AlertStore
 from sniper.bus import (
     AlertsChanged,
@@ -34,6 +35,7 @@ from sniper.bus import (
     RewardPrices,
     TabsChanged,
     Traveled,
+    UpdateStatus,
     WarmupStatus,
 )
 from sniper.config import Config, ConfigError, load_config
@@ -580,6 +582,25 @@ class App:
                 self.bus.put(PriceStatus(self.book.status, self.book.league))
             await asyncio.sleep(max(interval_s, ninja.backoff_remaining + 5))
 
+    async def update_loop(self) -> None:
+        """Self-update checks (sniper.updater), off the hot path. Never kills
+        the app: an unexpected error is logged and the check retried later."""
+        from sniper.updater import Updater
+
+        def publish(status: UpdateStatus) -> None:
+            event("update_status", state=status.state, version=status.version)
+            if self.bus:
+                self.bus.put(status)
+
+        exe = Path(sys.executable) if paths.FROZEN else None
+        while True:
+            try:
+                await Updater(self.config.updates, exe, publish).run()
+                return  # disabled in config
+            except Exception as e:
+                event("update_error", error=repr(e))
+                await asyncio.sleep(3600)
+
     async def run_async(self) -> None:
         def on_game_change(running: bool) -> None:
             if self.bus:
@@ -591,6 +612,8 @@ class App:
             asyncio.create_task(self.watcher.watch(on_game_change), name="game-watch"),
             asyncio.create_task(self.tab_freshness_loop(), name="tab-freshness"),
         ]
+        if self.config.updates.enabled:
+            tasks.append(asyncio.create_task(self.update_loop(), name="updates"))
         if self.config.ninja.enabled:
             ninja = NinjaClient(self.config.ninja.base_url)
             tasks.append(asyncio.create_task(self.price_refresh_loop(ninja), name="price-refresh"))
@@ -610,17 +633,20 @@ class App:
         await asyncio.gather(*tasks)
 
 
-def run_with_overlay(config: Config, config_path: str) -> None:
+def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
+    """Runs until the window closes. True when it closed to install a staged
+    update (the caller swaps the exe and relaunches)."""
     import tkinter as tk
-    from pathlib import Path
 
     from sniper.config import SCORING_OVERRIDES_NAME
     from sniper.hotkey import Hotkey, HotkeyError
     from sniper.overlay import Overlay
 
     bus = Bus()
-    # the cache lives beside config.yaml, like scoring_overrides.yaml
-    app = App(config, bus, cache_path=Path(config_path).with_name(pricecache.CACHE_NAME))
+    if updated_from:
+        bus.put(UpdateStatus("installed", __version__, ""))
+    # the cache lives with the other per-user state, like scoring_overrides.yaml
+    app = App(config, bus, cache_path=config.state_dir / pricecache.CACHE_NAME)
     loop = asyncio.new_event_loop()
 
     def asyncio_thread() -> None:
@@ -661,6 +687,17 @@ def run_with_overlay(config: Config, config_path: str) -> None:
             app.set_jackpot_thresholds, min_net, min_yield, super_net, super_yield
         )
 
+    restart = {"requested": False}
+
+    def on_update_install() -> None:
+        """Update pill clicked with a staged update: close cleanly (hotkey,
+        server, logs) so main() can swap the exe and start the new one."""
+        if not paths.FROZEN:
+            return
+        event("update_install_requested")
+        restart["requested"] = True
+        root.destroy()
+
     # Our own taskbar identity: without it Windows groups the window under
     # python.exe and shows the Python logo instead of the app's icon.
     if sys.platform == "win32":
@@ -676,7 +713,8 @@ def run_with_overlay(config: Config, config_path: str) -> None:
         on_settings_change=on_settings_change,
         on_price_override=on_price_override,
         on_jackpot_change=on_jackpot_change,
-        overrides_path=Path(config_path).with_name(SCORING_OVERRIDES_NAME),
+        overrides_path=config.state_dir / SCORING_OVERRIDES_NAME,
+        on_update_install=on_update_install,
     )
     try:
         root.mainloop()
@@ -684,37 +722,149 @@ def run_with_overlay(config: Config, config_path: str) -> None:
         hotkey.unregister()
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
+    return restart["requested"]
+
+
+def _load(args: argparse.Namespace) -> Config:
+    """The config to run with. Packaged: bundled defaults, with the user's
+    optional config.yaml beside the exe layered over them, and per-user
+    state in the exe's folder. Source: config.yaml as before."""
+    try:
+        if paths.FROZEN:
+            return load_config(
+                args.config or paths.app_dir() / paths.CONFIG_NAME,
+                defaults=paths.default_config(),
+                state_dir=paths.app_dir(),
+            )
+        return load_config(args.config or paths.CONFIG_NAME)
+    except ConfigError as e:
+        raise SystemExit(f"config error: {e}") from None
+
+
+def _self_check(args: argparse.Namespace) -> int:
+    """`--self-check`: load everything a real start needs, then exit. Used by
+    the release build to prove the packaged exe is complete. 0 = OK."""
+    import tkinter  # noqa: F401 - must be bundled
+
+    import keyboard  # noqa: F401
+    import psutil  # noqa: F401
+
+    from sniper import ninja, overlay, tradeprice, updater  # noqa: F401
+    from sniper.server import USERSCRIPT_FILE
+
+    _load(args)
+    if "@version" not in USERSCRIPT_FILE.read_text(encoding="utf-8"):
+        return 1
+    if sys.platform == "win32":
+        import win32gui  # noqa: F401
+    return 0
+
+
+def _install_staged_and_relaunch() -> bool:
+    """Packaged only: swap in a staged update and start it. True when the
+    new exe was started and this process should exit."""
+    from sniper import updater
+
+    exe = Path(sys.executable)
+    try:
+        version = updater.apply_staged(exe, __version__)
+        if version is None:
+            return False
+        updater.relaunch(exe, sys.argv[1:], os.getpid(), updated_from=__version__)
+    except OSError as e:
+        event("update_install_failed", error=repr(e))
+        return False
+    event("update_installing", version=version, previous=__version__)
+    return True
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="sniper")
-    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--config", default=None, help="config file (default: config.yaml)")
     parser.add_argument(
         "--headless", action="store_true", help="no overlay window (server + decisions only)"
     )
+    parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--self-check", action="store_true", help=argparse.SUPPRESS)
+    # added by the self-updater's relaunch
+    parser.add_argument("--wait-pid", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--updated-from", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    try:
-        config = load_config(args.config)
-    except ConfigError as e:
-        raise SystemExit(f"config error: {e}") from None
+    if args.self_check:
+        raise SystemExit(_self_check(args))
+    if args.wait_pid:
+        from sniper.updater import wait_for_exit
+
+        wait_for_exit(args.wait_pid)  # the old version still holds the port
+    paths.prepare_frozen_dir()
+    if paths.FROZEN:
+        from sniper.updater import cleanup_old
+
+        cleanup_old(Path(sys.executable))
+    config = _load(args)
     listener = logging_setup.setup(config.logging)
     event(
         "startup",
+        version=__version__,
+        packaged=paths.FROZEN,
         league=config.league,
         ws=f"{config.server.host}:{config.server.port}",
         headless=args.headless,
     )
+    if args.updated_from:
+        event("update_installed", version=__version__, previous=args.updated_from)
+    restart = False
     try:
+        # an update downloaded last session installs before anything binds
+        if paths.FROZEN and config.updates.enabled and _install_staged_and_relaunch():
+            restart = True
+            return
         if args.headless:
-            cache = Path(args.config).with_name(pricecache.CACHE_NAME)
+            cache = config.state_dir / pricecache.CACHE_NAME
             with contextlib.suppress(KeyboardInterrupt):
                 asyncio.run(App(config, bus=None, cache_path=cache).run_async())
         else:
-            run_with_overlay(config, args.config)
+            restart = run_with_overlay(config, args.updated_from)
+        if restart and not _install_staged_and_relaunch():
+            restart = False
     finally:
-        event("shutdown")
+        event("shutdown", restarting_for_update=restart)
         listener.stop()
 
 
+def _run() -> None:
+    """main(), plus a visible error for the packaged exe: it has no console,
+    so a startup failure would otherwise vanish without a word."""
+    if not paths.FROZEN:
+        main()
+        return
+    try:
+        main()
+    except SystemExit as e:
+        if e.code is None or isinstance(e.code, int):
+            raise
+        _fatal(str(e.code))
+        raise SystemExit(1) from None
+    except Exception:
+        import traceback
+
+        _fatal(traceback.format_exc())
+        raise SystemExit(1) from None
+
+
+def _fatal(message: str) -> None:
+    with contextlib.suppress(Exception):
+        Path("logs").mkdir(exist_ok=True)
+        Path("logs", "crash.txt").write_text(message, encoding="utf-8")
+    with contextlib.suppress(Exception):
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Valdo Sniper", f"Valdo Sniper could not start:\n\n{message}")
+        root.destroy()
+
+
 if __name__ == "__main__":
-    main()
+    _run()

@@ -19,7 +19,7 @@ from collections import deque
 from dataclasses import dataclass
 from tkinter import font as tkfont
 
-from sniper import browser
+from sniper import __version__, browser, paths
 from sniper import icon as app_icon
 from sniper.alerts import AlertView, alarm_kind, jackpots_to_ring
 from sniper.bus import (
@@ -33,6 +33,7 @@ from sniper.bus import (
     RewardPrices,
     TabsChanged,
     Traveled,
+    UpdateStatus,
     WarmupStatus,
 )
 from sniper.config import Config
@@ -486,6 +487,61 @@ ICON_GLYPHS = {"settings": "", "volume": "", "mute": ""}
 PLAIN_GLYPHS = {"settings": "⚙", "volume": "🔊", "mute": "🔇"}
 
 
+# How long "Updated to vX" stays in the strip after a restart into it
+UPDATED_NOTICE_MS = 120_000
+
+
+def _update_pill(status: UpdateStatus) -> tuple[str, str, str]:
+    """(pill text, dot colour, text colour) for a self-update state."""
+    v = f"v{status.version}"
+    return {
+        "available": (f"↑ {v} out", GOOD, GOOD),
+        "downloading": (f"↑ {v} downloading…", FAINT, DIM),
+        "ready": (f"↑ {v} · restart", GOOD, GOOD),
+        "failed": (f"↑ {v} failed", WARN, WARN),
+        "installed": (f"✓ updated to {v}", GOOD, DIM),
+    }.get(status.state, (f"↑ {v}", FAINT, DIM))
+
+
+def _update_help(status: UpdateStatus, packaged: bool) -> tuple[str, str]:
+    v = f"v{status.version}"
+    if status.state == "ready":
+        return (
+            f"Update {v} is ready",
+            f"Downloaded and verified. Click to restart into {v} now (takes a few "
+            "seconds; live alerts on screen are dropped, open trade tabs reconnect by "
+            "themselves). Or keep going: it installs the next time you start Valdo "
+            f"Sniper. You are on v{__version__}.",
+        )
+    if status.state == "downloading":
+        return (
+            f"Downloading {v}",
+            "A newer version is downloading in the background. Nothing changes until you restart.",
+        )
+    if status.state == "failed":
+        return (
+            f"Update {v} did not download",
+            f"The download failed or did not verify ({status.detail or 'unknown error'}). "
+            "It is retried later by itself. Click to open the release page and "
+            "download it by hand.",
+        )
+    if status.state == "installed":
+        return (
+            f"Updated to {v}",
+            "Valdo Sniper restarted into the new version. Click to see what changed.",
+        )
+    how = (
+        "Updates download by themselves when auto_download is on."
+        if packaged
+        else "You are running from source: git pull (or download the ZIP again) and "
+        "restart start.bat."
+    )
+    return (
+        f"Version {v} is out",
+        f"You are on v{__version__}. {how} Click to open the release page.",
+    )
+
+
 class _Pill:
     """Status-strip item: a coloured square and a short label.
 
@@ -501,12 +557,14 @@ class _Pill:
         self._label.pack(side="left")
         self.widgets = (self.frame, self._dot, self._label)  # for hover help
 
-    def config(self, text: str | None = None, fg: str | None = None) -> None:
+    def config(
+        self, text: str | None = None, fg: str | None = None, text_fg: str | None = None
+    ) -> None:
         if text is not None:
             self._label.config(text=text)
         if fg is not None:
             self._dot.config(bg=fg)
-            self._label.config(fg=fg if fg in (BAD, WARN) else DIM)
+            self._label.config(fg=text_fg or (fg if fg in (BAD, WARN) else DIM))
 
     def pack(self, **kw) -> None:
         self.frame.pack(**kw)
@@ -536,6 +594,8 @@ class Overlay:
         # Callable[[float, float], None]: jackpot bars (min net, min yield)
         on_jackpot_change=None,
         overrides_path=None,  # Path for scoring_overrides.yaml persistence
+        # Callable[[], None]: update pill clicked with an update staged
+        on_update_install=None,
     ):
         self._root = root
         self._bus = bus
@@ -544,6 +604,8 @@ class Overlay:
         self._on_settings_change = on_settings_change
         self._on_price_override = on_price_override
         self._on_jackpot_change = on_jackpot_change
+        self._on_update_install = on_update_install
+        self._update: UpdateStatus | None = None
         self._jackpot_net = config.alerts.jackpot_min_net
         self._jackpot_yield = config.alerts.jackpot_min_yield
         self._super_net = config.alerts.super_jackpot_min_net
@@ -645,6 +707,11 @@ class Overlay:
         self._price_label = _Pill(inner, self._font("ui", 9))
         self._price_label.pack(side="left", padx=(14, 0))
         self._price_label.config(text="Prices", fg=FAINT)
+        # self-update: shown only once a newer version exists
+        self._update_pill = _Pill(inner, self._font("ui", 9))
+        self._update_pill.bind("<Button-1>", lambda e: self._update_clicked())
+        self._update_pill.set_cursor("hand2")
+        self._bind_help(self._update_pill.widgets, self._update_help)
         tune_btn = tk.Label(
             inner,
             text=self._glyph["settings"],
@@ -1140,6 +1207,8 @@ class Overlay:
             elif isinstance(ev, PriceStatus):
                 self._ninja_status = ev.status
                 self._render_price_pill()
+            elif isinstance(ev, UpdateStatus):
+                self._set_update(ev)
             elif isinstance(ev, PricingHealth):
                 self._pricing_health = ev
                 self._render_price_pill()
@@ -1701,6 +1770,42 @@ class Overlay:
         """Opens the app's own userscript URL; Tampermonkey takes it from
         there. Only ever on a click."""
         self._open_link(self._install_url)
+
+    # ---------------------------------------------------------- self-update
+
+    def _set_update(self, status: UpdateStatus) -> None:
+        self._update = status
+        text, dot, text_fg = _update_pill(status)
+        self._update_pill.config(text=text, fg=dot, text_fg=text_fg)
+        if not self._update_pill.frame.winfo_ismapped():
+            self._update_pill.pack(side="left", padx=(14, 0))
+        if status.state == "installed":
+            self._root.after(UPDATED_NOTICE_MS, self._clear_installed_notice)
+
+    def _clear_installed_notice(self) -> None:
+        if self._update is not None and self._update.state == "installed":
+            self._update = None
+            self._update_pill.frame.pack_forget()
+
+    def _update_help(self) -> tuple[str, str] | None:
+        if self._update is None:
+            return None
+        return _update_help(self._update, packaged=paths.FROZEN)
+
+    def _update_clicked(self) -> None:
+        status = self._update
+        if status is None:
+            return
+        if status.state == "ready" and self._on_update_install is not None:
+            event("update_pill_clicked", version=status.version)
+            self._update_pill.config(text=f"↑ v{status.version} · restarting…")
+            self._root.update_idletasks()
+            self._on_update_install()
+            return
+        url = status.url or (
+            f"https://github.com/{self._config.updates.repo}/releases/tag/v{status.version}"
+        )
+        self._open_link(url)
 
     def _open_link(self, url: str) -> None:
         """In Chrome, where the live searches and Tampermonkey are - never

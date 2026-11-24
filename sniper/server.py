@@ -11,7 +11,6 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 
 import websockets
 from websockets.datastructures import Headers
@@ -22,6 +21,7 @@ from sniper.config import Config
 from sniper.logging_setup import event
 from sniper.models import ClickResult, Decision, FrameError, Hello, Listing, parse_frame
 from sniper.modrules import ModRules, ModScoring
+from sniper.paths import resource
 from sniper.prices import PriceBook
 
 _ROUTE_CAP = 1000
@@ -37,7 +37,8 @@ EXPECTED_USERSCRIPT_VERSION = "0.8.0"
 # script's @updateURL points back here: Tampermonkey then keeps every browser
 # on exactly the version this running app expects.
 INSTALL_PATH = "/valdo-sniper.user.js"
-USERSCRIPT_FILE = Path(__file__).resolve().parent.parent / "userscript" / "valdo-sniper.user.js"
+# bundled inside the exe when packaged (sniper.paths)
+USERSCRIPT_FILE = resource("userscript/valdo-sniper.user.js")
 _LANDING = (
     "<!doctype html><meta charset=utf-8><title>Valdo Sniper</title>"
     "<body style='font:15px Segoe UI,sans-serif;background:#0f1216;color:#e6eaef;padding:32px'>"

@@ -51,7 +51,7 @@ alerts:
   # bars. Gold banner and frame, its own alarm, and it outranks a jackpot
   # for the hotkey. Silenced the same way (click the banner). Also in ⚙.
   super_jackpot_min_net: 30    # divines
-  super_jackpot_min_yield: 50  # divines per 100 difficulty
+  super_jackpot_min_yield: 20  # divines per 100 difficulty
   super_jackpot_sound: ""      # empty -> C:\Windows\Media\Alarm03.wav
 
 hotkey:
@@ -378,3 +378,14 @@ game:
 logging:
   level: INFO
   dir: logs
+
+# Self-update from GitHub Releases. ValdoSniper.exe downloads a newer
+# release in the background (one small request every few hours, rate-limit
+# aware) and installs it when you click the update pill in the overlay, or
+# the next time you start it. It never restarts by itself. Running from
+# source (start.bat), it only tells you a new version is out.
+updates:
+  enabled: true
+  repo: Kuderic/PoEValdoAssistant
+  check_interval_hours: 6
+  auto_download: true   # false: only announce new versions

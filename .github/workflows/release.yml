@@ -1,0 +1,44 @@
+# Builds ValdoSniper.exe and publishes it as a GitHub Release when a version
+# tag is pushed. Every installed copy's updater picks the release up within
+# a few hours (sniper/updater.py looks for the asset named ValdoSniper.exe).
+#
+#   1. bump __version__ in sniper/__init__.py, commit, push
+#   2. git tag v1.2.0 && git push origin v1.2.0
+#
+# The build refuses to run if the tag and __version__ disagree, the test
+# suite must pass, and the built exe must pass --self-check before anything
+# is published.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write # create the release and upload the exe
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install --disable-pip-version-check -e ".[dev]"
+
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Build exe (checks tag == __version__, then runs --self-check)
+        run: python tools/build_exe.py --expect-version "${{ github.ref_name }}"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ValdoSniper.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true

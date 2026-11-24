@@ -508,6 +508,68 @@ listing can still be judged after its alert has gone.
 - Hotkey is inert (no-op with a soft warning) if the PoE process is not
   detected.
 
+## Packaging and self-update
+
+**One-file exe.** `tools/build_exe.py` runs PyInstaller (`--onefile
+--windowed`) on `tools/exe_entry.py`, a two-line shim over
+`sniper.__main__._run`, so the exe and a source checkout run the same code.
+`config.yaml` and the browser script are bundled inside; `sniper.paths`
+resolves them (`resource()`) from the bundle when frozen and from the repo
+otherwise. The build ends with `ValdoSniper.exe --self-check`, which loads
+the config, reads the bundled browser script and imports every native
+module, exiting non-zero if anything is missing. The window icon is
+generated from `sniper/icon.py`'s pixel map, so there is no binary in git.
+
+**Where state lives.** Frozen, the process `chdir`s to the exe's folder
+(so `logs/` and `.env` resolve there) and `Config.state_dir` is that folder:
+`scoring_overrides.yaml` and `price_cache.json` are written beside the exe
+and survive updates. `load_config(path, defaults=bundled, state_dir=...)`
+layers the user's optional `config.yaml` over the bundled defaults
+(`merge_config`: mappings merge key by key, lists are replaced), so a user
+file holding one key keeps every other default current as releases change
+them. A commented template is written on first start. A source checkout is
+unchanged: its `config.yaml` is the whole config and state sits beside it.
+
+**Version.** `sniper.__version__` is the single source (pyproject reads it
+dynamically). A release is a `vX.Y.Z` tag; the workflow refuses to build if
+the tag disagrees with `__version__`, because an exe that under-reports its
+version would update itself in a loop.
+
+**Self-update (`sniper.updater`).** An asyncio task, off the hot path,
+20 s after start and then every `updates.check_interval_hours` (6):
+`GET /repos/{repo}/releases/latest` with `If-None-Match` (a 304 does not
+count against GitHub's 60/hour unauthenticated limit). `Retry-After` and
+an exhausted `X-RateLimit-Remaining` + `X-RateLimit-Reset` are honoured;
+403/429/5xx and transport errors back off exponentially (5 min doubling,
+6 h cap). The User-Agent is `valdo-sniper-updater/<version>`, with no
+personal details. Drafts and prereleases are ignored.
+
+When the release is newer and the app is frozen with `auto_download` on,
+the `ValdoSniper.exe` asset is streamed to `ValdoSniper.exe.part`, checked
+against the asset's `size` and the `sha256:` `digest` GitHub publishes,
+and only then renamed to `.new`, with `.new.json` (version, size) written
+last. A crash mid-way therefore never leaves anything that counts as
+staged. `UpdateStatus` events drive the overlay's update pill: available /
+downloading / ready / failed / installed.
+
+**Install.** Never automatic mid-session. Clicking the pill when an update
+is `ready` closes the overlay cleanly (hotkey unhooked, loop stopped, logs
+flushed), then `apply_staged` renames the running exe to `.old` (Windows
+allows renaming a running exe, not deleting it), renames `.new` into place
+and starts it with `--wait-pid <old pid>` and `--updated-from <old
+version>`. The new process waits for the old one to exit before binding
+the websocket port, deletes `.old`, and shows "updated to vX" briefly. The
+relaunch sets `PYINSTALLER_RESET_ENVIRONMENT=1` and strips `_PYI*`
+variables, or the child would reuse the parent's unpacked (old) bundle. A
+staged update not installed by click installs at the next launch, before
+anything binds. A staged build that is not newer than the running one
+(e.g. the user installed a newer exe by hand) is discarded, never
+installed. A source checkout only announces (`available`): git or a ZIP
+owns those files.
+
+None of this touches the click path or the hotkey: one press is still one
+travel.
+
 ## Known risks / open questions
 
 - Mixed content: pathofexile.com is HTTPS; Chrome permits `ws://127.0.0.1`

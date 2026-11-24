@@ -39,6 +39,9 @@ seller's hideout, where the purchase is completed manually at Faustus.
 - Run: `python -m sniper`
 - Tests: `pytest`
 - Lint/format: `ruff check . && ruff format .`
+- Build the exe: `python tools/build_exe.py` (needs `pip install -e .[dev]`)
+- Release: bump `sniper/__init__.py` `__version__`, push tag `vX.Y.Z`
+  (`.github/workflows/release.yml` builds and publishes)
 
 ## Working agreements
 

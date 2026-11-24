@@ -163,6 +163,23 @@ UiEvent = (
 )
 
 
+@dataclass(frozen=True)
+class UpdateStatus:
+    """A newer release (sniper.updater). state:
+    "available"   - announce only (source checkout, or auto_download off);
+    "downloading" - the packaged exe is fetching it in the background;
+    "ready"       - verified and staged: clicking the pill restarts into it
+                    (it also installs at the next launch);
+    "failed"      - the download did not verify; retried later;
+    "installed"   - this run IS the update (shown briefly after a restart).
+    """
+
+    state: str
+    version: str
+    url: str  # the release page
+    detail: str = ""
+
+
 class Bus:
     def __init__(self) -> None:
         self._q: queue.Queue[UiEvent] = queue.Queue()

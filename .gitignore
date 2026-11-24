@@ -16,3 +16,8 @@ price_cache.json
 .venv/
 # per-user tuning saved by the settings panel (merged over config.yaml)
 scoring_overrides.yaml
+
+# tools/build_exe.py output
+build/
+dist/
+*.egg-info/

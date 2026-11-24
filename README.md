@@ -143,14 +143,15 @@ listed alphabetically.
 
 You need Windows, Chrome and Path of Exile. About five minutes:
 
-1. **Install Python 3.12 or newer** from
-   [python.org](https://www.python.org/downloads/) and tick *"Add python.exe
-   to PATH"*, or run `winget install -e --id Python.Python.3.12`.
-2. **Get this folder**: *Code → Download ZIP* on GitHub (then unzip), or
-   `git clone https://github.com/Kuderic/PoEValdoAssistant.git`.
-3. **Double-click `start.bat`.** The first run sets up a private Python
-   environment and installs everything (about 20 seconds); after that it
-   starts instantly. The overlay opens with a setup guide:
+1. **Download `ValdoSniper.exe`** from the
+   [latest release](https://github.com/Kuderic/PoEValdoAssistant/releases/latest).
+   Nothing else to install: no Python, no setup.
+2. **Put it in a folder of its own**, e.g. `Documents\ValdoSniper`. It keeps
+   its logs and your settings next to itself, and updates itself in place,
+   so not `Downloads` or `Program Files`.
+3. **Double-click it.** Windows may say *"Windows protected your PC"* the
+   first time, because the exe is not code-signed: click **More info → Run
+   anyway**. The overlay opens with a setup guide:
 
    <img src="docs/overlay-setup.png" alt="First launch: the overlay says no live searches are connected and lists two clickable steps - install the browser script, open a Valdo live search" width="420">
 
@@ -179,16 +180,76 @@ You need Windows, Chrome and Path of Exile. About five minutes:
 Run PoE in **windowed fullscreen**, not exclusive fullscreen, or the overlay
 can't stay on top. Sound works either way.
 
-**Updating:** `git pull` (or download the ZIP again) and restart
-`start.bat`. Tampermonkey picks up the new browser script by itself; if a
-tab is still on an old one, the tabs light turns red with *update script*,
-and clicking it reinstalls. Hard-reload open trade tabs afterwards, since a
-tab keeps running the script it loaded with.
+### Updates
+
+**The exe updates itself.** A few times a day it asks GitHub whether a newer
+release is out. If one is, it downloads it in the background, checks it
+against the checksum GitHub publishes, and a green pill appears in the
+status strip: **↑ v1.2.0 · restart**. Click it to restart into the new
+version (a few seconds; open trade tabs reconnect by themselves), or ignore
+it and the update installs the next time you start Valdo Sniper. It never
+restarts by itself, so it can't interrupt a snipe. After the restart the
+strip says **✓ updated to v1.2.0** for a couple of minutes; click it to see
+what changed.
+
+Updates keep your settings: everything you change in the ⚙ panel is saved
+to `scoring_overrides.yaml` beside the exe, and your price cache, logs and
+`.env` stay there too. New default rules (pairings, risks, mod scores) come
+with each update.
+
+Tampermonkey picks up the new browser script by itself. If a tab is still on
+an old one, the tabs light turns red with *update script*, and clicking it
+reinstalls. Hard-reload open trade tabs afterwards, since a tab keeps
+running the script it loaded with.
+
+To switch it off, put this in the `config.yaml` beside the exe:
+
+```yaml
+updates:
+  auto_download: false   # only announce new versions
+  # enabled: false       # don't even check
+```
+
+### Your own config.yaml
+
+On first start the exe writes a `config.yaml` beside itself, all comments.
+Anything you put there overrides the built-in defaults **key by key**, so it
+only needs what you change; the rest keeps tracking the defaults as they
+update. The full list of settings is the
+[`config.yaml` in this repo](config.yaml). A list (like `mod_pairings`)
+replaces the default list completely rather than adding to it.
+
+### Running from source instead
+
+For development, or if you'd rather not run an exe:
+
+1. Install **Python 3.12 or newer** from
+   [python.org](https://www.python.org/downloads/) (tick *"Add python.exe to
+   PATH"*), or `winget install -e --id Python.Python.3.12`.
+2. Get this folder: *Code → Download ZIP*, or
+   `git clone https://github.com/Kuderic/PoEValdoAssistant.git`.
+3. Double-click **`start.bat`**. The first run sets up a private Python
+   environment (about 20 seconds); after that it starts instantly.
+
+Here `config.yaml` in the folder is the whole config. A source checkout
+can't replace itself, so the update pill only says a new version is out:
+update with `git pull` (or download the ZIP again) and restart `start.bat`.
 
 `start.bat` passes arguments through: `start.bat --headless` runs without
 the overlay, `start.bat --config other.yaml` uses another config. If you
-manage Python yourself, `pip install -e .` and `python -m sniper` work
-too. Developer extras: `pip install pytest pytest-asyncio ruff`.
+manage Python yourself, `pip install -e .` and `python -m sniper` work too.
+Developer extras: `pip install -e .[dev]` (pytest, ruff, PyInstaller).
+
+### Releasing a new version (maintainer)
+
+1. Bump `__version__` in `sniper/__init__.py`, commit and push.
+2. `git tag v1.2.0 && git push origin v1.2.0`.
+
+The **Release** GitHub Action runs the tests, builds `ValdoSniper.exe`
+(refusing if the tag and `__version__` disagree), proves the exe works with
+`--self-check`, and publishes it as a release. Every installed copy picks it
+up within a few hours. To build locally: `python tools/build_exe.py`, which
+writes `dist/ValdoSniper.exe`.
 
 ---
 
@@ -313,7 +374,7 @@ currency mismatch is never a jackpot.
 #### Super jackpots
 
 The tier above: a jackpot that **also** clears higher bars (net ≥ 30d **and**
-yield ≥ 50 by default) is a super jackpot:
+yield ≥ 20 by default) is a super jackpot:
 
 <img src="docs/overlay-super-jackpot.png" alt="A super jackpot alert: Nimis at 80 divine, +80 net, yield +144, with a gold SUPER JACKPOT banner, gold frame and gold TELEPORT button; a magenta jackpot runner-up sits below it" width="420">
 
@@ -385,8 +446,9 @@ them when you know better than the market average, e.g. right after a patch.
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (10 / 10), also in the ⚙ panel |
 | `alerts.jackpot_alarm` / `jackpot_sound` | Loop an alarm on jackpots (click the banner to silence) / its .wav |
-| `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 50), also in the ⚙ panel / its alarm .wav |
+| `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 20), also in the ⚙ panel / its alarm .wav |
 | `trade_pricing.cache_max_age_minutes` | How stale a restored price may be (720) |
+| `updates.auto_download` / `enabled` | Download new releases in the background (on) / check for them at all (on) |
 
 ---
 
@@ -473,6 +535,9 @@ searches you aren't actually racing for.
 | Overlay shows `0 tabs` | Tab not connected: check **Allow User Scripts** is on for Tampermonkey (`chrome://extensions` → Details), the script is enabled, and you pressed *Live search*. Look for `[valdo]` lines in the tab's DevTools console |
 | `N tabs · M stale` | A tab stopped heartbeating (crashed/asleep) — reload it |
 | `N tabs · update script` (red) | A tab runs an older browser script: click the pill to reinstall, then hard-reload the tab |
+| Windows says *"Windows protected your PC"* | The exe is not code-signed. Click **More info → Run anyway**. Antivirus may also flag a fresh release for a day or two (common for PyInstaller apps); allow it, or run from source |
+| "Valdo Sniper could not start" box | The message says why (often a typo in your `config.yaml`); it is also saved to `logs/crash.txt` |
+| Update pill says *failed* | The download didn't finish or didn't match GitHub's checksum, so nothing was installed. It retries by itself; or click the pill and download the exe by hand into the same folder |
 | `start.bat` says Python not found | Install Python 3.12+ with *Add to PATH* ticked, then run it again. Delete the `.venv` folder to force a clean reinstall |
 | `RATE LIMITED` / `Est. prices N/M` | Trade API refused us; margins fall back to poe.ninja medians and every affected alert is flagged. Close some searches |
 | Alert shows no latency | The DOM path captured it, or the tab is on an old userscript. `python tools/capture_report.py` says which |

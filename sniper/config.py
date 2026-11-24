@@ -315,6 +315,21 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
+class UpdatesConfig:
+    """Self-update from GitHub Releases (sniper.updater). The packaged exe
+    downloads a newer release in the background and installs it when the
+    user clicks the update pill or on the next launch; a source checkout
+    only says a newer version exists."""
+
+    enabled: bool = True
+    repo: str = "Kuderic/PoEValdoAssistant"
+    check_interval_hours: float = 6.0
+    # False: only announce a new version, never download it
+    auto_download: bool = True
+    api_base: str = "https://api.github.com"
+
+
+@dataclass(frozen=True)
 class Config:
     league: str
     server: ServerConfig
@@ -329,15 +344,56 @@ class Config:
     mod_scoring: ModScoringConfig
     game: GameConfig
     logging: LoggingConfig
+    updates: UpdatesConfig = field(default_factory=UpdatesConfig)
+    # folder for per-user state: scoring_overrides.yaml, price_cache.json
+    state_dir: Path = field(default_factory=Path)
 
 
-def load_config(path: str | Path = "config.yaml") -> Config:
+def _read_yaml(path: Path) -> dict:
+    try:
+        with path.open(encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{path.name} is not valid YAML: {e}") from None
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{path.name} must be a mapping of settings")
+    return raw
+
+
+def merge_config(base: dict, over: dict) -> dict:
+    """`over` layered on `base`: mappings merge key by key, anything else
+    (lists included - a list of pairings is replaced, not appended to) is
+    taken from `over`."""
+    merged = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_config(
+    path: str | Path = "config.yaml",
+    defaults: str | Path | None = None,
+    state_dir: str | Path | None = None,
+) -> Config:
+    """`path` is the config to load. `defaults`, when given, is a full config
+    that `path` is layered over (the packaged exe: bundled defaults + the
+    user's partial config.yaml); `path` may then be missing. `state_dir` is
+    where scoring_overrides.yaml lives (default: beside `path`)."""
     load_dotenv()
     path = Path(path)
-    if not path.exists():
+    if defaults is not None:
+        raw = _read_yaml(Path(defaults))
+        if path.exists() and path.resolve() != Path(defaults).resolve():
+            raw = merge_config(raw, _read_yaml(path))
+    elif not path.exists():
         raise ConfigError(f"config file not found: {path.resolve()}")
-    with path.open(encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+    else:
+        raw = _read_yaml(path)
+    state = Path(state_dir) if state_dir is not None else path.parent
+    overrides_path = state / SCORING_OVERRIDES_NAME
 
     def section(name: str) -> dict:
         value = raw.get(name) or {}
@@ -540,7 +596,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         pairings=tuple(pairings),
         risks=tuple(risks),
     )
-    mod_scoring = apply_scoring_overrides(mod_scoring, path.with_name(SCORING_OVERRIDES_NAME))
+    mod_scoring = apply_scoring_overrides(mod_scoring, overrides_path)
 
     prices = {}
     for name, p in section("prices").items():
@@ -562,7 +618,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
             raise ConfigError(f"currency_rates.{name} must be > 0, got {rate}")
 
     # settings-panel overrides (saved next to the config) win over config.yaml
-    extra = load_extra_overrides(path.with_name(SCORING_OVERRIDES_NAME))
+    extra = load_extra_overrides(overrides_path)
     if "min_yield" in extra:
         thresholds = replace(thresholds, min_yield=float(extra["min_yield"]))
     if "hotkey_combo" in extra:
@@ -575,6 +631,12 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     for key in JACKPOT_KEYS:
         if key in extra:
             alerts = replace(alerts, **{key: max(0.0, float(extra[key]))})
+
+    updates = build(UpdatesConfig, "updates")
+    if updates.check_interval_hours < 1:
+        raise ConfigError("updates.check_interval_hours must be at least 1")
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", updates.repo):
+        raise ConfigError(f"updates.repo must look like owner/name, got {updates.repo!r}")
 
     game_raw = section("game")
     return Config(
@@ -594,4 +656,6 @@ def load_config(path: str | Path = "config.yaml") -> Config:
             window_title=str(game_raw.get("window_title", GameConfig.window_title)),
         ),
         logging=build(LoggingConfig, "logging"),
+        updates=updates,
+        state_dir=state,
     )

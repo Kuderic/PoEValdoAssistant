@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "poe-valdo-sniper"
-version = "0.1.0"
+# single source of truth: sniper/__init__.py (the updater compares it with
+# the latest GitHub release tag)
+dynamic = ["version"]
 description = "Valdo's Puzzle Box foil map sniper for the PoE trade site live search"
 requires-python = ">=3.12"
 dependencies = [
@@ -20,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pyinstaller==6.22.2",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
@@ -28,6 +31,9 @@ dev = [
 [tool.setuptools]
 # only the app is a package; tests/, tools/ and userscript/ stay out of it
 packages = ["sniper"]
+
+[tool.setuptools.dynamic]
+version = { attr = "sniper.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
