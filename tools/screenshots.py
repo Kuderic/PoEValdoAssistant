@@ -34,6 +34,7 @@ from sniper.bus import (  # noqa: E402
     RewardPrice,
     RewardPrices,
     TabsChanged,
+    WarmupStatus,
 )
 from sniper.config import load_config  # noqa: E402
 from sniper.overlay import Overlay  # noqa: E402
@@ -290,6 +291,34 @@ def main() -> None:
                 (sup, view("j", "Foil Mageblood", 80, 25, 60, jackpot=True)), new_alert=False
             ),
         ],
+    )
+
+    # no alert: the card becomes the reward price table, one row per state
+    scene(
+        "prices",
+        [
+            *status_events(4),
+            *feed_events(),
+            RewardPrices(
+                (
+                    RewardPrice("Foil Nimis", 160.5, "divine", "trade", 240),
+                    RewardPrice("Foil Mageblood", 290, "divine", "trade", 3 * 3600),
+                    RewardPrice("Foil Emperor's Mastery", 101, "divine", "cached", 5 * 3600),
+                    RewardPrice("Foil Progenesis", 63, "divine", "trade", 1700),
+                    RewardPrice("Foil Headhunter", None, "", "unpriced", None),
+                )
+            ),
+            WarmupStatus(
+                False,
+                4,
+                5,
+                (
+                    ("Foil Progenesis", "working", "63 divine", 1700),
+                    ("Foil Headhunter", "unpriced", "", None),
+                ),
+            ),
+        ],
+        height=560,
     )
 
     # first launch: nothing connected yet, the card is the setup guide

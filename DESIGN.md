@@ -404,15 +404,21 @@ section; rows are hidden with `grid_remove()` so they return in place.
 
 Every part of the overlay explains itself on hover (`overlay.HELP`, bound
 with `Overlay._bind_help`):
-- **Delay.** The popup opens after `HELP_DELAY_MS` (350 ms), so sweeping the
-  mouse across the window flashes nothing. It is bound with `add="+"` so it
-  never displaces a widget's own hover handler (the travel button's tint),
-  and any click closes it. Help is display-only: it never acts on a listing.
+- **Instant.** The popup opens the moment the pointer arrives. An earlier
+  350 ms delay read as a sluggish UI. It is ONE window, built at startup
+  (`_build_help_win`) and only re-filled, moved, shown and withdrawn, so a
+  hover never pays for creating a window (~50 ms from `<Enter>` to visible).
+  It is bound with `add="+"` so it never displaces a widget's own hover
+  handler (the travel button's tint), and any click closes it. Help is
+  display-only: it never acts on a listing.
 - **One target, many widgets.** A stat cell is a frame, a caption and a
-  value. Moving between them neither hides nor restarts the popup.
-- **Never over the numbers.** Stat help opens below the whole stats row.
-  Popups stay inside the overlay's width and flip above when they would
-  leave the screen.
+  value. Moving between them neither hides nor re-places the popup.
+  `member_of` widens a target to everything inside a container, for rows
+  rebuilt every render inside a frame that persists (the price panel). The
+  frame is bound once and each new row per render, so handlers never stack.
+- **Never over what it explains.** Stat help opens below the whole stats
+  row, and price-panel help below the whole table. Popups stay inside the
+  overlay's width and flip above when they would leave the screen.
 - **Worked examples must match.** NET, YIELD and DIFFICULTY add a live line
   that works the sum through for the listing on screen
   (`_net_breakdown`, `_yield_breakdown`, `_difficulty_breakdown`). Each
@@ -426,6 +432,21 @@ between rewards) and under a Valdo alert's name (`Reward worth 101d · trade
 listings · fetched 2m ago`). `RewardPrice.age_s` is the age at push time. The
 overlay counts on from when the push arrived, and re-renders both lines every
 30 s, so the age keeps ticking between pushes.
+
+**Reward price panel.** With no alert on screen, the card drops its four
+dashes and the space goes to a table of every searched reward: price, age
+and source, coloured by how far to trust it (`_price_status`):
+- green: a trade price no older than 1.5 × `trade_pricing.refresh_minutes`;
+- amber: overdue (older than that, e.g. rate limited), last session's
+  price, a poe.ninja estimate, or a pinned price;
+- red: no buyable listings;
+- ↻: being re-fetched (state from `WarmupStatus`).
+
+This lets a price be judged before an alert arrives. The panel replaces the
+old warm-up panel, which showed only while pricing was busy. It hides while
+an alert is up, because the alert's own reward-value line covers that.
+Hovering a history row adds that reward's current price and age, so a
+listing can still be judged after its alert has gone.
 
 ## Click-to-travel and the confirmation dialog
 

@@ -88,6 +88,7 @@ note saying what actually goes wrong:
 | The Feared + void | 2 | The Feared can one-shot; dying deletes the character |
 | Increasingly lethal + void | 2 | Damage keeps ramping where dying deletes the character |
 | Legion + melee-range only | 2 | Legion's dense packs must all be fought point-blank |
+| Legion + less damage | 2 | Legion's huge packs with crippled damage take forever to clear |
 | Sirus storms + no travel skills | 1.5 | Slowed with no travel skills, so the storms are hard to escape |
 
 These stack multiplicatively, so a map with two 10× pairings lands in the
@@ -109,6 +110,7 @@ NET  =  (1 − fail chance) × market price  −  asking price  −  running cos
 |---|---|---|
 | Ultimatum | 10% | Can brick the map even without penalties |
 | Ultimatum + less damage or delirium | 25% (replaces the 10%) | Protect the Altar, if it rolls, is likely to fail |
+| Ultimatum + fatal timer | 80% (replaces both above) | The fatal timer runs out during the Ultimatum waves |
 | Breach + less damage or delirium | 100% | Breaches can't be stabilised: unclearable |
 | Bismuth | 30% | Bismuth maps bug out and fail |
 
@@ -126,8 +128,9 @@ reward's value)"*). Feed and runner-up rows carry a `⚠30%` marker.
 **Adjust the chances in the ⚙ panel** under *Failure risks* (in percent,
 applied live and saved); 0 switches a risk off. To add a new one, copy an
 entry in `mod_risks` in `config.yaml`. An `unless:` pattern makes a general
-risk step aside for a more specific one, which is how plain Ultimatum (10%)
-and Ultimatum with less damage or delirium (25%) avoid stacking.
+risk step aside for a more specific one, which is how plain Ultimatum (10%),
+Ultimatum with less damage or delirium (25%) and Ultimatum with a fatal timer
+(80%) avoid stacking.
 
 **The ⚙ panel has a search box** at the top: type part of a mod or setting
 name (`ghost`, `jackpot`) to filter every section, or a section name
@@ -196,7 +199,7 @@ See the screenshot at the top: the reward name, the latency badge and the
 the four numbers, then warnings, then the map's mods.
 
 **Hover anything to see what it means.** Every part of the overlay has an
-explanation that pops up after a moment: the status pills, the latency badge,
+explanation that pops up instantly: the status pills, the latency badge,
 each of the four numbers, the price markers, ☠ and ⚠ rows, the jackpot
 banner, the countdown bar and the history's column headers. The four numbers
 also work their sum through for the listing on screen, e.g. NET shows
@@ -401,10 +404,19 @@ poe.ninja is still used for currency rates and to resolve `league: auto`.
 - **Rate limits are respected from the API's own headers**, so pacing adapts
   instead of guessing. If you get limited anyway, the header pill turns red
   (`RATE LIMITED 47s`) and unpriced rewards show as `Est. prices 5/8`.
-- Prices refresh every `refresh_minutes` (30 by default); the panel shows `↻`
-  on whichever reward is being recalculated, and the *Watching* line shows
-  each reward's price and how long ago it was fetched, e.g.
-  `Nimis 160.5d (4m ago)` (`(yours)` for a price you pinned). Every
+- **Check a price before an alert arrives.** Whenever no alert is showing,
+  the card lists every reward you're searching with its price, how long ago
+  it was fetched and where it came from:
+
+  <img src="docs/overlay-prices.png" alt="The idle card: a REWARD PRICES table listing Emperor's Mastery 101d from last session 5h ago in amber, Headhunter with no listings in red, Mageblood 290d 3h ago overdue in amber, Nimis 160.5d 4m ago in green, and Progenesis being re-fetched" width="420">
+
+  Green is a fresh trade price. Amber means check it first: overdue for a
+  re-check, last session's price, a poe.ninja estimate, or one you pinned.
+  Red means no buyable listings. While an alert is up, the *Watching* line
+  shows the same thing (`Nimis 160.5d (4m ago)`). Hovering a row in the
+  history also shows its reward's current price and age.
+- Prices refresh every `refresh_minutes` (30 by default); `↻` marks whichever
+  reward is being recalculated. Every
   active reward re-prices each cycle, so lowering this multiplies the request
   rate by however many live searches you have open — 10 minutes was enough to
   earn a 30-minute API backoff.

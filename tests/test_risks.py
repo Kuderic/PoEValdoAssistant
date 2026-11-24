@@ -31,6 +31,7 @@ ULTIMATUM = "Areas contain an Ultimatum Encounter"
 NO_ULTIMATUM = "Area has no chance to contain Ultimatum Encounters"
 BREACH = "All Unstable Breaches must be Stabilised and Closed to claim Reward"
 BISMUTH = "Area contains a Bismuth Ore Deposit"
+FATAL = "Area becomes fatal after some time"
 
 
 def shipped() -> ModScoring:
@@ -53,6 +54,7 @@ def risk(label, *patterns, chance, regex=False) -> ModRisk:
         ([BREACH, DELIRIOUS], "Breach + less damage/delirium", 1.0),
         ([BISMUTH], "Bismuth", 0.30),
         ([ULTIMATUM], "Ultimatum", 0.10),  # even a clean one can brick
+        ([ULTIMATUM, FATAL], "Ultimatum + fatal timer", 0.80),
     ],
 )
 def test_shipped_risks_fire_on_real_mod_text(mods, label, chance):
@@ -67,6 +69,7 @@ def test_shipped_risks_fire_on_real_mod_text(mods, label, chance):
         [NO_ULTIMATUM, DELIRIOUS],  # the "no chance of Ultimatum" line
         [BREACH],  # breach alone is fine
         [NO_DMG, DELIRIOUS],  # the penalties alone are difficulty, not failure
+        [FATAL],  # the timer alone is difficulty, not failure
     ],
 )
 def test_shipped_risks_stay_quiet_otherwise(mods):
@@ -80,6 +83,16 @@ def test_plain_ultimatum_steps_aside_for_the_penalty_combo(penalty):
     result = shipped().evaluate([ULTIMATUM, penalty])
     assert [label for label, _n, _c in result.risks] == ["Ultimatum + less damage/delirium"]
     assert result.fail_chance == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+    "mods", [[ULTIMATUM, FATAL], [ULTIMATUM, FATAL, NO_DMG], [ULTIMATUM, FATAL, DELIRIOUS]]
+)
+def test_fatal_timer_replaces_the_other_ultimatum_risks(mods):
+    """80% flat, never stacked with the 10% or 25% entries."""
+    result = shipped().evaluate(mods)
+    assert [label for label, _n, _c in result.risks] == ["Ultimatum + fatal timer"]
+    assert result.fail_chance == pytest.approx(0.80)
 
 
 def test_unless_parses_from_a_string_or_list(tmp_path):

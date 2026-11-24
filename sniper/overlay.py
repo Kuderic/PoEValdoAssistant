@@ -90,10 +90,9 @@ LAG_OK_MS, LAG_BAD_MS = 2000.0, 5000.0
 # GREEN, i.e. "we saw this the instant it listed, go race it".
 CLOCK_SKEW_MS = -1000.0
 # Hover help: what each part of the overlay means, as (title, body). Shown
-# after HELP_DELAY_MS so sweeping the mouse across the window does not flash
-# popups; parts whose numbers can be worked through for the listing on
-# screen add a third, live line (see the _*_help methods).
-HELP_DELAY_MS = 350
+# the instant the pointer arrives (a delay read as a sluggish UI); parts
+# whose numbers can be worked through for the listing on screen add a third,
+# live line (see the _*_help methods).
 HELP_WRAP = 340
 HELP = {
     "tabs": (
@@ -161,6 +160,17 @@ HELP = {
         "from the base of the toughest encounter mod (or the clean-map default), then "
         "every dangerous mod and deadly pairing multiplies it. Each mod's part is "
         "shown beside it below. Amber over 100, red over 300.",
+    ),
+    "price_panel": (
+        "Reward prices",
+        "What each reward you are searching sells for, how long ago that price was "
+        "fetched and where it came from - so you know before an alert whether its "
+        "NET can be trusted.\n"
+        "Green: a fresh trade price.\n"
+        "Amber: overdue for a re-check, from your last session, a poe.ninja "
+        "estimate, or a price you pinned - check it before travelling.\n"
+        "Red: no buyable listings found, so this reward cannot be priced.\n"
+        "↻ marks a reward being re-fetched right now.",
     ),
     "reward_value": (
         "Reward value",
@@ -270,6 +280,41 @@ def _price_tag(entry, age_s: float | None) -> str:
         return f"{money} (yours)"
     ago = _ago(age_s)
     return f"{money} ({ago})" if ago else money
+
+
+def _price_status(entry, state: str | None, age_s: float | None, refresh_s: float):
+    """One reward's price as the price panel shows it: (price, note, level).
+
+    entry: RewardPrice or None; state: the warm-up state ("done", "working",
+    "pending", "unpriced") or None. level says how far to trust the price:
+    "good" a fresh trade price, "warn" anything to double-check (overdue,
+    last session, a poe.ninja estimate, a pinned price), "bad" unpriceable,
+    "dim" not priced yet or a fixed config price.
+    """
+    if entry is None or entry.amount is None:
+        note = {"working": "fetching…", "pending": "queued", "unpriced": "no listings"}.get(
+            state or "", "pricing…"
+        )
+        return ("—", note, "bad" if state == "unpriced" else "dim")
+    price = _money(entry.amount, entry.currency)
+    ago = _ago(age_s)
+    if entry.override_div is not None:
+        note, level = "your price", "warn"
+    elif entry.source == "manual":
+        note, level = "config price", "dim"
+    elif entry.source in ("live", "stale"):
+        note, level = "poe.ninja estimate", "warn"
+    elif entry.source == "cached":
+        note, level = "last session" + (f" · {ago}" if ago else ""), "warn"
+    elif age_s is not None and age_s > 1.5 * refresh_s:
+        # overdue: the scheduled re-price should have replaced it by now
+        # (rate limited, or the trade site is struggling)
+        note, level = f"{ago} · overdue", "warn"
+    else:
+        note, level = ago or "trade", "good"
+    if state == "working":
+        price, note = f"↻ {price}", "fetching…"
+    return (price, note, level)
 
 
 def _net_breakdown(view, running_cost: float) -> str:
@@ -520,7 +565,7 @@ class Overlay:
         # hover help: the widget group whose help is showing or pending,
         # and the pending after() id (see _bind_help)
         self._help_group: tuple | None = None
-        self._help_after: str | None = None
+        self._help_win: tk.Toplevel | None = None  # built once, see _build_help_win
         self._alerts: tuple[AlertView, ...] = ()
         self._muted = False
         self._volume = config.alerts.volume
@@ -841,9 +886,19 @@ class Overlay:
             (self._countdown, {"fill": "x", "padx": 12, "pady": (10, 12)}),
         )
 
-        # Startup pricing progress: which reward is being fetched, which are
-        # done and at what price. Only visible while pricing is busy.
-        self._warmup_panel = tk.Frame(root, bg=MODS_BG, pady=4)
+        # Reward prices: each searched reward's price, its age and whether
+        # it can be trusted, plus fetch progress while pricing runs. Shown
+        # whenever no alert is (so a price can be judged BEFORE an alert
+        # arrives), hidden while one is - the alert names its own price.
+        self._price_panel = tk.Frame(root, bg=MODS_BG, pady=4)
+        # the frame persists, so it is bound ONCE; the rows are rebuilt and
+        # bound per render (see _render_price_panel)
+        self._bind_help(
+            (self._price_panel,),
+            HELP["price_panel"],
+            anchor=self._price_panel,
+            member_of=self._price_panel,
+        )
 
         self._runners = tk.Frame(root, bg=BG)  # one clickable row per runner-up
         self._runners.pack(fill="x", padx=12, pady=(6, 0))
@@ -975,6 +1030,8 @@ class Overlay:
         # No hover tooltip on the headline: the top alert already renders its
         # full mod list inline in the dark panel below, so the popup only
         # repeated it - directly on top of the numbers being read.
+
+        self._build_help_win()
 
         # Warm the (silent) audio cache off-thread so the first alert never
         # pays for reading and rescaling the WAV.
@@ -1120,6 +1177,7 @@ class Overlay:
                 self._refresh_price_editor()
                 self._render_watching()
                 self._refresh_reward_value()
+                self._refresh_price_panel()
             elif isinstance(ev, WarmupStatus):
                 warmup = (ev.calculating, ev.priced, ev.total, ev.rewards)
                 if warmup != self._warmup:
@@ -1318,51 +1376,81 @@ class Overlay:
             return False
         return bool(self._warmup[0]) or any(row[1] == "working" for row in self._warmup[3])
 
-    def _render_warmup_panel(self) -> None:
-        """Show what is actually being priced, not just a counter: each
-        active reward with its state and whatever price we have so far.
-        Visible whenever pricing is working - startup, a scheduled re-price,
-        or a newly opened live search - and hidden when it is idle."""
-        rows = self._warmup[3] if self._warmup else ()
-        if not rows or not self._pricing_is_busy():
-            self._warmup_panel.pack_forget()
+    def _price_rows(self) -> list[tuple[str, str, str, str]]:
+        """(reward name, price, note, level) for every searched reward, from
+        the latest RewardPrices merged with the warm-up's fetch states."""
+        states = {row[0]: row[1] for row in (self._warmup[3] if self._warmup else ())}
+        prices = {e.reward: e for e in self._reward_prices}
+        refresh_s = self._config.trade_pricing.refresh_minutes * 60
+        rows = []
+        for reward in sorted(set(prices) | set(states), key=_display_name):
+            entry = prices.get(reward)
+            age = self._live_age(entry) if entry is not None else None
+            price, note, level = _price_status(entry, states.get(reward), age, refresh_s)
+            rows.append((_display_name(reward), price, note, level))
+        return rows
+
+    def _render_price_panel(self) -> None:
+        """Each searched reward's price, its age and how far to trust it.
+        The ages tick on (see _refresh_feed_ages); a reward being re-fetched
+        keeps its old figure, marked ↻, because that is exactly when you are
+        looking at a stale number."""
+        rows = self._price_rows()
+        if not rows:
+            self._price_panel.pack_forget()
             return
-        self._clear_frame(self._warmup_panel)
-        for reward, state, price, age in rows:
-            label, fg = {
-                "done": ("", GOOD),
-                "working": ("fetching…", WARN),
-                "pending": ("queued", FAINT),
-                "unpriced": ("no listings", DIM),
-            }.get(state, ("", DIM))
-            if price and _ago(age):
-                # How old the shown figure is. Needed most while a reward is
-                # being re-fetched: that is exactly when you are looking at a
-                # stale number, and an app reopened after five hours shows
-                # its restored prices as "5h ago" rather than looking current.
-                price = f"{price}  ·  {_ago(age)}"
-            if state == "working" and price:
-                # a re-price keeps the old figure visible, marked as in flux
-                price = f"↻ {price}"
-            line = tk.Frame(self._warmup_panel, bg=MODS_BG)
+        self._clear_frame(self._price_panel)
+        minutes = self._config.trade_pricing.refresh_minutes
+        header = tk.Label(
+            self._price_panel,
+            text=f"REWARD PRICES  ·  RE-CHECKED EVERY {minutes:g} MIN",
+            bg=MODS_BG,
+            fg=DIM,
+            font=self._font("ui", 8, "bold"),
+            anchor="w",
+        )
+        header.pack(fill="x", padx=6, pady=(0, 3))
+        colour = {"good": GOOD, "warn": WARN, "bad": BAD, "dim": DIM}
+        for name, price, note, level in rows:
+            line = tk.Frame(self._price_panel, bg=MODS_BG)
             line.pack(fill="x", padx=6, pady=1)
             tk.Label(
                 line,
-                text=price or label,
+                text=f"{note:<20}",
                 bg=MODS_BG,
-                fg=fg,
-                font=self._font("mono", 10, "bold" if state == "done" else "normal"),
-                anchor="e",
+                fg=colour[level] if level != "good" else DIM,
+                font=self._font("mono", 9),
+                anchor="w",
             ).pack(side="right", padx=(10, 0))
             tk.Label(
                 line,
-                text=_display_name(reward),
+                text=price,
                 bg=MODS_BG,
-                fg=FG if state in ("done", "working") else DIM,
+                fg=colour[level],
+                font=self._font("mono", 10, "bold"),
+                anchor="e",
+            ).pack(side="right")
+            tk.Label(
+                line,
+                text=name,
+                bg=MODS_BG,
+                fg=FG if level != "dim" else DIM,
                 font=self._font("mono", 10),
                 anchor="w",
             ).pack(side="left", fill="x", expand=True)
-        self._warmup_panel.pack(fill="x", padx=12, pady=(6, 0), before=self._runners)
+        self._bind_help(
+            self._price_panel.winfo_children(),
+            HELP["price_panel"],
+            anchor=self._price_panel,  # below the table, not over its rows
+            descendants=True,
+            member_of=self._price_panel,
+        )
+        self._price_panel.pack(fill="x", padx=12, pady=(6, 0), before=self._runners)
+
+    def _refresh_price_panel(self) -> None:
+        """Re-render the panel if it is the one on screen (idle card)."""
+        if not self._alerts and self._pinned_top is None and self._tab_count:
+            self._render_price_panel()
 
     def _idle_text(self) -> str:
         """Headline when nothing is alerting. During the startup warm-up it
@@ -1639,12 +1727,15 @@ class Overlay:
             self._clear_frame(self._runners)
             self._countdown.delete("all")
             self._paint_card(None)
-            # collapse the card: with nothing to show, that space belongs to
-            # the history list below (or the warm-up panel / setup guide)
+            # collapse the card: four dashes say nothing, so that space goes
+            # to the reward prices (or the setup guide) and the history
             self._show_alert_body(
-                chips=False, mods=False, countdown=False, setup=setup, stats=not setup
+                chips=False, mods=False, countdown=False, setup=setup, stats=False
             )
-            self._render_warmup_panel()
+            if setup:
+                self._price_panel.pack_forget()
+            else:
+                self._render_price_panel()
             for widget in top_widgets:  # nothing to click or hover
                 widget.configure(cursor="")
             return
@@ -1677,7 +1768,7 @@ class Overlay:
             self._subtitle.config(text="  ·  ".join(bits))
         else:
             self._subtitle.config(text=self._reward_value_text(top))
-        self._warmup_panel.pack_forget()  # a live alert outranks the progress list
+        self._price_panel.pack_forget()  # the alert names its own reward price
         self._set_stats(top)
         self._set_age(top.index_lag_ms)
         self._set_travel_button(has_target=True, pinned=pinned is not None, jackpot=tier)
@@ -1933,6 +2024,7 @@ class Overlay:
         # the price ages next to each reward tick on too
         self._render_watching()
         self._refresh_reward_value()
+        self._refresh_price_panel()
         self._root.after(30_000, self._refresh_feed_ages)
 
     # ---------------------------------------------------------- tuning panel
@@ -2477,7 +2569,20 @@ class Overlay:
                 amount = f"{lag:.0f}ms" if lag < 1000 else f"{lag / 1000:.1f}s"
                 level = "red" if lag > LAG_BAD_MS else "yellow" if lag > LAG_OK_MS else "none"
                 rows.append((f"latency {amount} behind the trade site", "", level))
-        return tuple(rows) + entry.mods
+        return tuple(rows) + self._feed_price_rows(entry) + entry.mods
+
+    def _feed_price_rows(self, entry) -> tuple:
+        """What the listing's reward is worth NOW and how old that price is,
+        so a listing can still be judged after its alert has gone."""
+        if entry.generic:
+            return ()
+        rp = next((e for e in self._reward_prices if e.reward == entry.key), None)
+        if rp is None:
+            return ()
+        refresh_s = self._config.trade_pricing.refresh_minutes * 60
+        price, note, level = _price_status(rp, None, self._live_age(rp), refresh_s)
+        mod_level = {"warn": "yellow", "bad": "red"}.get(level, "none")
+        return ((f"{_display_name(entry.key)} is worth {price} now  ·  {note}", "", mod_level),)
 
     def _render_feed(self) -> None:
         """Update the pooled row labels in place (see __init__)."""
@@ -2551,9 +2656,8 @@ class Overlay:
         self._tooltip = win
 
     def _hide_tooltip(self) -> None:
-        if self._help_after is not None:
-            self._root.after_cancel(self._help_after)
-            self._help_after = None
+        if self._help_group is not None and self._help_win is not None:
+            self._help_win.withdraw()
         self._help_group = None
         if self._tooltip is not None:
             self._tooltip.destroy()
@@ -2561,13 +2665,22 @@ class Overlay:
 
     # ------------------------------------------------------------ hover help
 
-    def _bind_help(self, widgets, content, anchor=None, descendants: bool = False) -> None:
-        """Explain a part of the UI on hover.
+    def _bind_help(
+        self,
+        widgets,
+        content,
+        anchor=None,
+        descendants: bool = False,
+        member_of: tk.Widget | None = None,
+    ) -> None:
+        """Explain a part of the UI on hover, instantly.
 
         content: (title, body[, live]) or a callable returning one (or None
         for nothing to say right now) - callables let the live line work the
         numbers through for the listing on screen. The widgets are one
-        target: moving between them neither hides nor restarts the popup.
+        target: moving between them neither hides nor re-places the popup.
+        member_of widens that target to everything inside a container, for
+        rows that are rebuilt (and re-bound) while the container persists.
         It opens below `anchor` (default: the hovered widget). Bound with
         add="+" so it never displaces a widget's own hover handlers.
         """
@@ -2579,23 +2692,33 @@ class Overlay:
                 stack.extend(widget.winfo_children())
             widgets = found
         group = tuple(widgets)
+        if member_of is not None:
+            key: object = str(member_of)
+
+            def inside(widget) -> bool:  # Tk paths nest: ".!frame3.!label2"
+                path = str(widget) if widget is not None else ""
+                return path == key or path.startswith(f"{key}.")
+        else:
+            key = group
+
+            def inside(widget) -> bool:
+                return widget in group
+
         provider = content if callable(content) else (lambda: content)
 
         def enter(_e, widget) -> None:
-            if self._help_group == group:
-                return  # already showing / pending for this target
+            if self._help_group == key:
+                return  # already showing for this target
             self._hide_tooltip()
-            self._help_group = group
-            self._help_after = self._root.after(
-                HELP_DELAY_MS, lambda: self._show_help(widget, anchor, provider())
-            )
+            self._help_group = key
+            self._show_help(widget, anchor, provider())
 
         def leave(e) -> None:
             try:
                 under = self._root.winfo_containing(e.x_root, e.y_root)
             except (KeyError, tk.TclError):
                 under = None
-            if under not in group:
+            if not inside(under):
                 self._hide_tooltip()
 
         for widget in group:
@@ -2603,44 +2726,57 @@ class Overlay:
             widget.bind("<Leave>", leave, add="+")
             widget.bind("<ButtonPress>", lambda e: self._hide_tooltip(), add="+")
 
-    def _show_help(self, widget: tk.Widget, anchor, content) -> None:
-        self._help_after = None
-        if not content or not widget.winfo_exists():
-            return
-        title, body, *rest = content
-        live = rest[0] if rest else ""
-        wrap = round(HELP_WRAP * self._font_scale)
+    def _build_help_win(self) -> None:
+        """The one help popup, built at startup and only ever re-filled,
+        moved, shown and withdrawn: creating a window per hover is what made
+        help feel slow."""
         win = tk.Toplevel(self._root)
+        win.withdraw()
         win.wm_overrideredirect(True)
         win.attributes("-topmost", True)
         frame = tk.Frame(
             win, bg=MODS_BG, highlightthickness=1, highlightbackground="#3a4550", padx=10, pady=7
         )
         frame.pack()
-        tk.Label(
-            frame, text=title, bg=MODS_BG, fg=FG, font=self._font("ui", 9, "bold"), anchor="w"
-        ).pack(fill="x")
-        tk.Label(
+        self._help_title = tk.Label(
+            frame, text="", bg=MODS_BG, fg=FG, font=self._font("ui", 9, "bold"), anchor="w"
+        )
+        self._help_title.pack(fill="x")
+        self._help_body = tk.Label(
             frame,
-            text=body,
+            text="",
             bg=MODS_BG,
             fg=DIM,
             font=self._font("ui", 9),
             justify="left",
             anchor="w",
-            wraplength=wrap,
-        ).pack(fill="x", pady=(2, 0))
+        )
+        self._help_body.pack(fill="x", pady=(2, 0))
+        self._help_live = tk.Label(
+            frame,
+            text="",
+            bg=MODS_BG,
+            fg=PRICE,
+            font=self._font("mono", 9),
+            justify="left",
+            anchor="w",
+        )
+        self._help_win = win
+
+    def _show_help(self, widget: tk.Widget, anchor, content) -> None:
+        win = self._help_win
+        if win is None or not content or not widget.winfo_exists():
+            return
+        title, body, *rest = content
+        live = rest[0] if rest else ""
+        wrap = round(HELP_WRAP * self._font_scale)
+        self._help_title.config(text=title)
+        self._help_body.config(text=body, wraplength=wrap)
         if live:
-            tk.Label(
-                frame,
-                text=live,
-                bg=MODS_BG,
-                fg=PRICE,
-                font=self._font("mono", 9),
-                justify="left",
-                anchor="w",
-                wraplength=wrap,
-            ).pack(fill="x", pady=(6, 0))
+            self._help_live.config(text=live, wraplength=wrap)
+            self._help_live.pack(fill="x", pady=(6, 0))
+        else:
+            self._help_live.pack_forget()
         below = anchor if anchor is not None and anchor.winfo_exists() else widget
         win.update_idletasks()
         w, h = win.winfo_reqwidth(), win.winfo_reqheight()
@@ -2653,7 +2789,8 @@ class Overlay:
         if y + h > win.winfo_screenheight():
             y = max(0, widget.winfo_rooty() - h - 2)
         win.geometry(f"+{x}+{y}")
-        self._tooltip = win
+        win.deiconify()
+        win.lift()
 
     def _stat_help(self, column: str):
         """column: a STAT_COLUMNS key (price / profit / ratio / difficulty)."""

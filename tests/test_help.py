@@ -14,6 +14,7 @@ from sniper.overlay import (
     _difficulty_breakdown,
     _money,
     _net_breakdown,
+    _price_status,
     _price_tag,
     _yield_breakdown,
 )
@@ -145,3 +146,47 @@ def test_every_help_entry_has_a_title_and_an_explanation():
 def test_the_latency_help_says_what_the_delay_is_between():
     body = HELP["latency"][1]
     assert "trade site indexed" in body and "Chrome tab received" in body
+
+
+# ------------------------------------------------- the reward price panel
+
+REFRESH = 30 * 60
+
+
+def test_a_fresh_trade_price_is_green_with_its_age():
+    assert _price_status(price(), "done", 240.0, REFRESH) == ("160d", "4m ago", "good")
+
+
+def test_an_overdue_trade_price_is_flagged():
+    """the 30 min re-price should have replaced it: rate limited, or stuck"""
+    assert _price_status(price(), "done", 3 * 3600.0, REFRESH) == (
+        "160d",
+        "3h ago · overdue",
+        "warn",
+    )
+
+
+def test_prices_to_double_check_are_amber_and_say_why():
+    assert _price_status(price(source="cached"), None, 5 * 3600.0, REFRESH)[1:] == (
+        "last session · 5h ago",
+        "warn",
+    )
+    assert _price_status(price(source="live"), None, 60.0, REFRESH)[1:] == (
+        "poe.ninja estimate",
+        "warn",
+    )
+    assert _price_status(price(override_div=150.0), None, None, REFRESH)[1:] == (
+        "your price",
+        "warn",
+    )
+
+
+def test_a_reward_being_refetched_keeps_its_old_price_marked():
+    assert _price_status(price(), "working", 1900.0, REFRESH) == ("↻ 160d", "fetching…", "good")
+
+
+def test_unpriced_rewards_say_where_they_stand():
+    none = price(amount=None, currency="", source="unpriced")
+    assert _price_status(none, "pending", None, REFRESH) == ("—", "queued", "dim")
+    assert _price_status(none, "working", None, REFRESH) == ("—", "fetching…", "dim")
+    assert _price_status(None, "unpriced", None, REFRESH) == ("—", "no listings", "bad")

@@ -160,6 +160,13 @@ mod_pairings:
     match_all: ["legion", "within 2 metres of a player"]
     multiplier: 2
     note: "Legion's dense packs must all be fought point-blank"
+  # Either damage line counts (player "per Equipped Item", minion "per Item
+  # Equipped"). Stacks on top of the LEGION and less-damage rules.
+  - label: "Legion + less damage"
+    match_all: ["legion", "less damage per equipped item|less damage per item equipped"]
+    regex: true
+    multiplier: 2
+    note: "Legion's huge packs with crippled damage take forever to clear"
   - label: "Sirus storms + no travel skills"
     match_all: ["deatomisation storms", "travel skills are disabled"]
     multiplier: 1.5
@@ -176,11 +183,12 @@ mod_pairings:
 # "Less damage or delirium": the second pattern is a regex alternation.
 mod_risks:
   # Even a clean Ultimatum can brick the map. `unless` hands the map to the
-  # more specific entry below when less damage or delirium is present, so
-  # the two never stack: 10% alone, 25% with the penalty.
+  # more specific entries below when less damage, delirium or a fatal timer
+  # is present, so they never stack: 10% alone, 25% with the penalty, 80%
+  # with the fatal timer.
   - label: "Ultimatum"
     match: "an ultimatum encounter|ultimatum encounter waves|ultimatum modifier"
-    unless: "less damage per equipped item|100% delirious"
+    unless: "less damage per equipped item|100% delirious|becomes fatal"
     regex: true
     fail_chance: 0.10
     note: "Can brick the map even without penalties"
@@ -190,9 +198,19 @@ mod_risks:
     match_all:
       - "an ultimatum encounter|ultimatum encounter waves|ultimatum modifier"
       - "less damage per equipped item|100% delirious"
+    unless: "becomes fatal"
     regex: true
     fail_chance: 0.25
     note: "Protect the Altar is likely to fail"
+  # The fatal timer keeps ticking through the encounter's waves. Replaces
+  # both entries above (their `unless` names it), so it never stacks.
+  - label: "Ultimatum + fatal timer"
+    match_all:
+      - "an ultimatum encounter|ultimatum encounter waves|ultimatum modifier"
+      - "becomes fatal"
+    regex: true
+    fail_chance: 0.80
+    note: "The fatal timer runs out during the Ultimatum waves"
   - label: "Breach + less damage/delirium"
     match_all:
       - "unstable breaches must be stabilised"
