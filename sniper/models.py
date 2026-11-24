@@ -202,6 +202,7 @@ def parse_frame(msg: object) -> Frame:
         row_index = msg.get("row_index")
         indexed_at = msg.get("indexed_at")
         type_line = msg.get("type_line")
+        reward = reward_raw or None
         return Listing(
             search_id=search_id,
             tab_id=tab_id,
@@ -209,13 +210,21 @@ def parse_frame(msg: object) -> Frame:
             item_name=item_name,
             price=Price(amount=amount, currency=currency.lower()),
             seller=seller,
-            reward=reward_raw or None,
+            reward=reward,
             mods=tuple(mods_raw),
             row_index=row_index if isinstance(row_index, int) else -1,
             detected_at=detected_at,
             indexed_at=indexed_at if isinstance(indexed_at, str) and indexed_at else None,
             capture=msg.get("capture") if msg.get("capture") in ("net", "dom") else "",
-            generic=msg.get("generic") is True,
+            # Every Valdo map carries the Reward property (it is what gets
+            # priced), so a listing without one is a non-Valdo hit whatever
+            # the tab claims. The tab's own flag can be wrong: after an
+            # in-place search edit its page-load query state goes stale, and
+            # with fewer than 5 rows on screen the row fallback cannot tell
+            # either, so a real hit (an Ephemeral Edge) arrived generic:false
+            # and sat silently as no_reference. In ~37k logged listings a
+            # reward-less one was never a Valdo map.
+            generic=msg.get("generic") is True or reward is None,
             type_line=type_line if isinstance(type_line, str) and type_line else None,
         )
 

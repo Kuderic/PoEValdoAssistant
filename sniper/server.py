@@ -226,6 +226,14 @@ class SniperServer:
             if tab is not None and tab.search_reward != listing.reward:
                 tab.search_reward = listing.reward
                 self._notify_tabs()
+        elif listing.generic:
+            # a reward-less listing proves the tab is a non-Valdo live search
+            # even when its hello said otherwise (see models.parse_frame), so
+            # the status strip shows it as one rather than "unidentified"
+            tab = self.tabs.get(listing.tab_id)
+            if tab is not None and tab.search_kind != "any":
+                tab.search_kind = "any"
+                self._notify_tabs()
         self._listing_tab[listing.listing_id] = listing.tab_id
         while len(self._listing_tab) > _ROUTE_CAP:
             self._listing_tab.popitem(last=False)

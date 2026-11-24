@@ -69,6 +69,15 @@ the server registers rewards for trade-API pricing, and a stray one would
 spend requests from an already-tight budget on something nobody asked to
 price.
 
+The converse is enforced server-side: a frame with `reward: null` is
+treated as generic **whatever its `generic` flag says** (`parse_frame`),
+and its tab's `search_kind` is promoted to `"any"`. Every Valdo map carries
+the Reward property, so no reward means not Valdo. The tab's own flag can
+be wrong: after an in-place search edit the page-load query state is stale,
+and with fewer than 5 rows on screen the row fallback cannot decide either,
+so a real hit used to arrive `generic: false` and sit silently as
+`no_reference`.
+
 `capture` exists because the two paths are silently interchangeable: they
 share the `seen` dedup, so whichever fires first wins and the other is a
 no-op. Only `net` carries `indexed_at`, so if the DOM path starts winning

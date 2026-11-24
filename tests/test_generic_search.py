@@ -53,8 +53,32 @@ def test_generic_listing_alerts_with_no_reference_price():
     assert d.reference is None and d.net_div is None
 
 
-def test_the_same_listing_without_the_flag_does_not_alert():
-    assert decide(listing(reward=None, item_name="Doom Coil")).verdict == "no_reference"
+def test_a_rewardless_listing_alerts_even_when_the_tab_says_valdo():
+    """Regression: after an in-place search edit the tab's query state went
+    stale and too few rows were on screen for the row fallback, so it sent
+    an Ephemeral Edge with generic:false. It sat as no_reference: no alert,
+    no sound. Every Valdo map has a Reward, so no reward means not Valdo."""
+    lst = listing(reward=None, item_name="Ephemeral Edge", generic=False)
+    assert lst.generic is True
+    assert decide(lst).verdict == "alert"
+
+
+def test_a_listing_with_a_reward_stays_in_the_valdo_lane():
+    lst = listing(generic=False)
+    assert lst.reward and lst.generic is False
+
+
+def test_a_rewardless_listing_marks_its_tab_as_a_live_search():
+    """So the status strip counts it as a live search, not 'unidentified'."""
+    from sniper.server import SniperServer, TabState
+
+    config = make_config()
+    server = SniperServer(config, PriceBook(config), NO_RULES)
+    lst = listing(reward=None, generic=False)
+    server.tabs[lst.tab_id] = TabState(ws=None, search_id=lst.search_id, last_hello_monotonic=0)
+    server._handle_listing(lst)
+    assert server.tabs[lst.tab_id].search_kind == "any"
+    assert server.active_rewards() == set()
 
 
 def test_key_prefers_the_base_type():
