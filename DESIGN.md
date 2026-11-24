@@ -186,16 +186,17 @@ listing regardless of profit.
 
 Generic alerts carry `difficulty = 0`, which makes `net_yield`
 return `None` — they can never enter the Yield column or perturb the Valdo
-ranking maths. Between the two kinds the top slot goes to whichever
-produced the **most recent** alert (recency is the only honest cross-type
-comparison when one side has no efficiency figure); within each kind the
-natural order still applies, so a session with no generic tabs open ranks
-exactly as it always did.
+ranking maths. A generic alert **always holds the top slot**, above every
+Valdo alert including (super) jackpots: it comes from a search the user
+built by hand for one item, so it is the rare one worth interrupting for.
+Generic alerts rank newest first among themselves (they have no efficiency
+figure); Valdo alerts keep their natural order below, so a session with no
+generic tabs open ranks exactly as it always did.
 
 **Jackpot tier.** A Valdo alert whose net AND yield both clear
 `alerts.jackpot_min_net` / `jackpot_min_yield` (`margin.is_jackpot`) is a
-jackpot. It outranks every non-jackpot, generic hits included: it clears
-both bars, and a newer generic hit must not steal the press meant for it.
+jackpot. It outranks every other Valdo alert: it clears both bars. Only a
+generic hit outranks it.
 Generic hits and currency mismatches are never jackpots (the scam guard's
 case must not be pushed to the top). A jackpot gets a magenta banner,
 frame and feed row, and loops an alarm (`SoundWorker` keeps play/stop
@@ -203,15 +204,18 @@ ordered) while any live jackpot is unsilenced (`alerts.jackpots_to_ring`).
 Travel and expiry end it by removing the alert; clicking the banner
 silences the jackpots on screen, per listing, so a new one still rings.
 While it rings, routine alert sounds are skipped so they cannot cut it
-off. The window is never pulled forward. The banner click is sound-only.
+off. A generic hit is the exception: while one holds the top slot
+`alarm_kind` returns None, so the alarm pauses, the generic sound plays,
+and the alarm resumes once that hit is traveled to or expires (its
+silencing banner is not on screen meanwhile, so it must not keep looping). The window is never pulled forward. The banner click is sound-only.
 
 A **super jackpot** is a jackpot that also clears
 `alerts.super_jackpot_min_net` / `super_jackpot_min_yield`
 (`AlertStore.is_super_jackpot`). Requiring the jackpot first keeps every
 jackpot exclusion and means super bars set below the jackpot bars cannot
 skip a tier. `AlertView.super_jackpot` implies `jackpot`, so code that only
-knows jackpots still treats one correctly. The rank key is (super, jackpot,
-generic order, yield). The overlay styles both tiers through one `_Tier`
+knows jackpots still treats one correctly. The rank key is (generic, super,
+jackpot, yield or recency). The overlay styles both tiers through one `_Tier`
 palette (gold for super). `alerts.alarm_kind` picks the super alarm while
 an unsilenced super jackpot is live, else the jackpot alarm; switching
 kinds swaps the loop. None of this touches the click path: one press is

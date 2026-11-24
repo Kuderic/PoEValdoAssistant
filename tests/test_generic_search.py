@@ -149,16 +149,17 @@ def test_a_newer_generic_alert_takes_the_top_slot():
     assert store.views()[0].listing_id == "ring"
 
 
-def test_a_newer_valdo_alert_takes_it_back_and_keeps_p100d_order():
+def test_a_generic_alert_stays_on_top_of_newer_valdo_alerts():
     store = store_with(
         decide(generic(listing_id="ring")),
         valdo_alert("pricey", 150),
         valdo_alert("cheap", 10),
     )
     ranked = [v.listing_id for v in store.views()]
-    # Valdo group on top because it produced the most recent alert, and
-    # within it yield still wins - "cheap" outranks the newer "pricey"
-    assert ranked == ["cheap", "pricey", "ring"]
+    # the generic hit keeps the top slot, and below it yield still decides
+    # the Valdo order - "cheap" outranks the newer "pricey"
+    assert ranked == ["ring", "cheap", "pricey"]
+    assert store.consume_best().decision.listing.listing_id == "ring"
 
 
 def test_generic_alerts_among_themselves_rank_newest_first():

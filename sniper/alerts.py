@@ -5,7 +5,8 @@ ToS-critical semantics (DESIGN.md):
   highest profit per 100 difficulty (see _rank), not the biggest absolute
   profit - except that a jackpot (big net AND big yield) always outranks a
   non-jackpot, and a super jackpot (higher bars still) outranks a jackpot:
-  it is the best deal on screen by both measures;
+  it is the best deal on screen by both measures. A generic (non-Valdo)
+  hit outranks all of them, newest first;
 - expiry: a stale listing can never be traveled to by reflex;
 - single consumption: a consumed listing id can never alert or be clicked
   again, even if the tab re-pushes it;
@@ -293,56 +294,34 @@ class AlertStore:
 
     # --------------------------------------------------------------- queries
 
-    def _generic_on_top(self) -> bool:
-        """Which KIND of alert holds the top slot: whichever produced the
-        most recent one.
+    @staticmethod
+    def _rank(a: Alert) -> tuple[bool, bool, bool, float]:
+        """Sort key, best first: (generic, super jackpot, jackpot, order).
 
-        Generic (non-Valdo) alerts have no efficiency to rank on, so they
-        cannot be compared to Valdo alerts on yield. Recency is the honest
-        cross-type tiebreak and the predictable one for reflex pressing -
-        the thing that just made a sound is the thing the hotkey takes.
-        Within each kind the natural order still applies, so a session with
-        no generic tabs open ranks exactly as it always did.
-        """
-        newest: dict[bool, float | None] = {True: None, False: None}
-        for a in self._alerts.values():
-            kind = a.decision.listing.generic
-            if newest[kind] is None or a.created_monotonic > newest[kind]:
-                newest[kind] = a.created_monotonic
-        if newest[True] is None:
-            return False
-        return newest[False] is None or newest[True] > newest[False]
-
-    def _rank_key(self, generic_first: bool):
-        """Sort key: (does this kind hold the top slot, order within kind).
+        A generic (non-Valdo) hit always holds the top slot: it comes from a
+        live search the user built by hand for one item, so it is the rare
+        one worth interrupting for - above every Valdo alert, jackpots
+        included (the jackpot alarm pauses while one is on top, see
+        alarm_kind). Generic hits have no efficiency to compare, so among
+        themselves the newest wins: the thing that just made a sound is the
+        thing the hotkey takes.
 
         Valdo alerts rank on divine profit per 100 difficulty (the overlay's
         Yield column, same unit as the threshold) - efficiency rather than
         absolute surplus, so the hotkey takes the map that pays best for
         what it costs to run: a clean 25-difficulty map at +20 div
-        (80/100D) outranks a Feared+VOID monster at +50 div (4/100D).
-        Generic alerts have no such key and rank newest-first.
-
-        A jackpot outranks everything: it clears both the big-money and the
-        big-yield bar, and a newer generic hit must not quietly steal the
-        press meant for it. A super jackpot outranks a jackpot.
+        (80/100D) outranks a Feared+VOID monster at +50 div (4/100D). A
+        jackpot outranks any other Valdo alert, and a super jackpot a
+        jackpot.
         """
-
-        def key(a: Alert) -> tuple[bool, bool, bool, float]:
-            d = a.decision
-            if d.listing.generic:
-                return (False, False, generic_first, a.created_monotonic)
-            ratio = net_yield(d.net_div, d.difficulty) or 0.0
-            return (a.super_jackpot, a.jackpot, not generic_first, ratio)
-
-        return key
-
-    def _rank(self, a: Alert) -> tuple[bool, bool, bool, float]:
-        return self._rank_key(self._generic_on_top())(a)
+        d = a.decision
+        if d.listing.generic:
+            return (True, False, False, a.created_monotonic)
+        ratio = net_yield(d.net_div, d.difficulty) or 0.0
+        return (False, a.super_jackpot, a.jackpot, ratio)
 
     def _best(self) -> Alert | None:
-        key = self._rank_key(self._generic_on_top())
-        return max(self._alerts.values(), key=key, default=None)
+        return max(self._alerts.values(), key=self._rank, default=None)
 
     def view_of(self, listing_id: str) -> AlertView | None:
         alert = self._alerts.get(listing_id)
@@ -350,8 +329,7 @@ class AlertStore:
 
     def views(self) -> tuple[AlertView, ...]:
         """Top alerts by profit surplus, best first, capped for display."""
-        key = self._rank_key(self._generic_on_top())
-        ranked = sorted(self._alerts.values(), key=key, reverse=True)
+        ranked = sorted(self._alerts.values(), key=self._rank, reverse=True)
         return tuple(a.view() for a in ranked[: self._max_display])
 
     def __len__(self) -> int:
@@ -366,7 +344,14 @@ class AlertStore:
 
 def alarm_kind(alerts: tuple[AlertView, ...], silenced: set[str]) -> str | None:
     """Which alarm should loop: "super" while any unsilenced super jackpot
-    is live, else "jackpot" while any unsilenced jackpot is, else None."""
+    is live, else "jackpot" while any unsilenced jackpot is, else None.
+
+    `alerts` is ranked best first. While a generic hit holds the top slot
+    the alarm pauses: that hit gets its own sound, the hotkey goes to it,
+    and the banner that silences the alarm is not on screen. Once it is
+    traveled to or expires, the jackpot is back on top and rings again."""
+    if alerts and alerts[0].generic:
+        return None
     ringing = jackpots_to_ring(alerts, silenced)
     if any(a.super_jackpot for a in alerts if a.listing_id in ringing):
         return "super"

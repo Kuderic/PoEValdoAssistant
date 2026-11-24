@@ -1202,6 +1202,8 @@ class Overlay:
             self._sync_jackpot_alarm()
         # one sound per batch: SND_ASYNC bursts cancel anyway. A ringing
         # jackpot alarm owns the speaker - a routine woop would cut it off.
+        # A generic hit is never blocked by it: taking the top slot pauses
+        # the alarm (alarm_kind, synced just above), so it always sounds.
         if new_alert and not self._jp_ringing:
             # A batch carrying a generic hit plays the generic sound: those
             # are the rare, hand-picked ones, so if a batch mixes kinds the

@@ -268,14 +268,17 @@ Two things worth knowing:
   reward, so it costs zero trade-API requests — open as many as you like
   without pushing pricing closer to a rate-limit lockout. (Your browser's
   own fetches still count; see Maintenance.)
-- **The hotkey goes to whichever alert arrived most recently** when both
-  kinds are live — the thing that just made a sound is the thing you
-  travel to. Valdo alerts still rank among themselves by yield, so a
-  session with no generic tabs open behaves exactly as before.
+- **A non-Valdo hit always takes the top of the overlay**, above every
+  Valdo alert, jackpots and super jackpots included, so the hotkey travels
+  to it. Several of them rank newest first. Valdo alerts still rank among
+  themselves by yield below it, so a session with no generic tabs open
+  behaves exactly as before.
 
 **These get their own sound.** A non-Valdo hit plays `tada.wav` instead of
 the usual Windows Exclamation woop, so you can tell one apart from routine
-Valdo traffic without looking at the screen. Point `alerts.generic_sound` at
+Valdo traffic without looking at the screen. It always plays, even while a
+jackpot alarm is ringing: the alarm pauses while the non-Valdo hit is on
+top and starts again once you've travelled to it or it expires. Point `alerts.generic_sound` at
 any `.wav` to change it; `alerts.volume` scales both. Keep any replacement
 short — alerts expire in seconds and the next one cancels this one, so a
 5-second alarm would still be playing after you'd already travelled.
@@ -317,7 +320,7 @@ yield ≥ 50 by default) is a super jackpot:
 - a gold **★★ SUPER JACKPOT** banner, frame and TELEPORT button;
 - its own alarm (`Alarm03.wav`), so you can tell the tiers apart by ear. A
   super jackpot arriving while a jackpot rings switches to its alarm;
-- it outranks a jackpot for the hotkey;
+- it outranks a jackpot for the hotkey (only a non-Valdo hit outranks it);
 - `★★ SUPER` in gold in the live feed.
 
 Silence it the same way, by clicking the banner. That silences every

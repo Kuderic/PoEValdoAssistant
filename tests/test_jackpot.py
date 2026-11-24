@@ -3,8 +3,8 @@
 Motivated by a half-price Nimis (+79.5d net, +144 yield, 55.2 difficulty)
 that expired unseen. These pin the detection rule, its exclusions
 (generic hits, currency mismatches), the ranking guarantee that a jackpot is
-the hotkey's top pick, and the ordered sound worker. (A jackpot used to
-loop an alarm and pull the overlay forward; both were removed on request.)
+the hotkey's top Valdo pick (only a generic hit outranks it), the alarm, and
+the ordered sound worker.
 """
 
 from __future__ import annotations
@@ -117,13 +117,35 @@ def test_jackpot_outranks_a_higher_yield_non_jackpot():
     assert s.consume_best().decision.listing.listing_id == "jp"
 
 
-def test_jackpot_outranks_a_newer_generic_hit():
-    s = store()
-    s.insert(decision("jp", 80, 55))
-    time.sleep(0.01)
-    g = decision("ring", 0, 0)
-    s.insert(replace(g, listing=replace(g.listing, generic=True)))
-    assert s.consume_best().decision.listing.listing_id == "jp"
+def _generic(lid: str):
+    g = decision(lid, 0, 0)
+    return replace(g, listing=replace(g.listing, generic=True))
+
+
+@pytest.mark.parametrize("newer", ["generic", "jackpot"])
+def test_a_generic_hit_outranks_even_a_super_jackpot(newer):
+    """A hand-built live search is the one worth interrupting for, whichever
+    arrived first."""
+    s = super_store()
+    first, second = (decision("super", 80, 55), _generic("ring"))
+    if newer == "jackpot":
+        first, second = second, first
+    s.insert(first)
+    time.sleep(0.02)
+    s.insert(second)
+    assert s.views()[1].super_jackpot
+    assert s.consume_best().decision.listing.listing_id == "ring"
+
+
+def test_alarm_pauses_while_a_generic_hit_is_on_top():
+    """Its own sound must be heard, and the banner that silences the alarm
+    is not on screen. Once it is gone the jackpot rings again."""
+    s = super_store(consume_mode="top")  # travel leaves the jackpot behind
+    s.insert(decision("super", 80, 55))
+    s.insert(_generic("ring"))
+    assert alarm_kind(s.views(), set()) is None
+    s.consume_best()  # traveled to the generic hit
+    assert alarm_kind(s.views(), set()) == "super"
 
 
 def test_restored_runner_up_keeps_its_jackpot_flag():
