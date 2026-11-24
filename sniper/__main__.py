@@ -107,6 +107,11 @@ class App:
         # never get a primary price, so they must not stall the warm-up
         self._warmup_settled: set[str] = set()
         self._pricing_now: str | None = None  # reward being fetched right now
+        # rewards the user asked to re-check now (the price panel's ↻ button):
+        # they jump the queue on the price loop's next pass, still under the
+        # trade API's rate limits. _price_wake cuts the loop's nap short.
+        self._recheck: set[str] = set()
+        self._price_wake = asyncio.Event()
 
     # ------------------------------------------------------------ callbacks
 
@@ -174,6 +179,8 @@ class App:
             # would hide every refresh after the first
             if reward == self._pricing_now:
                 state = "working"
+            elif reward in self._recheck:
+                state = "queued"  # the user asked for a re-check; not started yet
             elif primary:
                 state = "done"
             elif reward in self._warmup_settled:
@@ -404,6 +411,34 @@ class App:
         self._update_warmup()
         self._push_reward_prices()
 
+    def request_price_recheck(self, reward: str) -> None:
+        """Price panel ↻ button: re-price this reward now instead of waiting
+        for its scheduled refresh. Asyncio thread.
+
+        One press queues one fetch. It goes through the same pricer as every
+        scheduled re-price, so the trade API's rate-limit headers and 429
+        backoff still apply - during a backoff the request waits for it to
+        lift. A press while the reward is already queued or being fetched
+        does nothing: that fetch is the answer.
+        """
+        if not self.config.trade_pricing.enabled:
+            return
+        if reward not in self.server.active_rewards():
+            return
+        if reward == self._pricing_now or reward in self._recheck:
+            event("price_recheck_ignored", reward=reward, reason="already in progress")
+            return
+        self._recheck.add(reward)
+        event("price_recheck_requested", reward=reward)
+        self._update_warmup()  # the row shows "queued" straight away
+        self._price_wake.set()
+
+    async def _price_nap(self, seconds: float) -> None:
+        """Sleep between price-loop passes, waking early for a re-check."""
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._price_wake.wait(), seconds)
+        self._price_wake.clear()
+
     # ----------------------------------------------------------- long tasks
 
     async def expiry_loop(self) -> None:
@@ -492,13 +527,18 @@ class App:
                 # a tab opened while we are stalled is still an active reward
                 # the user can hover; without this its row never appears
                 self._push_reward_prices()
-                await asyncio.sleep(2 if self._warmup_active else 15)
+                await self._price_nap(2 if self._warmup_active else 15)
                 continue
             now = time.monotonic()
-            due = [
+            active = sorted(self.server.active_rewards())
+            # user-requested re-checks first; a request for a reward whose
+            # search has since closed is dropped
+            forced = [r for r in active if r in self._recheck]
+            self._recheck.clear()
+            due = forced + [
                 r
-                for r in sorted(self.server.active_rewards())
-                if now - last_priced.get(r, -interval_s) >= interval_s
+                for r in active
+                if r not in forced and now - last_priced.get(r, -interval_s) >= interval_s
             ]
             for reward in due:
                 self._pricing_now = reward  # so the startup panel can say so
@@ -516,6 +556,9 @@ class App:
                         retry_in_s=round(max(pricer.backoff_remaining, 1), 1),
                         unpriced=len(due) - due.index(reward),
                     )
+                    # a re-check the user asked for still happens, just
+                    # after the backoff lifts
+                    self._recheck.update(r for r in due[due.index(reward) :] if r in forced)
                     break
                 except Exception as e:  # pricing must never kill the app
                     # only THIS reward is broken (bad payload, odd name);
@@ -562,7 +605,7 @@ class App:
             self._push_reward_prices()
             self._update_warmup()
             self._push_pricing_health(pricer)
-            await asyncio.sleep(2 if self._warmup_active else 15)
+            await self._price_nap(2 if self._warmup_active else 15)
 
     async def price_refresh_loop(self, ninja: NinjaClient) -> None:
         interval_s = self.config.ninja.refresh_minutes * 60
@@ -680,6 +723,9 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
     def on_price_override(reward: str, divine: float | None) -> None:
         loop.call_soon_threadsafe(app.set_price_override, reward, divine)
 
+    def on_price_recheck(reward: str) -> None:
+        loop.call_soon_threadsafe(app.request_price_recheck, reward)
+
     def on_jackpot_change(
         min_net: float, min_yield: float, super_net: float, super_yield: float
     ) -> None:
@@ -712,6 +758,7 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
         on_travel=on_travel,
         on_settings_change=on_settings_change,
         on_price_override=on_price_override,
+        on_price_recheck=on_price_recheck,
         on_jackpot_change=on_jackpot_change,
         overrides_path=config.state_dir / SCORING_OVERRIDES_NAME,
         on_update_install=on_update_install,

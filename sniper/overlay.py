@@ -111,11 +111,10 @@ HELP = {
     ),
     "prices": (
         "Reward prices",
-        "Where each reward unique's value comes from. Trade prices = the average of "
-        "the cheapest instant-buyout listings on the trade site (the accurate source). "
-        "“Est.” = some rewards fell back to poe.ninja's median, which can be well "
-        "off. RATE LIMITED = the trade site asked us to slow down; prices resume by "
-        "themselves.",
+        "Reward values are the average of the cheapest instant-buyout listings on "
+        "the trade site. Green = all priced. “Est.” = some rewards fell back to "
+        "poe.ninja's median, which can be well off. RATE LIMITED = the trade site "
+        "asked us to slow down; prices resume by themselves.",
     ),
     "mute": ("Sound", "Mute or unmute alert sounds, including the jackpot alarm."),
     "settings": (
@@ -171,12 +170,13 @@ HELP = {
         "Amber: overdue for a re-check, from your last session, a poe.ninja "
         "estimate, or a price you pinned - check it before travelling.\n"
         "Red: no buyable listings found, so this reward cannot be priced.\n"
-        "↻ marks a reward being re-fetched right now.",
+        "↻ marks a reward being re-fetched right now. “recheck” re-prices that "
+        "reward now instead of waiting for its scheduled refresh.",
     ),
     "reward_value": (
         "Reward value",
         "What this map's reward unique sells for, and how long ago that price was "
-        "fetched. NET is worked out from it.",
+        "checked on the trade site. NET is worked out from it.",
     ),
     "feed": (
         "Recent listings",
@@ -215,7 +215,6 @@ HELP = {
 }
 # reference sources as the reward-value line names them
 SOURCE_WORDS = {
-    "trade": "trade listings",
     "cached": "last session",
     "live": "poe.ninja estimate",
     "stale": "poe.ninja estimate",
@@ -287,15 +286,19 @@ def _price_status(entry, state: str | None, age_s: float | None, refresh_s: floa
     """One reward's price as the price panel shows it: (price, note, level).
 
     entry: RewardPrice or None; state: the warm-up state ("done", "working",
-    "pending", "unpriced") or None. level says how far to trust the price:
+    "queued", "pending", "unpriced") or None ("queued" = a recheck the user
+    asked for, not started yet). level says how far to trust the price:
     "good" a fresh trade price, "warn" anything to double-check (overdue,
     last session, a poe.ninja estimate, a pinned price), "bad" unpriceable,
     "dim" not priced yet or a fixed config price.
     """
     if entry is None or entry.amount is None:
-        note = {"working": "fetching…", "pending": "queued", "unpriced": "no listings"}.get(
-            state or "", "pricing…"
-        )
+        note = {
+            "working": "fetching…",
+            "queued": "queued",
+            "pending": "queued",
+            "unpriced": "no listings",
+        }.get(state or "", "pricing…")
         return ("—", note, "bad" if state == "unpriced" else "dim")
     price = _money(entry.amount, entry.currency)
     ago = _ago(age_s)
@@ -312,9 +315,11 @@ def _price_status(entry, state: str | None, age_s: float | None, refresh_s: floa
         # (rate limited, or the trade site is struggling)
         note, level = f"{ago} · overdue", "warn"
     else:
-        note, level = ago or "trade", "good"
+        note, level = ago, "good"
     if state == "working":
         price, note = f"↻ {price}", "fetching…"
+    elif state == "queued":
+        note = "recheck queued"
     return (price, note, level)
 
 
@@ -591,6 +596,9 @@ class Overlay:
         # Callable[[str, float | None], None]: pin a reward's reference price
         # for this session (None clears it back to automatic pricing)
         on_price_override=None,
+        # Callable[[str], None]: price panel recheck button - re-price this
+        # reward now rather than at its next scheduled refresh
+        on_price_recheck=None,
         # Callable[[float, float], None]: jackpot bars (min net, min yield)
         on_jackpot_change=None,
         overrides_path=None,  # Path for scoring_overrides.yaml persistence
@@ -603,6 +611,7 @@ class Overlay:
         self._on_travel = on_travel
         self._on_settings_change = on_settings_change
         self._on_price_override = on_price_override
+        self._on_price_recheck = on_price_recheck
         self._on_jackpot_change = on_jackpot_change
         self._on_update_install = on_update_install
         self._update: UpdateStatus | None = None
@@ -1288,8 +1297,9 @@ class Overlay:
             self._sync_jackpot_alarm()
         # one sound per batch: SND_ASYNC bursts cancel anyway. A ringing
         # jackpot alarm owns the speaker - a routine woop would cut it off.
-        # A generic hit is never blocked by it: taking the top slot pauses
-        # the alarm (alarm_kind, synced just above), so it always sounds.
+        # That includes a generic hit: a live jackpot outranks it, so the
+        # alarm keeps ringing for the hotkey's target. Silence the banner
+        # and later generic hits sound again.
         if new_alert and not self._jp_ringing:
             # A batch carrying a generic hit plays the generic sound: those
             # are the rare, hand-picked ones, so if a batch mixes kinds the
@@ -1377,18 +1387,20 @@ class Overlay:
         self._searches_label.config(text=f"Watching  {' · '.join(parts)}" if parts else "")
 
     def _reward_value_text(self, view: AlertView) -> str:
-        """The line under a Valdo alert's name: what its reward is worth, where
-        that figure came from and how long ago it was fetched."""
+        """The line under a Valdo alert's name: what its reward is worth, when
+        that price was last checked, and its source when it is not trade."""
         if view.generic or not view.reference_amount:
             return ""
         bits = [f"Reward worth {_money(view.reference_amount, view.reference_currency)}"]
+        # a trade price is the normal case and goes unnamed; any other source
+        # (last session, poe.ninja, a pinned price) is worth calling out
         source = SOURCE_WORDS.get(view.reference_source)
         if source:
             bits.append(source)
         entry = next((e for e in self._reward_prices if e.reward == view.key), None)
         ago = _ago(self._live_age(entry)) if entry is not None else ""
         if ago:
-            bits.append(f"fetched {ago}")
+            bits.append(f"price checked {ago}")
         return "  ·  ".join(bits)
 
     def _refresh_reward_value(self) -> None:
@@ -1451,7 +1463,8 @@ class Overlay:
             self._price_label.config(text=f"Est. prices {health.unpriced}/{health.total}", fg=WARN)
             return
         if self._config.trade_pricing.enabled:
-            self._price_label.config(text="Trade prices", fg=GOOD)
+            # healthy: prices always come from trade, nothing worth saying
+            self._price_label.config(text="Prices", fg=GOOD)
             return
         status = self._ninja_status  # trade pricing off: ninja IS the source
         color = {"live": GOOD, "stale": WARN, "manual": DIM}.get(status, DIM)
@@ -1464,9 +1477,10 @@ class Overlay:
             return False
         return bool(self._warmup[0]) or any(row[1] == "working" for row in self._warmup[3])
 
-    def _price_rows(self) -> list[tuple[str, str, str, str]]:
-        """(reward name, price, note, level) for every searched reward, from
-        the latest RewardPrices merged with the warm-up's fetch states."""
+    def _price_rows(self) -> list[tuple[str, str, str, str, str, str | None]]:
+        """(reward key, reward name, price, note, level, fetch state) for
+        every searched reward, from the latest RewardPrices merged with the
+        warm-up's fetch states."""
         states = {row[0]: row[1] for row in (self._warmup[3] if self._warmup else ())}
         prices = {e.reward: e for e in self._reward_prices}
         refresh_s = self._config.trade_pricing.refresh_minutes * 60
@@ -1474,8 +1488,9 @@ class Overlay:
         for reward in sorted(set(prices) | set(states), key=_display_name):
             entry = prices.get(reward)
             age = self._live_age(entry) if entry is not None else None
-            price, note, level = _price_status(entry, states.get(reward), age, refresh_s)
-            rows.append((_display_name(reward), price, note, level))
+            state = states.get(reward)
+            price, note, level = _price_status(entry, state, age, refresh_s)
+            rows.append((reward, _display_name(reward), price, note, level, state))
         return rows
 
     def _render_price_panel(self) -> None:
@@ -1499,9 +1514,12 @@ class Overlay:
         )
         header.pack(fill="x", padx=6, pady=(0, 3))
         colour = {"good": GOOD, "warn": WARN, "bad": BAD, "dim": DIM}
-        for name, price, note, level in rows:
+        can_recheck = self._on_price_recheck is not None and self._config.trade_pricing.enabled
+        for reward, name, price, note, level, state in rows:
             line = tk.Frame(self._price_panel, bg=MODS_BG)
             line.pack(fill="x", padx=6, pady=1)
+            if can_recheck:
+                self._recheck_button(line, reward, busy=state in ("working", "queued"))
             tk.Label(
                 line,
                 text=f"{note:<20}",
@@ -1534,6 +1552,31 @@ class Overlay:
             member_of=self._price_panel,
         )
         self._price_panel.pack(fill="x", padx=12, pady=(6, 0), before=self._runners)
+
+    def _recheck_button(self, parent: tk.Widget, reward: str, busy: bool) -> None:
+        """A row's "recheck" button: re-price this reward now. One click asks
+        for one fetch; while that fetch is queued or running the button is
+        greyed out and ignores clicks (the app ignores repeats too)."""
+        btn = tk.Label(
+            parent,
+            text="recheck",
+            bg=MODS_BG if busy else BOX,
+            fg=FAINT if busy else FG,
+            font=self._font("ui", 8),
+            padx=5,
+            cursor="arrow" if busy else "hand2",
+        )
+        btn.pack(side="right", padx=(8, 0))
+        if busy:
+            return
+
+        def click(_event=None) -> None:
+            btn.config(bg=MODS_BG, fg=FAINT, cursor="arrow")
+            btn.unbind("<Button-1>")
+            event("price_recheck_clicked", reward=reward)
+            self._on_price_recheck(reward)
+
+        btn.bind("<Button-1>", click)
 
     def _refresh_price_panel(self) -> None:
         """Re-render the panel if it is the one on screen (idle card)."""

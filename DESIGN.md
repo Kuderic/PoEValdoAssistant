@@ -199,17 +199,18 @@ listing regardless of profit.
 
 Generic alerts carry `difficulty = 0`, which makes `net_yield`
 return `None` — they can never enter the Yield column or perturb the Valdo
-ranking maths. A generic alert **always holds the top slot**, above every
-Valdo alert including (super) jackpots: it comes from a search the user
-built by hand for one item, so it is the rare one worth interrupting for.
+ranking maths. A generic alert holds the top slot above every ordinary
+Valdo alert (only a jackpot or super jackpot outranks it): it comes from a
+search the user built by hand for one item, so it is the rare one worth
+interrupting for.
 Generic alerts rank newest first among themselves (they have no efficiency
 figure); Valdo alerts keep their natural order below, so a session with no
 generic tabs open ranks exactly as it always did.
 
 **Jackpot tier.** A Valdo alert whose net AND yield both clear
 `alerts.jackpot_min_net` / `jackpot_min_yield` (`margin.is_jackpot`) is a
-jackpot. It outranks every other Valdo alert: it clears both bars. Only a
-generic hit outranks it.
+jackpot. It outranks every other alert, generic hits included: it clears
+both bars, and it is the one ringing, so it is what the hotkey takes.
 Generic hits and currency mismatches are never jackpots (the scam guard's
 case must not be pushed to the top). A jackpot gets a magenta banner,
 frame and feed row, and loops an alarm (`SoundWorker` keeps play/stop
@@ -217,10 +218,10 @@ ordered) while any live jackpot is unsilenced (`alerts.jackpots_to_ring`).
 Travel and expiry end it by removing the alert; clicking the banner
 silences the jackpots on screen, per listing, so a new one still rings.
 While it rings, routine alert sounds are skipped so they cannot cut it
-off. A generic hit is the exception: while one holds the top slot
-`alarm_kind` returns None, so the alarm pauses, the generic sound plays,
-and the alarm resumes once that hit is traveled to or expires (its
-silencing banner is not on screen meanwhile, so it must not keep looping). The window is never pulled forward. The banner click is sound-only.
+off, generic hits included: a live jackpot outranks them, so the alarm
+keeps ringing for the hotkey's target and the generic hit waits below it.
+(`alarm_kind` still returns None if a generic hit is ever on top, which
+can only happen with no jackpot live.) The window is never pulled forward. The banner click is sound-only.
 
 A **super jackpot** is a jackpot that also clears
 `alerts.super_jackpot_min_net` / `super_jackpot_min_yield`
@@ -445,8 +446,9 @@ with `Overlay._bind_help`):
 
 Reward prices sit next to the reward names: on the Watching line
 (`Nimis 160.5d (4m ago)`, items joined with non-breaking spaces so wraps fall
-between rewards) and under a Valdo alert's name (`Reward worth 101d · trade
-listings · fetched 2m ago`). `RewardPrice.age_s` is the age at push time. The
+between rewards) and under a Valdo alert's name (`Reward worth 101d · price
+checked 2m ago`; prices normally come from trade, so only another source -
+last session, poe.ninja, a pinned price - is named). `RewardPrice.age_s` is the age at push time. The
 overlay counts on from when the push arrived, and re-renders both lines every
 30 s, so the age keeps ticking between pushes.
 
@@ -458,6 +460,14 @@ and source, coloured by how far to trust it (`_price_status`):
   price, a poe.ninja estimate, or a pinned price;
 - red: no buyable listings;
 - ↻: being re-fetched (state from `WarmupStatus`).
+
+Each row has a **recheck** button (`App.request_price_recheck`). One click
+queues one fetch for that reward: it jumps the scheduled queue, wakes the
+price loop's nap (`_price_nap`), and goes through the same `TradePricer`,
+so rate-limit headers and the 429 backoff still apply; a request that hits
+a backoff is kept and runs after it lifts. While queued the row reads
+`recheck queued` (state "queued") and the button is greyed out; a repeat
+click while queued or fetching is ignored.
 
 This lets a price be judged before an alert arrives. The panel replaces the
 old warm-up panel, which showed only while pricing was busy. It hides while

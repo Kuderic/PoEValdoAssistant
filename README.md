@@ -176,7 +176,7 @@ You need Windows, Chrome and Path of Exile. About five minutes:
    itself, at `http://127.0.0.1:8765/valdo-sniper.user.js`.)
 7. **Open your Valdo live searches** on the trade site and press *Live
    search*. Each tab connects on its own, and the status strip turns green:
-   `4 tabs · PoE running · Trade prices`. If it stays at `0 tabs`, step 5
+   `4 tabs · PoE running · Prices`. If it stays at `0 tabs`, step 5
    is the usual cause.
 
 Run PoE in **windowed fullscreen**, not exclusive fullscreen, or the overlay
@@ -271,7 +271,7 @@ also work their sum through for the listing on screen, e.g. NET shows
 
 | Element | What it tells you |
 |---|---|
-| **Reward worth …** | What the map's reward unique sells for, where that price came from (trade listings / last session / poe.ninja estimate / your price) and how long ago it was fetched. NET is worked out from it |
+| **Reward worth …** | What the map's reward unique sells for and when that price was last checked on the trade site (`price checked 4m ago`). A price from anywhere else says so (last session / poe.ninja estimate / your price). NET is worked out from it |
 | **PRICE** | What you pay, and in which currency. Turns red on a currency mismatch (the classic "20 exalted, not 20 divine" bait) — a full-width banner also appears |
 | **NET DIV** | Reward value − asking price − the running cost. What the map actually leaves you |
 | **YIELD** | The decision number, in the tinted cell: net ÷ difficulty × 100, i.e. profit per unit of pain. It decides alerts and the hotkey's pick, so an easy map with modest profit can beat a brutal one. Green means it clears your threshold |
@@ -331,17 +331,18 @@ Two things worth knowing:
   reward, so it costs zero trade-API requests — open as many as you like
   without pushing pricing closer to a rate-limit lockout. (Your browser's
   own fetches still count; see Maintenance.)
-- **A non-Valdo hit always takes the top of the overlay**, above every
-  Valdo alert, jackpots and super jackpots included, so the hotkey travels
-  to it. Several of them rank newest first. Valdo alerts still rank among
-  themselves by yield below it, so a session with no generic tabs open
-  behaves exactly as before.
+- **A non-Valdo hit takes the top of the overlay** above every ordinary
+  Valdo alert, so the hotkey travels to it. Only a jackpot or super jackpot
+  outranks it. Several of them rank newest first. Valdo alerts still rank
+  among themselves by yield below it, so a session with no generic tabs
+  open behaves exactly as before.
 
 **These get their own sound.** A non-Valdo hit plays `tada.wav` instead of
 the usual Windows Exclamation woop, so you can tell one apart from routine
-Valdo traffic without looking at the screen. It always plays, even while a
-jackpot alarm is ringing: the alarm pauses while the non-Valdo hit is on
-top and starts again once you've travelled to it or it expires. Point `alerts.generic_sound` at
+Valdo traffic without looking at the screen. The one exception is a
+ringing jackpot alarm: the jackpot stays on top, so its alarm keeps going
+and the non-Valdo hit waits just below it. Click the banner to silence
+the alarm and later hits sound again. Point `alerts.generic_sound` at
 any `.wav` to change it; `alerts.volume` scales both. Keep any replacement
 short — alerts expire in seconds and the next one cancels this one, so a
 5-second alarm would still be playing after you'd already travelled.
@@ -358,7 +359,7 @@ A Valdo listing that is **both** big money and cheap to run (net ≥ 10d
 
 - a magenta **★ JACKPOT** banner and frame, with the name, net and yield
   in magenta and a magenta TELEPORT button;
-- it takes the hotkey's top slot over anything else;
+- it takes the hotkey's top slot over anything else, non-Valdo hits included;
 - it stays magenta with `★ JACKPOT` in the live feed, so one you missed is
   obvious later.
 
@@ -383,7 +384,7 @@ yield ≥ 20 by default) is a super jackpot:
 - a gold **★★ SUPER JACKPOT** banner, frame and TELEPORT button;
 - its own alarm (`Alarm03.wav`), so you can tell the tiers apart by ear. A
   super jackpot arriving while a jackpot rings switches to its alarm;
-- it outranks a jackpot for the hotkey (only a non-Valdo hit outranks it);
+- it outranks a jackpot for the hotkey;
 - `★★ SUPER` in gold in the live feed.
 
 Silence it the same way, by clicking the banner. That silences every

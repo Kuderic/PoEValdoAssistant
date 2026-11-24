@@ -3,7 +3,7 @@
 Motivated by a half-price Nimis (+79.5d net, +144 yield, 55.2 difficulty)
 that expired unseen. These pin the detection rule, its exclusions
 (generic hits, currency mismatches), the ranking guarantee that a jackpot is
-the hotkey's top Valdo pick (only a generic hit outranks it), the alarm, and
+the hotkey's top pick (above generic hits too), the alarm, and
 the ordered sound worker.
 """
 
@@ -123,29 +123,43 @@ def _generic(lid: str):
 
 
 @pytest.mark.parametrize("newer", ["generic", "jackpot"])
-def test_a_generic_hit_outranks_even_a_super_jackpot(newer):
-    """A hand-built live search is the one worth interrupting for, whichever
-    arrived first."""
+@pytest.mark.parametrize("tier", ["super", "jackpot"])
+def test_a_jackpot_outranks_a_generic_hit(newer, tier):
+    """The jackpot is the alert that is ringing, so it holds the top slot
+    and the hotkey takes it, whichever arrived first."""
     s = super_store()
-    first, second = (decision("super", 80, 55), _generic("ring"))
+    jp = decision("jp", 80, 55) if tier == "super" else decision("jp", 20, 55)
+    first, second = (jp, _generic("ring"))
     if newer == "jackpot":
         first, second = second, first
     s.insert(first)
     time.sleep(0.02)
     s.insert(second)
-    assert s.views()[1].super_jackpot
-    assert s.consume_best().decision.listing.listing_id == "ring"
+    top = s.views()[0]
+    assert top.listing_id == "jp" and top.jackpot
+    assert top.super_jackpot is (tier == "super")
+    assert s.views()[1].listing_id == "ring"
+    assert s.consume_best().decision.listing.listing_id == "jp"
 
 
-def test_alarm_pauses_while_a_generic_hit_is_on_top():
-    """Its own sound must be heard, and the banner that silences the alarm
-    is not on screen. Once it is gone the jackpot rings again."""
-    s = super_store(consume_mode="top")  # travel leaves the jackpot behind
+def test_a_generic_hit_still_outranks_ordinary_valdo_alerts():
+    s = store()  # bars 30d / 50 yield: "easy" is not a jackpot
+    s.insert(_generic("ring"))
+    time.sleep(0.02)
+    s.insert(decision("easy", 20, 10))  # yield 200, but not a jackpot
+    assert [v.listing_id for v in s.views()] == ["ring", "easy"]
+
+
+def test_the_alarm_keeps_ringing_when_a_generic_hit_arrives():
+    """The jackpot stays on top, so its alarm keeps ringing; the generic
+    hit waits underneath as the next target."""
+    s = super_store(consume_mode="top")  # travel leaves the generic behind
     s.insert(decision("super", 80, 55))
     s.insert(_generic("ring"))
-    assert alarm_kind(s.views(), set()) is None
-    s.consume_best()  # traveled to the generic hit
     assert alarm_kind(s.views(), set()) == "super"
+    s.consume_best()  # traveled to the jackpot
+    assert alarm_kind(s.views(), set()) is None
+    assert s.views()[0].listing_id == "ring"
 
 
 def test_restored_runner_up_keeps_its_jackpot_flag():

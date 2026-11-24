@@ -3,10 +3,11 @@
 ToS-critical semantics (DESIGN.md):
 - best-value-wins: the hotkey consumes the non-expired alert with the
   highest profit per 100 difficulty (see _rank), not the biggest absolute
-  profit - except that a jackpot (big net AND big yield) always outranks a
-  non-jackpot, and a super jackpot (higher bars still) outranks a jackpot:
-  it is the best deal on screen by both measures. A generic (non-Valdo)
-  hit outranks all of them, newest first;
+  profit - except that a jackpot (big net AND big yield) outranks
+  everything else, generic hits included, and a super jackpot (higher bars
+  still) outranks a jackpot: it is the best deal on screen by both
+  measures. Below the jackpots a generic (non-Valdo) hit outranks the
+  remaining Valdo alerts, newest first;
 - expiry: a stale listing can never be traveled to by reflex;
 - single consumption: a consumed listing id can never alert or be clicked
   again, even if the tab re-pushes it;
@@ -296,29 +297,30 @@ class AlertStore:
 
     @staticmethod
     def _rank(a: Alert) -> tuple[bool, bool, bool, float]:
-        """Sort key, best first: (generic, super jackpot, jackpot, order).
+        """Sort key, best first: (super jackpot, jackpot, generic, order).
 
-        A generic (non-Valdo) hit always holds the top slot: it comes from a
-        live search the user built by hand for one item, so it is the rare
-        one worth interrupting for - above every Valdo alert, jackpots
-        included (the jackpot alarm pauses while one is on top, see
-        alarm_kind). Generic hits have no efficiency to compare, so among
-        themselves the newest wins: the thing that just made a sound is the
-        thing the hotkey takes.
+        A jackpot holds the top slot over everything, generic hits included:
+        it is the one that is ringing, so it is the one the hotkey takes. A
+        super jackpot outranks a jackpot. (A generic hit is never a jackpot
+        itself - see is_jackpot - so the two flags never meet.)
 
-        Valdo alerts rank on divine profit per 100 difficulty (the overlay's
-        Yield column, same unit as the threshold) - efficiency rather than
-        absolute surplus, so the hotkey takes the map that pays best for
-        what it costs to run: a clean 25-difficulty map at +20 div
-        (80/100D) outranks a Feared+VOID monster at +50 div (4/100D). A
-        jackpot outranks any other Valdo alert, and a super jackpot a
-        jackpot.
+        Below the jackpots a generic (non-Valdo) hit comes first: it comes
+        from a live search the user built by hand for one item, so it is the
+        rare one worth interrupting for. Generic hits have no efficiency to
+        compare, so among themselves the newest wins: the thing that just
+        made a sound is the thing the hotkey takes.
+
+        The remaining Valdo alerts rank on divine profit per 100 difficulty
+        (the overlay's Yield column, same unit as the threshold) - efficiency
+        rather than absolute surplus, so the hotkey takes the map that pays
+        best for what it costs to run: a clean 25-difficulty map at +20 div
+        (80/100D) outranks a Feared+VOID monster at +50 div (4/100D).
         """
         d = a.decision
         if d.listing.generic:
-            return (True, False, False, a.created_monotonic)
+            return (False, False, True, a.created_monotonic)
         ratio = net_yield(d.net_div, d.difficulty) or 0.0
-        return (False, a.super_jackpot, a.jackpot, ratio)
+        return (a.super_jackpot, a.jackpot, False, ratio)
 
     def _best(self) -> Alert | None:
         return max(self._alerts.values(), key=self._rank, default=None)
@@ -346,10 +348,9 @@ def alarm_kind(alerts: tuple[AlertView, ...], silenced: set[str]) -> str | None:
     """Which alarm should loop: "super" while any unsilenced super jackpot
     is live, else "jackpot" while any unsilenced jackpot is, else None.
 
-    `alerts` is ranked best first. While a generic hit holds the top slot
-    the alarm pauses: that hit gets its own sound, the hotkey goes to it,
-    and the banner that silences the alarm is not on screen. Once it is
-    traveled to or expires, the jackpot is back on top and rings again."""
+    `alerts` is ranked best first. A jackpot outranks a generic hit, so a
+    generic hit can only hold the top slot when no jackpot is live; the
+    guard below keeps the alarm off in that case all the same."""
     if alerts and alerts[0].generic:
         return None
     ringing = jackpots_to_ring(alerts, silenced)
