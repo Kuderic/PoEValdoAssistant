@@ -56,11 +56,11 @@ def test_partial_overrides(tmp_path):
 
 def test_threshold_and_hotkey_round_trip(tmp_path):
     path = tmp_path / "scoring_overrides.yaml"
-    save_scoring_overrides(BASE, path, min_yield=42.5, hotkey_combo="f9")
+    save_scoring_overrides(BASE, path, min_yield=42.5, hotkey_combo="f9", min_net=7.0)
     from sniper.config import load_extra_overrides
 
     extra = load_extra_overrides(path)
-    assert extra == {"min_yield": 42.5, "hotkey_combo": "f9"}
+    assert extra == {"min_yield": 42.5, "min_net": 7.0, "hotkey_combo": "f9"}
     # scoring merge is unaffected by the extra keys
     merged = apply_scoring_overrides(BASE, path)
     assert merged.base_default == BASE.base_default

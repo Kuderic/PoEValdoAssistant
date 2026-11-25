@@ -104,10 +104,16 @@ HELP = {
         "Chrome tabs on the trade site running the Valdo Sniper script. Each one is a "
         "live search: the trade site pushes new listings into the tab and the script "
         "forwards them here the same instant. Green = connected. “stale” = a tab "
-        "stopped checking in (reload it). “reload Mageblood” = that tab's listings "
-        "now arrive seconds later than when it was freshly loaded - a busy tab slows "
-        "down as its results pile up over hours, and a reload makes it fast again. "
-        "Red = none connected; click to install the script.",
+        "stopped checking in (reload it). Amber with a RELOAD bar below = a tab has "
+        "fallen behind. Red = none connected; click to install the script.",
+    ),
+    "reload": (
+        "Reload this tab",
+        "This tab's listings now reach you seconds later than they did when the page "
+        "was freshly loaded: the figure in brackets is that extra delay, the median "
+        "of its recent listings. A busy live search slows down as its results pile up "
+        "over hours. Reloading the tab (F5) makes it fast again; the bar clears once "
+        "it is.",
     ),
     "game": (
         "Game client",
@@ -287,6 +293,28 @@ def _display_name(key: str) -> str:
     return key.removeprefix("Foil ")
 
 
+def _reload_notes(tabs) -> list[str]:
+    """'Mageblood (+2.7s lag)' for each tab sniper.tablag judged slow: how
+    much later its listings now arrive than they would after a reload.
+
+    The extra delay is the tab's recent median minus what the same page
+    managed freshly loaded; a page first seen already old has no fresh
+    figure, so the other healthy tabs' median stands in for it."""
+    healthy = sorted(t["lag_ms"] for t in tabs if not t.get("slow") and t.get("lag_ms"))
+    others = healthy[len(healthy) // 2] if healthy else None
+    notes = []
+    for t in tabs:
+        if not t.get("slow"):
+            continue
+        name = _display_name(t.get("search_reward") or "a tab")
+        recent, base = t.get("lag_ms"), t.get("fresh_lag_ms") or others
+        if recent is not None and base is not None and recent > base:
+            notes.append(f"{name} (+{(recent - base) / 1000:.1f}s lag)")
+        else:
+            notes.append(name)
+    return sorted(notes)
+
+
 def _num(value: float) -> str:
     """A number for a worked example: one decimal at most, no trailing .0."""
     return f"{value:.1f}".rstrip("0").rstrip(".")
@@ -429,6 +457,7 @@ GOOD = "#5fd069"
 WARN = "#e5b84b"
 BAD = "#f06a6a"  # red TEXT on the dark ground
 BAD_FILL = "#b23a3a"  # red BACKGROUND under white text (BAD is too light for it)
+RELOAD_FG = "#1c1606"  # near-black text on the amber reload bar
 PRICE = "#ffffff"
 BOX = "#2a323c"  # neutral chip fill
 YIELD_BG, YIELD_CAP, YIELD_FG = "#1b2a20", "#a9d8b0", "#6fe07b"
@@ -669,6 +698,7 @@ class Overlay:
         self._price_labels: dict[str, tk.Label] = {}
         self._scoring_config = config.mod_scoring
         self._current_threshold = config.thresholds.min_yield
+        self._current_min_net = config.thresholds.min_net
         self._current_running_cost = config.thresholds.running_cost
         self._current_combo = config.hotkey.combo
         self._tune_window: tk.Toplevel | None = None
@@ -790,6 +820,33 @@ class Overlay:
         self._bind_help((self._mute_btn,), HELP["mute"])
         self._bind_help((tune_btn,), HELP["settings"])
         tk.Frame(root, bg=HAIR, height=1).pack(fill="x")
+
+        # Slow-tab warning: an amber bar of its own, shown only while a tab
+        # has fallen behind (sniper.tablag). It used to be a few words at the
+        # end of the tabs pill and was easy to miss; every second of that
+        # lag is a head start for every other sniper.
+        self._reload_bar = tk.Frame(root, bg=WARN)
+        self._reload_label = tk.Label(
+            self._reload_bar,
+            text="",
+            bg=WARN,
+            fg=RELOAD_FG,
+            font=self._font("ui", 10, "bold"),
+            anchor="w",
+            justify="left",
+            wraplength=490,
+        )
+        self._reload_label.pack(fill="x", padx=12, pady=(5, 0))
+        self._reload_hint = tk.Label(
+            self._reload_bar,
+            text="Press F5 in that Chrome tab: a live search left open for hours falls behind.",
+            bg=WARN,
+            fg=RELOAD_FG,
+            font=self._font("ui", 8),
+            anchor="w",
+        )
+        self._reload_hint.pack(fill="x", padx=12, pady=(0, 5))
+        self._bind_help((self._reload_bar, self._reload_label, self._reload_hint), HELP["reload"])
 
         # reward names being live-searched, on their own line (the strip is
         # too crowded to hold them); hovering shows each reward's price
@@ -1128,8 +1185,9 @@ class Overlay:
             (self._threshold_note,),
             lambda: (
                 "Alert bar",
-                f"A listing alerts when its YIELD is at least {self._current_threshold:g}. "
-                "Change it in ⚙ Settings (Alert at YIELD ≥).",
+                f"A listing alerts when its NET is at least {self._current_min_net:g}d "
+                f"AND its YIELD is at least {self._current_threshold:g}. "
+                "Change them in ⚙ Settings (Alert at NET ≥ / Alert at YIELD ≥).",
             ),
         )
         feed_header = tk.Label(
@@ -1330,13 +1388,8 @@ class Overlay:
                 text = f"{n} tab{'' if n == 1 else 's'}" + (f" · {stale} stale" if stale else "")
                 # a tab whose listings have crept from ~1.5s late to 4-6s
                 # late over hours (see sniper.tablag): a reload fixes it
-                slow = sorted(
-                    _display_name(t.get("search_reward") or "a tab")
-                    for t in ev.tabs
-                    if t.get("slow")
-                )
-                if slow:
-                    text += f" · reload {', '.join(slow)}"
+                slow = _reload_notes(ev.tabs)
+                self._show_reload(slow)
                 if old:
                     # clicking the pill reinstalls; Tampermonkey also picks
                     # the new version up by itself via @updateURL
@@ -1578,8 +1631,9 @@ class Overlay:
     def _update_threshold_note(self) -> None:
         """Stated in the Yield column's units so the cutoff can be read
         straight off the feed."""
+        net = f"NET ≥ {self._current_min_net:g}  ·  " if self._current_min_net > 0 else ""
         self._threshold_note.config(
-            text=f"RECENT LISTINGS  ·  ALERTING AT YIELD ≥ {self._current_threshold:g}"
+            text=f"RECENT LISTINGS  ·  ALERTING AT {net}YIELD ≥ {self._current_threshold:g}"
         )
 
     def _render_price_pill(self) -> None:
@@ -1987,6 +2041,15 @@ class Overlay:
         self._travel_btn.config(bg=bg, cursor=cursor)
         self._travel_text.config(bg=bg, fg=fg, cursor=cursor)
         self._travel_key.config(bg=key_bg, fg=key_fg, cursor=cursor)
+
+    def _show_reload(self, notes: list[str]) -> None:
+        """The amber RELOAD bar, under the status strip, while a tab lags."""
+        if not notes:
+            self._reload_bar.pack_forget()
+            return
+        self._reload_label.config(text="⟳  RELOAD  " + "  ·  ".join(notes))
+        if not self._reload_bar.winfo_manager():  # not packed yet
+            self._reload_bar.pack(fill="x", before=self._searches_label)
 
     def _tabs_clicked(self) -> None:
         if self._tabs_need_install:
@@ -2586,6 +2649,14 @@ class Overlay:
 
         # ---- 1. Alerts: everything that decides WHETHER something alerts
         heading("Alerts", "Value")
+        min_net_e = field(
+            "Alert at NET ≥",
+            _fmt(self._current_min_net),
+            hint="Divines a listing must net to alert at all, on top of the\n"
+            "YIELD bar: an easy map can reach a high yield on a profit too\n"
+            "small to travel for. 0 = yield alone decides.",
+            search="threshold min_net profit",
+        )
         thr_e = field(
             "Alert at YIELD ≥",
             _fmt(self._current_threshold),
@@ -2782,6 +2853,7 @@ class Overlay:
                     ),
                 )
                 new_threshold = float(thr_e.get())
+                new_min_net = float(min_net_e.get())
                 new_flat = float(flat_e.get())
                 new_volume = float(vol_e.get())
                 new_jp_net = float(jp_net_e.get())
@@ -2821,15 +2893,21 @@ class Overlay:
             if min(new_jp_net, new_jp_yield, new_sjp_net, new_sjp_yield) < 0:
                 note.config(text="Jackpot bars must be >= 0", fg=BAD)
                 return
+            if new_min_net < 0:
+                note.config(text="Alert at NET must be >= 0", fg=BAD)
+                return
 
             error = None
             if self._on_settings_change:
-                error = self._on_settings_change(new_config, new_threshold, new_combo, new_flat)
+                error = self._on_settings_change(
+                    new_config, new_threshold, new_combo, new_flat, new_min_net
+                )
             if error:  # e.g. invalid hotkey combo - old combo stays active
                 note.config(text=error, fg=BAD)
                 return
             self._scoring_config = new_config
             self._current_threshold = new_threshold
+            self._current_min_net = new_min_net
             self._current_running_cost = new_flat
             self._current_combo = new_combo
             bars = (new_jp_net, new_jp_yield, new_sjp_net, new_sjp_yield)
@@ -2863,6 +2941,7 @@ class Overlay:
                     new_config,
                     self._overrides_path,
                     min_yield=new_threshold,
+                    min_net=new_min_net,
                     hotkey_combo=new_combo,
                     alert_volume=new_volume,
                     running_cost=new_flat,
@@ -2888,6 +2967,7 @@ class Overlay:
             pending.append(win.after(600, lambda: win.winfo_exists() and collect(save=True)))
 
         for widget in [
+            min_net_e,
             thr_e,
             flat_e,
             jp_net_e,

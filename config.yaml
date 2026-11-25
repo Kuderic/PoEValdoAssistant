@@ -13,7 +13,11 @@ thresholds:
   #   NET   = market price - asking price - running_cost
   #   YIELD = NET / difficulty * 100
   # Reads directly as "a 100-difficulty map must net this much".
-  min_yield: 2.5
+  min_yield: 4
+  # ...AND at least this much NET, in divines. An easy map can reach a high
+  # yield on a profit too small to travel for. 0 = yield alone decides.
+  # Both are editable in the ⚙ panel.
+  min_net: 7
   # Keyed by the map's Reward name (the value driver, e.g. "Foil Mageblood");
   # item_name is only the fallback key when a listing has no reward line.
   per_map: {}                  # e.g. "Foil Mageblood": 25

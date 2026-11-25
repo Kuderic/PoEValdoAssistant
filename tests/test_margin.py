@@ -43,6 +43,23 @@ def test_below_threshold():
     assert d.net_div == 10
 
 
+def test_min_net_is_a_floor_on_top_of_the_yield_bar():
+    """10 div net clears a 5-yield bar on a neutral map, but not a 12 div floor."""
+    import dataclasses
+
+    config = make_config(min_yield=5.0)
+    lst = listing(price={"amount": 190, "currency": "divine"})  # +10 net
+    assert decide(lst, config).verdict == "alert"
+    floored = dataclasses.replace(
+        config, thresholds=dataclasses.replace(config.thresholds, min_net=12.0)
+    )
+    assert decide(lst, floored).verdict == "below_threshold"
+    exactly = dataclasses.replace(
+        config, thresholds=dataclasses.replace(config.thresholds, min_net=10.0)
+    )
+    assert decide(lst, exactly).verdict == "alert"  # at the floor counts
+
+
 def test_chaos_listing_normalized_and_mismatch_flagged():
     # 9000 chaos = 50 div -> 150 div profit, and currency differs from ref
     d = decide(listing(price={"amount": 9000, "currency": "chaos"}))

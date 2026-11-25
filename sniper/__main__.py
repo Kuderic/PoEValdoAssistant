@@ -351,7 +351,13 @@ class App:
 
     # ------------------------------------------------------------ live tuning
 
-    def apply_tuning(self, scoring_config, min_yield: float, running_cost: float = 1.0) -> None:
+    def apply_tuning(
+        self,
+        scoring_config,
+        min_yield: float,
+        running_cost: float = 1.0,
+        min_net: float | None = None,
+    ) -> None:
         """Swap difficulty scoring + profit numbers live (settings panel).
         Runs on the asyncio thread via call_soon_threadsafe; affects listings
         from now on."""
@@ -365,11 +371,13 @@ class App:
                 self.config.thresholds,
                 min_yield=min_yield,
                 running_cost=running_cost,
+                min_net=self.config.thresholds.min_net if min_net is None else min_net,
             )
         )
         event(
             "tuning_updated",
             min_yield=min_yield,
+            min_net=min_net,
             running_cost=running_cost,
             base_default=scoring_config.base_default,
             rules={
@@ -712,12 +720,14 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
         asyncio.run_coroutine_threadsafe(app.travel_listing(listing_id), loop)
 
     def on_settings_change(
-        scoring_config, min_yield: float, combo: str, running_cost: float
+        scoring_config, min_yield: float, combo: str, running_cost: float, min_net: float
     ) -> str | None:
         """Returns an error string (shown in the panel) or None. The hotkey
         rebinds on this (UI) thread; scoring/threshold swap on the loop."""
         error = hotkey.rebind(combo)
-        loop.call_soon_threadsafe(app.apply_tuning, scoring_config, min_yield, running_cost)
+        loop.call_soon_threadsafe(
+            app.apply_tuning, scoring_config, min_yield, running_cost, min_net
+        )
         return error
 
     def on_price_override(reward: str, divine: float | None) -> None:

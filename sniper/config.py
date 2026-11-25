@@ -71,6 +71,7 @@ def save_scoring_overrides(
     hotkey_combo: str | None = None,
     alert_volume: float | None = None,
     running_cost: float | None = None,
+    min_net: float | None = None,
     jackpot_min_net: float | None = None,
     jackpot_min_yield: float | None = None,
     super_jackpot_min_net: float | None = None,
@@ -91,6 +92,8 @@ def save_scoring_overrides(
     }
     if min_yield is not None:
         data["min_yield"] = min_yield
+    if min_net is not None:
+        data["min_net"] = min_net
     if hotkey_combo is not None:
         data["hotkey_combo"] = hotkey_combo
     if alert_volume is not None:
@@ -116,6 +119,7 @@ def load_extra_overrides(path: Path) -> dict:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     keys = (
         "min_yield",
+        "min_net",
         "hotkey_combo",
         "alert_volume",
         "running_cost",
@@ -135,6 +139,10 @@ class Thresholds:
     """Profit thresholds in divine orbs (absolute, not percentages)."""
 
     min_yield: float = 10.0
+    # A listing must ALSO net at least this many divines to alert: a cheap
+    # trivial map can clear the yield bar on a profit too small to bother
+    # travelling for. 0 = yield alone decides.
+    min_net: float = 0.0
     per_map: dict[str, float] = field(default_factory=dict)
     # Fixed divine toll subtracted from every listing's profit: running any
     # map costs time, so an easy map with a tiny margin is not really worth
@@ -608,6 +616,7 @@ def load_config(
     try:
         thresholds = Thresholds(
             min_yield=float(section("thresholds").get("min_yield", 10.0)),
+            min_net=float(section("thresholds").get("min_net", 0.0)),
             per_map={k: float(v) for k, v in (section("thresholds").get("per_map") or {}).items()},
             running_cost=float(section("thresholds").get("running_cost", 1.0)),
         )
@@ -622,6 +631,10 @@ def load_config(
     extra = load_extra_overrides(overrides_path)
     if "min_yield" in extra:
         thresholds = replace(thresholds, min_yield=float(extra["min_yield"]))
+    if "min_net" in extra:
+        thresholds = replace(thresholds, min_net=float(extra["min_net"]))
+    if thresholds.min_net < 0:
+        raise ConfigError(f"thresholds.min_net must be >= 0, got {thresholds.min_net}")
     if "hotkey_combo" in extra:
         hotkey = replace(hotkey, combo=str(extra["hotkey_combo"]))
     if "running_cost" in extra:

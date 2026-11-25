@@ -1,9 +1,11 @@
 """Pure decision logic: listing + PriceBook + rules -> Decision. Hot path.
 
-Alert condition: net_div >= required_net_div, where
-required_net_div = threshold * difficulty_score / 100.
+Alert condition: net_div >= required_net_div AND net_div >= thresholds.min_net,
+where required_net_div = threshold * difficulty_score / 100.
 The base threshold is calibrated for a 100-difficulty map: a 200-difficulty
-map needs twice the profit, a 50-difficulty map only half.
+map needs twice the profit, a 50-difficulty map only half. min_net is a flat
+floor on top: a trivial map's yield can clear the bar on a profit too small
+to travel for.
 
 Failure risks make net an EXPECTED value: a failed map pays nothing and the
 asking price is gone, so
@@ -152,7 +154,7 @@ def evaluate(
 
     if blocked:
         verdict = "blocked"
-    elif net_div >= required:
+    elif net_div >= required and net_div >= thresholds.min_net:
         verdict = "alert"
     else:
         verdict = "below_threshold"

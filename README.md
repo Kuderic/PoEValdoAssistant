@@ -34,11 +34,15 @@ profit, because that cost has already come off it.
 **YIELD** is that net figure per unit of difficulty. Since net is already
 time-adjusted and difficulty measures how nasty the map is to run, yield is
 what the map pays you **per unit of pain**. An alert fires when it clears
-your threshold:
+your threshold and the net is worth the trip:
 
 ```
-alert  ⟺  YIELD  ≥  thresholds.min_yield
+alert  ⟺  YIELD  ≥  thresholds.min_yield   (4 by default)
+       and NET   ≥  thresholds.min_net     (7 divines by default)
 ```
+
+The net floor is there because an easy map can reach a high yield on a
+profit too small to travel for. Set it to 0 to let yield alone decide.
 
 Why a rate rather than raw surplus: a clean 25-difficulty map at +20 div and
 a Feared + VOID nightmare at +50 div are not the same trade. The second pays
@@ -286,7 +290,7 @@ also work their sum through for the listing on screen, e.g. NET shows
 | **NET** | Reward value − asking price − the running cost, in divine (`+48 div`). What the map actually leaves you |
 | **YIELD** | The decision number, in the tinted cell: net ÷ difficulty × 100, i.e. profit per unit of pain. It decides alerts and the hotkey's pick, so an easy map with modest profit can beat a brutal one. Green means it clears your threshold |
 | **DIFFICULTY** | How hard the mods make the map; 100 is a typical map. The toughest encounter's base (or the clean-map default) × every dangerous mod and pairing. Plain ≤100, amber >100, red >300 |
-| **latency badge** | The delay between the seller listing the map (the trade site's own index time) and your Chrome tab receiving it from the live search: the head start every other sniper had. Not your reaction time. Green under 2s, red past 5s. A busy tab creeps up over hours; when one does, the status strip says `reload Mageblood` (or whichever tab) |
+| **latency badge** | The delay between the seller listing the map (the trade site's own index time) and your Chrome tab receiving it from the live search: the head start every other sniper had. Not your reaction time. Green under 2s, red past 5s. A busy tab creeps up over hours; when one does, an amber bar under the status strip says `⟳ RELOAD Mageblood (+2.7s lag)` (or whichever tab) |
 | **☠ rows** | Deadly pairings, with the reason |
 | **Mod list** | Each mod with its contribution (`base 120`, `×2.5`), marked red/amber by severity, modifiers right-aligned |
 
@@ -445,7 +449,8 @@ them when you know better than the market average, e.g. right after a patch.
 
 | Key | Does |
 |---|---|
-| `thresholds.min_yield` | Minimum Yield to alert |
+| `thresholds.min_yield` | Minimum Yield to alert (4), also in the ⚙ panel |
+| `thresholds.min_net` | Minimum Net to alert, in divines (7), also in the ⚙ panel. 0 turns it off |
 | `thresholds.running_cost` | Divine cost of running a map, off every listing |
 | `thresholds.per_map` | Per-reward threshold overrides |
 | `mod_scoring.base_default` | Difficulty of a clean, unmodded map |
@@ -552,7 +557,7 @@ searches you aren't actually racing for.
 | Update pill says *failed* | The download didn't finish or didn't match GitHub's checksum, so nothing was installed. It retries by itself; or click the pill and download the exe by hand into the same folder |
 | `start.bat` says Python not found | Install Python 3.12+ with *Add to PATH* ticked, then run it again. Delete the `.venv` folder to force a clean reinstall |
 | `RATE LIMITED` / `Est. prices N/M` | Trade API refused us; margins fall back to poe.ninja medians and every affected alert is flagged. Close some searches |
-| Status strip says `reload <reward>` | That tab's listings now arrive seconds later than when it was freshly loaded. A busy live search slows down as its results pile up over hours; reload the tab (F5) and it is fast again |
+| Amber bar says `⟳ RELOAD <reward> (+2.7s lag)` | That tab's listings now arrive seconds later than when it was freshly loaded; the bracket is how much later (the median of its recent listings). A busy live search slows down as its results pile up over hours; reload the tab (F5) and it is fast again, and the bar clears |
 | Alert shows no latency | The DOM path captured it, or the tab is on an old userscript. `python tools/capture_report.py` says which |
 | Alerts but hotkey does nothing | `PoE not running` in the status strip — the hotkey is deliberately inert without the game |
 | Travel says `item no longer available` | Someone beat you to it — the runner-up is promoted to the top slot, press again to take it. Check the latency figure on the alerts you're losing |

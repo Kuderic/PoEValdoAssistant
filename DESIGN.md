@@ -231,8 +231,11 @@ quiet tabs barely moved. Per tab, the server keeps the median delay of the
 first 15 network-captured listings after a page load and of the latest 15.
 A tab is slow when its recent median is ≥ 2.5 s, ≥ 1.6 × its freshly loaded
 median, and ≥ 1 s above the other tabs' (when every tab is slow it is GGG,
-and a reload changes nothing). It clears under 2 s or 1.3 ×. The status
-strip then reads `N tabs · reload Mageblood` in amber; `tab_slow` and
+and a reload changes nothing). It clears under 2 s or 1.3 ×. The tabs
+pill turns amber and an amber bar under the status strip reads
+`⟳ RELOAD Mageblood (+2.7s lag)`: the recent median minus the freshly loaded
+median, or minus the healthy tabs' median when the page has no fresh
+figure (`overlay._reload_notes`). `tab_slow` and
 `tab_recovered` are logged. Only a real reload resets a tab: the hello's
 `page_id` (one per page load) and `page_age_s` tell it apart from the app
 reconnecting, which every app restart does to every tab. A page first seen
@@ -372,8 +375,9 @@ for regex, `match_all` for combos where every pattern must hit):
   the hotkey should take the map that pays best for what it costs to run.
   A clean 25-difficulty map at +20 div (80/100D) outranks a Feared+VOID
   map at +50 div (4/100D). This is the overlay's Yield feed column, and
-  the same unit as the threshold — yield >= threshold is precisely the
-  alert condition.
+  the same unit as the threshold — yield >= threshold is the alert
+  condition, together with a flat floor `net >= thresholds.min_net`: an
+  easy map can reach a high yield on a profit too small to travel for.
 - Baseline rule values (config.yaml): Feared 100 / Twisted 50 / Einhar 80 /
   invitation bosses 60 / porcupines 20 (inert while base_default is 25);
   multipliers: ghosts 3-4 x2.2, void x2 (+warning), fatal x2, delirium
