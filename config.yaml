@@ -37,21 +37,20 @@ alerts:
   feed_rows: 40                # live-feed history rows (the area scrolls)
   # JACKPOT: a listing whose NET and YIELD BOTH clear these bars (e.g. a
   # half-price Nimis: +80d net, +144 yield). It gets a magenta banner and
-  # frame, takes the hotkey's top slot, and loops an alarm until you travel,
-  # it expires, or you CLICK THE BANNER to silence it (the speaker icon
-  # mutes everything). It never pulls the overlay to the front.
+  # frame, takes the hotkey's top slot, and plays an alarm TWICE (the speaker
+  # icon mutes everything). It never pulls the overlay to the front.
   # Stays magenta in the live feed so a missed one is obvious later.
   # Currency mismatches never count.
   # Both bars are also editable in the ⚙ panel (saved to scoring_overrides.yaml).
-  jackpot_min_net: 10          # divines
-  jackpot_min_yield: 10        # divines per 100 difficulty
+  jackpot_min_net: 15          # divines
+  jackpot_min_yield: 8         # divines per 100 difficulty
   jackpot_alarm: true          # false -> a jackpot plays the ordinary alert sound
-  jackpot_sound: ""            # .wav to loop; empty -> C:\Windows\Media\Alarm02.wav
+  jackpot_sound: ""            # .wav played twice; empty -> C:\Windows\Media\Alarm02.wav
   # SUPER JACKPOT: the tier above - a jackpot that ALSO clears these higher
-  # bars. Gold banner and frame, its own alarm, and it outranks a jackpot
-  # for the hotkey. Silenced the same way (click the banner). Also in ⚙.
+  # bars. Gold banner and frame, its own alarm (played 3 times), and it
+  # outranks a jackpot for the hotkey. Also in ⚙.
   super_jackpot_min_net: 30    # divines
-  super_jackpot_min_yield: 20  # divines per 100 difficulty
+  super_jackpot_min_yield: 10  # divines per 100 difficulty
   super_jackpot_sound: ""      # empty -> C:\Windows\Media\Alarm03.wav
 
 hotkey:

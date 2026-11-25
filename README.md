@@ -350,9 +350,9 @@ Two things worth knowing:
 **These get their own sound.** A non-Valdo hit plays `tada.wav` instead of
 the usual Windows Exclamation woop, so you can tell one apart from routine
 Valdo traffic without looking at the screen. The one exception is a
-ringing jackpot alarm: the jackpot stays on top, so its alarm keeps going
-and the non-Valdo hit waits just below it. Click the banner to silence
-the alarm and later hits sound again. Point `alerts.generic_sound` at
+jackpot alarm still playing: a hit arriving during it stays quiet rather
+than cut it off, and waits just below the jackpot. Point
+`alerts.generic_sound` at
 any `.wav` to change it; `alerts.volume` scales both. Keep any replacement
 short — alerts expire in seconds and the next one cancels this one, so a
 5-second alarm would still be playing after you'd already travelled.
@@ -362,8 +362,8 @@ the trade site rather than in the app.
 
 ### Jackpots
 
-A Valdo listing that is **both** big money and cheap to run (net ≥ 10d
-**and** yield ≥ 10 by default) is a jackpot:
+A Valdo listing that is **both** big money and cheap to run (net ≥ 15d
+**and** yield ≥ 8 by default) is a jackpot:
 
 <img src="docs/overlay-jackpot.png" alt="A jackpot alert: Nimis at 80 divine, +80 net, yield +144, difficulty 55, with a magenta JACKPOT banner and a magenta frame around the alert card" width="420">
 
@@ -373,12 +373,12 @@ A Valdo listing that is **both** big money and cheap to run (net ≥ 10d
 - it stays magenta with `★ JACKPOT` in the live feed, so one you missed is
   obvious later.
 
-It also **loops an alarm** (`Alarm02.wav`, at the volume slider) until you
-travel, it expires, or you **click the magenta banner** ("click to silence").
-That only stops the sound: it never travels, and a different jackpot
-arriving later still rings. The speaker icon mutes everything. The overlay
-is never pulled to the front. Set `alerts.jackpot_alarm: false` to have
-jackpots play the ordinary alert sound instead.
+It also **plays an alarm twice** (`Alarm02.wav`, about 7.5 seconds in all,
+at the volume slider) instead of the usual alert sound. An ordinary alert
+arriving while it plays stays quiet rather than cut it off. The speaker icon mutes
+everything. The overlay is never pulled to the front. Set
+`alerts.jackpot_alarm: false` to have jackpots play the ordinary alert sound
+instead.
 
 Tune the bars in the ⚙ panel under **Alerts** (applied live and saved), or
 with `alerts.jackpot_min_net` / `jackpot_min_yield` in `config.yaml`. A
@@ -387,18 +387,17 @@ currency mismatch is never a jackpot.
 #### Super jackpots
 
 The tier above: a jackpot that **also** clears higher bars (net ≥ 30d **and**
-yield ≥ 20 by default) is a super jackpot:
+yield ≥ 10 by default) is a super jackpot:
 
 <img src="docs/overlay-super-jackpot.png" alt="A super jackpot alert: Nimis at 80 divine, +80 net, yield +144, with a gold SUPER JACKPOT banner, gold frame and gold TELEPORT button; a magenta jackpot runner-up sits below it" width="420">
 
 - a gold **★★ SUPER JACKPOT** banner, frame and TELEPORT button;
-- its own alarm (`Alarm03.wav`), so you can tell the tiers apart by ear. A
-  super jackpot arriving while a jackpot rings switches to its alarm;
+- its own alarm (`Alarm03.wav`), played three times (about 12 seconds), so
+  you can tell the tiers apart by ear;
 - it outranks a jackpot for the hotkey;
 - `★★ SUPER` in gold in the live feed.
 
-Silence it the same way, by clicking the banner. That silences every
-jackpot on screen. Tune the bars in the ⚙ panel (*Super jackpot at NET /
+Tune the bars in the ⚙ panel (*Super jackpot at NET /
 YIELD*) or with `alerts.super_jackpot_min_net` / `super_jackpot_min_yield`.
 
 ## Tuning it to actually make money
@@ -457,9 +456,9 @@ them when you know better than the market average, e.g. right after a patch.
 | `hotkey.combo` / `.consume` | Travel key; `all` clears every alert per press, `top` keeps runners-up (a *failed* travel gives them back either way) |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
-| `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (10 / 10), also in the ⚙ panel |
-| `alerts.jackpot_alarm` / `jackpot_sound` | Loop an alarm on jackpots (click the banner to silence) / its .wav |
-| `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 20), also in the ⚙ panel / its alarm .wav |
+| `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (15 / 8), also in the ⚙ panel |
+| `alerts.jackpot_alarm` / `jackpot_sound` | Play an alarm on a jackpot (twice; a super jackpot's three times) instead of the ordinary sound / its .wav |
+| `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 10), also in the ⚙ panel / its alarm .wav |
 | `trade_pricing.cache_max_age_minutes` | How stale a restored price may be (720) |
 | `updates.auto_download` / `enabled` | Download new releases in the background (on) / check for them at all (on) |
 

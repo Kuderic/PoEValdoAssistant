@@ -36,22 +36,23 @@ DEFAULT_WAV = Path(r"C:\Windows\Media\Windows Exclamation.wav")
 # seconds and the next one cancels this one, so a 5s alarm would still be
 # playing after the travel it announced.
 GENERIC_WAV = Path(r"C:\Windows\Media\tada.wav")
-# Jackpot (big net AND big yield): an alarm LOOPED until the alert is
-# traveled to, expires, or is silenced by clicking its banner. Its length
-# does not matter: the overlay stops it the moment there is nothing to ring for.
+# Jackpot (big net AND big yield): an alarm, played JACKPOT_PLAYS times
+# (2 x 3.75 s). A routine alert arriving meanwhile does not cut it off.
 JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm02.wav")
+JACKPOT_PLAYS = 2
 # Super jackpot (the tier above): a different alarm, so the two tiers can be
-# told apart by ear.
+# told apart by ear, and played one more time (3 x 4.0 s).
 SUPER_JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm03.wav")
+SUPER_JACKPOT_PLAYS = 3
 
 
 @dataclass(frozen=True)
 class SoundCommand:
     """kind: "valdo" | "generic" | "jackpot" | "super" plays that alert's WAV; "stop"
-    silences whatever is playing. `loop` repeats until the next command."""
+    silences whatever is playing. A jackpot's repeats are baked into its
+    WAV (repeat_wav), so every command is one async play."""
 
     kind: str
-    loop: bool = False
 
 
 class SoundWorker:
@@ -166,29 +167,64 @@ def load_wav(path: str = "", default: Path | None = None) -> bytes | None:
         return None
 
 
-def alert_wav_path(path: str = "", volume: float = 1.0, default: Path | None = None) -> str | None:
-    """Path to a WAV at the requested volume, ready for SND_FILENAME.
+def repeat_wav(data: bytes, times: int) -> bytes:
+    """`data` with its audio played `times` times back to back, as one WAV.
+    One async PlaySound of it then plays N times and can still be cut off
+    by the next command, which a play-N-times loop could not. Returns
+    `data` unchanged when it is not a WAV we can read."""
+    if times <= 1:
+        return data
+    try:
+        with wave.open(io.BytesIO(data), "rb") as src:
+            params = src.getparams()
+            frames = src.readframes(params.nframes)
+        out = io.BytesIO()
+        with wave.open(out, "wb") as dst:
+            dst.setparams(params)
+            dst.writeframes(frames * times)
+        return out.getvalue()
+    except (wave.Error, ValueError, EOFError, MemoryError):
+        return data  # plays once rather than not at all
 
-    Full volume plays the source file directly; anything quieter is scaled
-    once into a temp file keyed by source identity + volume, so repeated
-    alerts re-use it. Returns None when there is no source WAV at all.
+
+def wav_seconds(path: str | None) -> float | None:
+    """Playing time of a WAV file, or None if it cannot be read."""
+    if path is None:
+        return None
+    try:
+        with wave.open(path, "rb") as w:
+            return w.getnframes() / w.getframerate()
+    except (OSError, wave.Error, EOFError, ZeroDivisionError):
+        return None
+
+
+def alert_wav_path(
+    path: str = "", volume: float = 1.0, default: Path | None = None, repeat: int = 1
+) -> str | None:
+    """Path to a WAV at the requested volume, its audio `repeat` times over,
+    ready for SND_FILENAME.
+
+    Full volume played once is the source file itself; anything else is
+    built once into a temp file keyed by source identity + volume + repeat,
+    so later alerts re-use it. Returns None when there is no source WAV.
     """
     src = source_path(path, default)
     if src is None:
         return None
     volume = max(0.0, min(1.0, volume))
-    if volume >= 1.0:
+    repeat = max(1, repeat)
+    if volume >= 1.0 and repeat == 1:
         return str(src)
     try:
         stat = src.stat()
         # mtime and size in the key so editing the sound file invalidates it
         digest = hashlib.sha1(
-            f"{src.resolve()}|{stat.st_mtime_ns}|{stat.st_size}|{volume:.3f}".encode(),
+            f"{src.resolve()}|{stat.st_mtime_ns}|{stat.st_size}|{volume:.3f}|x{repeat}".encode(),
             usedforsecurity=False,
         ).hexdigest()[:16]
         cached = Path(tempfile.gettempdir()) / f"valdo-alert-{digest}.wav"
         if not cached.is_file():
-            scaled = scale_wav(src.read_bytes(), volume)
+            scaled = repeat_wav(scale_wav(src.read_bytes(), volume), repeat)
             # write via a temp name then replace, so a half-written file is
             # never handed to the player
             partial = cached.with_suffix(".part")

@@ -173,8 +173,7 @@ def scene(name: str, events, height: int = 800) -> None:
     root = tk.Tk()
     bus = Bus()
     overlay = Overlay(root, bus, config, on_price_recheck=lambda reward: None)
-    overlay._play_sound = lambda *a, **k: None  # silent: no alarm while capturing
-    overlay._sound.submit = lambda command: None  # the jackpot alarm bypasses _play_sound
+    overlay._play_sound = lambda *a, **k: None  # silent: no sound while capturing
     # on-screen for the moment of the grab (the overlay is always-on-top)
     root.geometry(f"515x{height}+60+60")
     for ev in events:

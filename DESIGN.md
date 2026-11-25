@@ -290,18 +290,16 @@ generic tabs open ranks exactly as it always did.
 **Jackpot tier.** A Valdo alert whose net AND yield both clear
 `alerts.jackpot_min_net` / `jackpot_min_yield` (`margin.is_jackpot`) is a
 jackpot. It outranks every other alert, generic hits included: it clears
-both bars, and it is the one ringing, so it is what the hotkey takes.
+both bars, so it is what the hotkey takes.
 Generic hits and currency mismatches are never jackpots (the scam guard's
 case must not be pushed to the top). A jackpot gets a magenta banner,
-frame and feed row, and loops an alarm (`SoundWorker` keeps play/stop
-ordered) while any live jackpot is unsilenced (`alerts.jackpots_to_ring`).
-Travel and expiry end it by removing the alert; clicking the banner
-silences the jackpots on screen, per listing, so a new one still rings.
-While it rings, routine alert sounds are skipped so they cannot cut it
-off, generic hits included: a live jackpot outranks them, so the alarm
-keeps ringing for the hotkey's target and the generic hit waits below it.
-(`alarm_kind` still returns None if a generic hit is ever on top, which
-can only happen with no jackpot live.) The window is never pulled forward. The banner click is sound-only.
+frame and feed row, and plays an alarm twice (`alerts.alert_sound` picks a
+batch's one sound: super, then jackpot, then generic, then Valdo). The
+repeats are baked into the WAV (`sound.repeat_wav`, cached per volume), so
+it is still one async PlaySound that a mute can cut off. Until the alarm has
+finished (its WAV's length), a routine alert sound is skipped so it cannot
+cut it off. The banner is not
+clickable, and the window is never pulled forward.
 
 A **super jackpot** is a jackpot that also clears
 `alerts.super_jackpot_min_net` / `super_jackpot_min_yield`
@@ -310,10 +308,9 @@ jackpot exclusion and means super bars set below the jackpot bars cannot
 skip a tier. `AlertView.super_jackpot` implies `jackpot`, so code that only
 knows jackpots still treats one correctly. The rank key is (generic, super,
 jackpot, yield or recency). The overlay styles both tiers through one `_Tier`
-palette (gold for super). `alerts.alarm_kind` picks the super alarm while
-an unsilenced super jackpot is live, else the jackpot alarm; switching
-kinds swaps the loop. None of this touches the click path: one press is
-still one travel.
+palette (gold for super), and a super jackpot plays its own alarm three
+times.
+None of this touches the click path: one press is still one travel.
 
 ## Scam guard
 

@@ -18,7 +18,7 @@ from conftest import make_config, make_listing_frame
 from test_config_validation import write
 
 from sniper import margin, sound
-from sniper.alerts import AlertStore, alarm_kind, jackpots_to_ring
+from sniper.alerts import AlertStore, alert_sound
 from sniper.config import AlertsConfig, ConfigError, load_config
 from sniper.models import Listing, parse_frame
 from sniper.modrules import ModRules
@@ -150,15 +150,13 @@ def test_a_generic_hit_still_outranks_ordinary_valdo_alerts():
     assert [v.listing_id for v in s.views()] == ["ring", "easy"]
 
 
-def test_the_alarm_keeps_ringing_when_a_generic_hit_arrives():
-    """The jackpot stays on top, so its alarm keeps ringing; the generic
-    hit waits underneath as the next target."""
+def test_a_generic_hit_waits_under_the_jackpot():
+    """The jackpot stays on top; the generic hit is the next target."""
     s = super_store(consume_mode="top")  # travel leaves the generic behind
     s.insert(decision("super", 80, 55))
     s.insert(_generic("ring"))
-    assert alarm_kind(s.views(), set()) == "super"
+    assert s.views()[0].listing_id == "super"
     s.consume_best()  # traveled to the jackpot
-    assert alarm_kind(s.views(), set()) is None
     assert s.views()[0].listing_id == "ring"
 
 
@@ -227,25 +225,17 @@ def _views(*specs):
     return s.views()
 
 
-def test_alarm_rings_for_a_live_jackpot_only():
-    assert jackpots_to_ring(_views(("jp", 80, 55), ("meh", 10, 100)), set()) == {"jp"}
-    assert jackpots_to_ring(_views(("meh", 10, 100)), set()) == set()
+def test_a_jackpot_plays_the_alarm_and_anything_else_its_own_sound():
+    jp, meh = _views(("jp", 80, 55), ("meh", 10, 100))
+    assert alert_sound([jp]) == "jackpot"
+    assert alert_sound([meh]) == "valdo"
+    assert alert_sound([meh, jp]) == "jackpot"  # the biggest news in a batch wins
+    assert alert_sound([]) == "valdo"
 
 
-def test_silencing_stops_that_jackpot_but_a_new_one_still_rings():
-    """The banner click: 'I am not going to this one'. It must not also
-    swallow the next, different jackpot."""
-    silenced = {"jp"}
-    assert jackpots_to_ring(_views(("jp", 80, 55)), silenced) == set()
-    assert jackpots_to_ring(_views(("jp", 80, 55), ("jp2", 90, 50)), silenced) == {"jp2"}
-
-
-def test_travel_ends_the_alarm():
-    """Traveling consumes the alert, so nothing is left to ring for."""
-    s = store()
-    s.insert(decision("jp", 80, 55))
-    s.consume_best()
-    assert jackpots_to_ring(s.views(), set()) == set()
+def test_jackpot_alarm_off_plays_the_ordinary_sound():
+    (jp,) = _views(("jp", 80, 55))
+    assert alert_sound([jp], jackpot_alarm=False) == "valdo"
 
 
 def test_jackpot_alarm_has_its_own_default_sound():
@@ -270,7 +260,7 @@ def test_sound_worker_runs_commands_in_order_and_coalesces():
     worker = SoundWorker(backend)
     worker.submit(SoundCommand("first"))
     time.sleep(0.05)  # worker is now blocked inside "first"
-    worker.submit(SoundCommand("valdo", loop=True))
+    worker.submit(SoundCommand("valdo"))
     worker.submit(SoundCommand("stop"))
     gate.set()
     assert worker.wait_idle()
@@ -382,14 +372,16 @@ def test_super_thresholds_change_live():
     assert not s.is_super_jackpot(decision("x", 80, 55))
 
 
-def test_alarm_kind_prefers_super_and_respects_silencing():
+def test_a_super_jackpot_plays_its_own_alarm():
     s = super_store()
     s.insert(decision("super", 80, 55))
     s.insert(decision("jp", 40, 200))
-    views = s.views()
-    assert alarm_kind(views, set()) == "super"
-    assert alarm_kind(views, {"super"}) == "jackpot"  # the jackpot still rings
-    assert alarm_kind(views, {"super", "jp"}) is None
+    s.insert(_generic("g"))
+    sup, jp, generic = s.views()
+    assert alert_sound([jp, sup]) == "super"
+    assert alert_sound([jp]) == "jackpot"
+    assert alert_sound([generic]) == "generic"
+    assert alert_sound([generic, sup]) == "super"
 
 
 def test_super_jackpot_has_its_own_sound_and_config(tmp_path):

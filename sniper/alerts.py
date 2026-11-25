@@ -305,7 +305,7 @@ class AlertStore:
         """Sort key, best first: (super jackpot, jackpot, generic, order).
 
         A jackpot holds the top slot over everything, generic hits included:
-        it is the one that is ringing, so it is the one the hotkey takes. A
+        it is the best deal on screen, so it is the one the hotkey takes. A
         super jackpot outranks a jackpot. (A generic hit is never a jackpot
         itself - see is_jackpot - so the two flags never meet.)
 
@@ -349,26 +349,16 @@ class AlertStore:
             self._consumed.popitem(last=False)
 
 
-def alarm_kind(alerts: tuple[AlertView, ...], silenced: set[str]) -> str | None:
-    """Which alarm should loop: "super" while any unsilenced super jackpot
-    is live, else "jackpot" while any unsilenced jackpot is, else None.
-
-    `alerts` is ranked best first. A jackpot outranks a generic hit, so a
-    generic hit can only hold the top slot when no jackpot is live; the
-    guard below keeps the alarm off in that case all the same."""
-    if alerts and alerts[0].generic:
-        return None
-    ringing = jackpots_to_ring(alerts, silenced)
-    if any(a.super_jackpot for a in alerts if a.listing_id in ringing):
-        return "super"
-    return "jackpot" if ringing else None
-
-
-def jackpots_to_ring(alerts: tuple[AlertView, ...], silenced: set[str]) -> set[str]:
-    """Listing ids of live jackpots the alarm should ring for: every jackpot
-    still on screen that the user has not silenced. Empty -> alarm off.
-
-    Travel consumes the alert and expiry drops it, so either one ends the
-    alarm by itself; silencing is per listing, so a NEW jackpot arriving
-    after you silenced one still rings."""
-    return {a.listing_id for a in alerts if a.jackpot and a.listing_id not in silenced}
+def alert_sound(new_views, jackpot_alarm: bool = True) -> str:
+    """The one sound a batch of new alerts plays, once. The biggest news in
+    the batch wins: a super jackpot's alarm, then a jackpot's alarm (both
+    only with alerts.jackpot_alarm on; off, a jackpot sounds like any other
+    alert), then a non-Valdo hit's sound, else the Valdo alert."""
+    if jackpot_alarm:
+        if any(v.super_jackpot for v in new_views):
+            return "super"
+        if any(v.jackpot for v in new_views):
+            return "jackpot"
+    if any(v.generic for v in new_views):
+        return "generic"
+    return "valdo"

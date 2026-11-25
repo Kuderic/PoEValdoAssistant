@@ -157,7 +157,8 @@ class AlertsConfig:
     # Gets its own colour and the hotkey's top slot.
     jackpot_min_net: float = 30.0
     jackpot_min_yield: float = 50.0
-    # Loop an alarm while a jackpot is live; clicking its banner silences it.
+    # A jackpot plays an alarm (twice; a super jackpot's three times)
+    # instead of the ordinary alert sound.
     # jackpot_sound empty -> sound.JACKPOT_WAV. Plays at `volume`.
     jackpot_alarm: bool = True
     jackpot_sound: str = ""
