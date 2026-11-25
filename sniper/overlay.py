@@ -19,7 +19,7 @@ from collections import deque
 from dataclasses import dataclass
 from tkinter import font as tkfont
 
-from sniper import __version__, browser, paths
+from sniper import __version__, browser, paths, presets
 from sniper import icon as app_icon
 from sniper.alerts import AlertView, alarm_kind, jackpots_to_ring
 from sniper.bus import (
@@ -505,6 +505,8 @@ def _tier(item) -> _Tier | None:
 
 TITLE = "Valdo Sniper"
 TRADE_URL = "https://www.pathofexile.com/trade/search"
+# a preset clicked again this soon is ignored: its tabs are still loading
+PRESET_REPEAT_S = 30.0
 # Font roles -> the first installed family. Every _font() call names a role,
 # so a machine without (say) Bahnschrift degrades instead of rendering Tk's
 # fallback serif.
@@ -725,6 +727,12 @@ class Overlay:
         # setup (or closed every tab), so the idle card becomes a setup guide.
         self._tab_count = 0
         self._tabs_need_install = True
+        # reward keys the connected tabs watch: a preset skips those
+        self._open_rewards: set[str] = set()
+        # the league poe.ninja resolved ("auto"), for the preset tab URLs
+        self._league: str | None = None
+        # preset name -> monotonic time its tabs were last opened
+        self._preset_opened: dict[str, float] = {}
         host = config.server.host if config.server.host not in ("0.0.0.0", "") else "127.0.0.1"
         self._install_url = f"http://{host}:{config.server.port}{INSTALL_PATH}"
 
@@ -929,11 +937,18 @@ class Overlay:
         self._bind_help(self._stash_widgets, HELP["stash"])
 
         # First-run guide: shown in place of the numbers while no live-search
-        # tab is connected. Both rows act on a click only.
+        # tab is connected. Every row acts on a click only. Step 2 opens a
+        # ready-made set of searches (sniper.presets): building the first
+        # search was where new users stalled.
         self._setup_panel = tk.Frame(card, bg=SURFACE)
+        starter = presets.HIGH_PROFIT
         for num, text, action in (
             ("1", "Install the browser script", self._open_install),
-            ("2", "Open a Valdo live search on the trade site", lambda: self._open_link(TRADE_URL)),
+            (
+                "2",
+                f"Open the {starter.name} live searches ({len(starter.searches)} tabs)",
+                self._first_run_preset,
+            ),
         ):
             line = tk.Frame(self._setup_panel, bg=SURFACE)
             line.pack(fill="x", pady=(0, 5))
@@ -951,6 +966,36 @@ class Overlay:
             for widget in parts:
                 widget.configure(cursor="hand2")
                 widget.bind("<Button-1>", lambda e, act=action: act())
+        self._trade_link = tk.Label(
+            self._setup_panel,
+            text="or build your own search on the trade site →",
+            bg=SURFACE,
+            fg=DIM,
+            font=self._font("ui", 9),
+            anchor="w",
+            cursor="hand2",
+        )
+        self._trade_link.pack(fill="x", padx=(30, 0), pady=(0, 6))
+        self._trade_link.bind("<Button-1>", lambda e: self._open_link(TRADE_URL))
+        self._bind_help(
+            (self._trade_link,),
+            (
+                "Your own searches",
+                "Any trade search for foil Valdo maps works: set it up, press Search, then "
+                "Activate Live Search. Open it in Chrome so the browser script sees it.",
+            ),
+        )
+        # what the preset click did; packed under the trade link on first use
+        self._setup_note = tk.Label(
+            self._setup_panel,
+            text="",
+            bg=SURFACE,
+            fg=GOOD,
+            font=self._font("ui", 9),
+            anchor="w",
+            justify="left",
+            wraplength=440,
+        )
         tk.Label(
             self._setup_panel,
             text="First: chrome://extensions → Tampermonkey → Details →\n"
@@ -1263,9 +1308,8 @@ class Overlay:
                 n = len(ev.tabs)
                 # a tab whose 30s heartbeat is >75s old is silently dead
                 stale = sum(1 for t in ev.tabs if t.get("hello_age_s", 0) > 75)
-                rewards = sorted(
-                    {_display_name(t["search_reward"]) for t in ev.tabs if t.get("search_reward")}
-                )
+                self._open_rewards = {t["search_reward"] for t in ev.tabs if t.get("search_reward")}
+                rewards = sorted(_display_name(r) for r in self._open_rewards)
                 # A tab running an older userscript silently drops whatever
                 # the new version added - the fields just arrive missing,
                 # which looks like a broken feature rather than a stale
@@ -1320,6 +1364,8 @@ class Overlay:
                 self._render_watching()
             elif isinstance(ev, PriceStatus):
                 self._ninja_status = ev.status
+                if ev.league:
+                    self._league = ev.league
                 self._render_price_pill()
             elif isinstance(ev, UpdateStatus):
                 self._set_update(ev)
@@ -1989,6 +2035,44 @@ class Overlay:
         just the Windows default browser (see sniper/browser.py)."""
         event("open_link", url=url, browser=browser.open_url(url))
 
+    # -------------------------------------------------------- search presets
+
+    def _trade_league(self) -> str | None:
+        """The league for trade URLs: the one poe.ninja resolved, else an
+        explicit `league:` from config.yaml."""
+        if self._league:
+            return self._league
+        league = self._config.league
+        return league if league and league != "auto" else None
+
+    def _open_preset(self, preset: presets.Preset) -> str:
+        """Open the preset's live searches that no tab watches yet, as Chrome
+        tabs TAB_GAP_MS apart. Only ever on a click. Returns one line saying
+        what happened, for the caller to show."""
+        league = self._trade_league()
+        if league is None:
+            return "League not known yet (poe.ninja has not answered). Try again in a minute."
+        last = self._preset_opened.get(preset.name)
+        if last is not None and time.monotonic() - last < PRESET_REPEAT_S:
+            # the tabs take a few seconds to connect, so until then they
+            # still look closed: a second click would open them all again
+            return "Already opening. The tabs connect within a few seconds."
+        todo = presets.still_closed(preset, self._open_rewards)
+        if not todo:
+            return f"All {len(preset.searches)} {preset.name} searches are already open."
+        self._preset_opened[preset.name] = time.monotonic()
+        event("preset_open", preset=preset.name, league=league, rewards=[r for r, _ in todo])
+        for i, (_, search_id) in enumerate(todo):
+            url = presets.live_url(league, search_id)
+            self._root.after(i * presets.TAB_GAP_MS, lambda u=url: self._open_link(u))
+        n = len(todo)
+        return f"Opening {n} live search{'es' if n > 1 else ''} in Chrome ({league})."
+
+    def _first_run_preset(self) -> None:
+        self._setup_note.config(text=self._open_preset(presets.HIGH_PROFIT))
+        if not self._setup_note.winfo_ismapped():
+            self._setup_note.pack(fill="x", pady=(0, 4), after=self._trade_link)
+
     def _render_alerts(self) -> None:
         pinned = self._pinned_top
         top_widgets = self._top_widgets
@@ -2457,6 +2541,43 @@ class Overlay:
             label.grid(row=row_cursor[0], column=0, columnspan=2, sticky="w", padx=10, pady=(2, 0))
             sections[-1]["captions"].append(label)
             row_cursor[0] += 1
+
+        # ---- 0. Live searches: a preset's button opens its tabs right away
+        # (nothing to Apply or Save)
+        heading("Live searches")
+        for preset in presets.PRESETS:
+            r = row_cursor[0]
+            names = ", ".join(_display_name(x) for x in preset.rewards)
+            name = tk.Label(
+                body,
+                text=f"{preset.name} ⓘ",
+                bg=BG,
+                fg=DIM,
+                font=self._font("ui", 9),
+                anchor="w",
+                cursor="question_arrow",
+            )
+            name.grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
+            self._bind_tooltip(name, ((f"{preset.blurb}: {names}", "", "none"),))
+            btn = tk.Label(
+                body,
+                text=f"Open {len(preset.searches)} tabs",
+                bg=BOX,
+                fg=FG,
+                font=self._font("ui", 9),
+                padx=8,
+                cursor="hand2",
+            )
+            btn.grid(row=r, column=1, padx=(2, 10), pady=1, sticky="w")
+            btn.bind(
+                "<Button-1>",
+                lambda e, p=preset: note.config(text=self._open_preset(p), fg=GOOD),
+            )
+            sections[-1]["rows"].append(
+                (f"{preset.name} {names} preset live search tabs".casefold(), [name, btn])
+            )
+            row_cursor[0] += 1
+        caption("Opens them in Chrome. Searches already open are skipped.")
 
         # ---- 1. Alerts: everything that decides WHETHER something alerts
         heading("Alerts", "Value")

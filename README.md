@@ -155,7 +155,7 @@ You need Windows, Chrome and Path of Exile. About five minutes:
    first time, because the exe is not code-signed: click **More info → Run
    anyway**. The overlay opens with a setup guide:
 
-   <img src="docs/overlay-setup.png" alt="First launch: the overlay says no live searches are connected and lists two clickable steps - install the browser script, open a Valdo live search" width="420">
+   <img src="docs/overlay-setup.png" alt="First launch: the overlay says no live searches are connected and lists two clickable steps - install the browser script, open the High profit live searches (6 tabs) - with a link to build your own search instead" width="420">
 
 4. **Install [Tampermonkey](https://www.tampermonkey.net/)** from the Chrome
    Web Store.
@@ -174,10 +174,19 @@ You need Windows, Chrome and Path of Exile. About five minutes:
 6. **Click "Install the browser script"** in the overlay and press
    **Install** on the Tampermonkey page that opens. (The app serves it
    itself, at `http://127.0.0.1:8765/valdo-sniper.user.js`.)
-7. **Open your Valdo live searches** on the trade site and press *Live
-   search*. Each tab connects on its own, and the status strip turns green:
-   `4 tabs · PoE running · Prices`. If it stays at `0 tabs`, step 5
-   is the usual cause.
+7. **Click "Open the High profit live searches"** in the overlay. It opens
+   six live searches in Chrome, one tab per reward: Headhunter, Mageblood,
+   Nimis, Progenesis, Sublime Vision and Wine of the Prophet. Each tab
+   connects on its own, and the status strip turns green:
+   `6 tabs · PoE running · Prices`. If it stays at `0 tabs`, step 5 is the
+   usual cause. Log in to the trade site first if Chrome isn't already: the
+   live search and the travel button both need it.
+
+   You can instead build your own searches. Click *or build your own search
+   on the trade site*, set up a foil Valdo map search, press **Search**, then
+   **Activate Live Search**. To reopen the preset later (it skips searches
+   that are already open), use ⚙ Settings → **Live searches** → **Open 6
+   tabs**.
 
 Run PoE in **windowed fullscreen**, not exclusive fullscreen, or the overlay
 can't stay on top. Sound works either way.

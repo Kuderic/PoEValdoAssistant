@@ -36,6 +36,30 @@ endpoint, so Tampermonkey's own update check keeps every browser on the
 version the running app expects (`EXPECTED_USERSCRIPT_VERSION`). Read-only,
 served on the configured host (127.0.0.1); nothing on this path can act.
 
+## Search presets
+
+`sniper.presets` holds ready-made sets of live searches. **High profit** is
+Headhunter, Mageblood, Nimis, Progenesis, Sublime Vision and Wine of the
+Prophet: any instant-buyout ("securable") foil map with that reward. A click
+opens each one's live page,
+`/trade/search/<league>/<id>/live`, as a Chrome tab, `TAB_GAP_MS` (1 s)
+apart. The userscript then connects each tab like any other. There are two
+buttons: step 2 of the first-run guide, and Settings → Live searches.
+
+- Trade search ids are the query itself, gzipped and base64url-encoded, with
+  no league in them, so one id works in every league. The league comes from
+  poe.ninja's resolution (`PriceStatus.league`), or an explicit `league:` in
+  config. While neither is known, the button explains why and opens nothing.
+- The ids are the exact ones the trade site issued. Its compressor's output
+  differs from zlib's, so rebuilding an id from a reward name gives
+  different bytes, and the site's acceptance of those is untested.
+  `tests/test_presets.py` decodes each id and checks its query.
+- Rewards that a connected tab already watches are skipped. A second click
+  within 30 s is ignored, because the first click's tabs have not connected
+  yet and would be opened twice.
+- The app sends no request of its own: a user click opens pages in the
+  user's browser, as typing the URLs would. `preset_open` is logged.
+
 ## Websocket message schemas
 
 All messages are JSON, one object per frame.
