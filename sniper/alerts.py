@@ -71,6 +71,8 @@ class AlertView:
     risks: tuple[tuple[str, str, float], ...] = ()
     fail_chance: float = 0.0
     risk_cost_div: float = 0.0
+    # seller's tab name and the item's 0-based cell; None when unknown
+    stash: tuple[str, int, int] | None = None
 
 
 @dataclass
@@ -111,6 +113,9 @@ class Alert:
             risks=d.risks,
             fail_chance=d.fail_chance,
             risk_cost_div=d.risk_cost_div or 0.0,
+            stash=None
+            if d.listing.stash is None
+            else (d.listing.stash.name, d.listing.stash.x, d.listing.stash.y),
         )
 
 

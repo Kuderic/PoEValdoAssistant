@@ -172,7 +172,7 @@ def scene(name: str, events, height: int = 800) -> None:
     config = load_config(ROOT / "config.yaml")
     root = tk.Tk()
     bus = Bus()
-    overlay = Overlay(root, bus, config)
+    overlay = Overlay(root, bus, config, on_price_recheck=lambda reward: None)
     overlay._play_sound = lambda *a, **k: None  # silent: no alarm while capturing
     overlay._sound.submit = lambda command: None  # the jackpot alarm bypasses _play_sound
     # on-screen for the moment of the grab (the overlay is always-on-top)
@@ -213,6 +213,7 @@ def main() -> None:
         MASTERY_MODS,
         reference_source="cached",
         pairings=(("Power charges + cull", "Burst kills through any recovery", 1.4),),
+        stash=("7", 8, 8),
     )
     runners = (
         view("p", "Foil Progenesis", 41, 22, 71),
@@ -227,7 +228,18 @@ def main() -> None:
         ],
     )
 
-    nimis = view("j", "Foil Nimis", 80, 79.5, 55.2, NIMIS_MODS, lag=1834.0, jackpot=True, life=0.86)
+    nimis = view(
+        "j",
+        "Foil Nimis",
+        80,
+        79.5,
+        55.2,
+        NIMIS_MODS,
+        lag=1834.0,
+        jackpot=True,
+        life=0.86,
+        stash=("Shop", 1, 0),
+    )
     jp_feed = list(feed_events(skip_first=True))
     jp_feed.append(
         ListingSeen(

@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.8.1
+// @version      0.8.3
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
-// @run-at       document-idle
+// @run-at       document-start
 // @updateURL    http://127.0.0.1:8765/valdo-sniper.user.js
 // @downloadURL  http://127.0.0.1:8765/valdo-sniper.user.js
 // ==/UserScript==
@@ -66,7 +66,7 @@ const CONFIRM_WINDOW_MS = 3_000;
    script it loaded with until it is reloaded, so this is the only way to
    tell from logs/ whether a live tab is on a stale userscript.
    KEEP IN SYNC with the @version header above. */
-const SCRIPT_VERSION = '0.8.1';
+const SCRIPT_VERSION = '0.8.3';
 
 const WS_URL = 'ws://127.0.0.1:8765';
 const HEARTBEAT_MS = 30_000;
@@ -77,6 +77,18 @@ const SENTINEL_MS = 2_000;
    the DOM path's silent attach) */
 const NETWORK_SILENT_MS = 4_000;
 const TRADE_FETCH_RE = /\/api\/trade\/fetch\//;
+/* the trade site's live-search socket: it pushes new result ids, and the
+   page then fetches their details from /api/trade/fetch */
+const LIVE_WS_RE = /\/api\/trade\d?\/live\//;
+/* a fetch more than this long after the last push was not caused by it */
+const PUSH_MATCH_MS = 60_000;
+/* The 2s sweep re-reads only rows that appeared this recently; every
+   FULL_SWEEP_EVERY ticks it re-reads the whole page. Re-reading every row
+   every 2s made the sweep's cost grow with the hours a tab stayed open (a
+   busy tab holds 600+ rows by evening), in a background tab whose timers
+   Chrome rations - the page's own work waits behind ours. */
+const SWEEP_RECENT_MS = 60_000;
+const FULL_SWEEP_EVERY = 30; // x SENTINEL_MS = once a minute
 /* rows whose price/seller render a tick after insertion retry on this
    schedule (first retry is a rAF) instead of waiting for the 2s sweep */
 const RETRY_DELAYS_MS = [50, 100, 200, 400];
@@ -188,6 +200,9 @@ function listingId(rowEl, parsed) {
  *   to measure how long a listing was already live before we saw it, which
  *   is the window in which somebody else can take it. The DOM path cannot
  *   supply this (the row only says "listed 4 minutes ago").
+ * - listing.stash is {name, x, y}: the seller's tab and the item's cell in
+ *   it (0-based), shown so the item can be found in the shop at a glance.
+ *   Also network-only; the row does not show it.
  * Returns null when mandatory fields are missing.
  */
 function parseFetchItem(entry) {
@@ -222,6 +237,17 @@ function parseFetchItem(entry) {
     reward: typeof reward === 'string' && reward ? reward : null,
     mods,
     indexed: typeof listing.indexed === 'string' ? listing.indexed : null,
+    stash: parseStash(listing.stash),
+  };
+}
+
+/** {name, x, y} with whole-number cells, else null. */
+function parseStash(stash) {
+  if (!stash || !Number.isInteger(stash.x) || !Number.isInteger(stash.y)) return null;
+  return {
+    name: typeof stash.name === 'string' ? stash.name : '',
+    x: stash.x,
+    y: stash.y,
   };
 }
 
@@ -247,6 +273,45 @@ class SeenSet {
 // ---------------------------------------------------------------------------
 // Runtime wiring - skipped entirely under the test harness.
 // ---------------------------------------------------------------------------
+
+/**
+ * When the live-search socket last delivered a push (performance.now()).
+ *
+ * Installed at document-start, before the page opens its socket: a
+ * wrapper around the WebSocket constructor adds one passive 'message'
+ * listener to the trade site's live socket and nothing else - the page's
+ * own handlers, messages and sends are untouched, and every other socket
+ * (ours to the local app included) passes straight through.
+ *
+ * A fetch is attributed to the latest push before it. That splits a
+ * listing's delay into GGG -> push, push -> the page asking for it, and the
+ * fetch itself (see the `timing` field of new_listing).
+ */
+const pushClock = { last: null, count: 0, sockets: 0 };
+/* one id per page load (see hello) */
+const PAGE_ID = Math.random().toString(36).slice(2, 12);
+
+function installPushClock() {
+  const Native = window.WebSocket;
+  if (!Native || Native.__valdoWrapped) return;
+  function WebSocket(url, protocols) {
+    const ws = protocols === undefined ? new Native(url) : new Native(url, protocols);
+    try {
+      if (LIVE_WS_RE.test(String(url))) {
+        pushClock.sockets += 1;
+        ws.addEventListener('message', () => {
+          pushClock.last = performance.now();
+          pushClock.count += 1;
+        });
+      }
+    } catch { /* never break the page's socket */ }
+    return ws;
+  }
+  WebSocket.prototype = Native.prototype;
+  for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) WebSocket[k] = Native[k];
+  WebSocket.__valdoWrapped = true;
+  window.WebSocket = WebSocket;
+}
 
 function main() {
   const tabId = (() => {
@@ -430,9 +495,12 @@ function main() {
   }
 
   let lastSentReward = null;
+  let lastRewardFromRows = false; // the reward came from rows, not the filter
 
   function hello() {
-    lastSentReward = searchReward();
+    const fromRows = majorityReward();
+    lastSentReward = fromRows || filterReward();
+    lastRewardFromRows = Boolean(fromRows);
     send({
       type: 'hello',
       search_id: searchId,
@@ -440,8 +508,13 @@ function main() {
       search_reward: lastSentReward,
       search_kind: isGenericSearch() ? 'any' : 'valdo',
       version: SCRIPT_VERSION,
-      net_stats: { ...netStats },
+      net_stats: { ...netStats, pushes: pushClock.count, liveSockets: pushClock.sockets },
+      // a reload runs the script afresh (new id, age near 0); the app
+      // reconnecting to a page that stayed open sees the same id, older
+      page_id: PAGE_ID,
+      page_age_s: Math.round(performance.now() / 1000),
     });
+    netStats.sweepMsMax = 0; // per heartbeat window
   }
 
   /**
@@ -450,8 +523,10 @@ function main() {
    * Also corrects a filter-derived name once rows confirm the real spelling.
    */
   function refreshRewardIdentity() {
-    const reward = searchReward();
+    const fromRows = majorityReward();
+    const reward = fromRows || filterReward();
     if (reward && reward !== lastSentReward) hello();
+    else if (fromRows) lastRewardFromRows = true;
   }
 
   function connect() {
@@ -570,10 +645,16 @@ function main() {
   }
 
   let observedContainer = null;
+  /* rows the observer saw arrive, oldest first: what the 2s sweep reads */
+  let recentRows = [];
   const observer = new MutationObserver((mutations) => {
+    const now = Date.now();
     for (const m of mutations) {
       for (const node of m.addedNodes) {
-        for (const row of collectRows(node)) processRow(row, false);
+        for (const row of collectRows(node)) {
+          recentRows.push({ row, at: now });
+          processRow(row, false);
+        }
       }
     }
   });
@@ -620,9 +701,13 @@ function main() {
     // (an ordering problem). Low => the key reached `seen` some other way
     // (silent init or the sweep), which is a different bug entirely.
     domAlready: 0,
+    // tab health, for listings that arrive late: rows on the page at the
+    // last full sweep, the slowest sweep since the last hello (ms), pushes
+    // seen on the live socket, and whether that socket was hooked at all
+    rows: 0, sweepMsMax: 0, pushes: 0, liveSockets: 0,
   };
 
-  function handleFetchEntry(entry) {
+  function handleFetchEntry(entry, timing) {
     netStats.entries += 1;
     const parsed = parseFetchItem(entry);
     if (!parsed) {
@@ -653,13 +738,15 @@ function main() {
       reward: generic ? null : fields.reward, // see the DOM path for why
       generic,
       indexed_at: indexed, // GGG's index time; null on the DOM path
+      // where the delay went inside the tab (see installPushClock)
+      timing: timing || null,
       capture: 'net',
       row_index: -1, // no DOM row yet
       detected_at: new Date().toISOString(),
     });
   }
 
-  function handleFetchPayload(url, data, via) {
+  function handleFetchPayload(url, data, via, timing) {
     if (via === 'fetch') netStats.viaFetch += 1;
     else if (via === 'xhr') netStats.viaXhr += 1;
     // live search pages only: fetches on static search pages come from the
@@ -675,7 +762,7 @@ function main() {
     netStats.payloads += 1;
     for (const entry of data.result) {
       try {
-        handleFetchEntry(entry);
+        handleFetchEntry(entry, timing);
       } catch { /* one bad entry must not drop the rest */ }
     }
   }
@@ -691,6 +778,9 @@ function main() {
           url = typeof input === 'string' ? input : input?.url || '';
         } catch { /* exotic input: leave it to the DOM path */ }
         if (!url || !TRADE_FETCH_RE.test(url)) return out;
+        const startedAt = performance.now();
+        const pushAt = pushClock.last;
+        const hidden = document.hidden;
 
         // Parse BEFORE the page gets the response.
         //
@@ -711,7 +801,12 @@ function main() {
               .clone()
               .json()
               .then((data) => {
-                handleFetchPayload(url, data, 'fetch');
+                const gap = pushAt === null ? null : startedAt - pushAt;
+                handleFetchPayload(url, data, 'fetch', {
+                  push_to_fetch_ms: gap !== null && gap < PUSH_MATCH_MS ? Math.round(gap) : null,
+                  fetch_ms: Math.round(performance.now() - startedAt),
+                  hidden,
+                });
                 return resp;
               })
               .catch(() => resp); // not JSON, or body unreadable
@@ -774,6 +869,7 @@ function main() {
    * here; unparseable rows stay unseen and retry on the next sweep.
    */
   let currentPath = location.pathname;
+  let sweepTick = 0;
   setInterval(() => {
     if (location.pathname !== currentPath) {
       // real navigation: new search context - re-init silently
@@ -791,16 +887,29 @@ function main() {
       observer.disconnect();
       if (!attach(false)) return;
     }
+    const started = performance.now();
+    sweepTick += 1;
+    const full = sweepTick % FULL_SWEEP_EVERY === 0;
+    const cutoff = Date.now() - SWEEP_RECENT_MS;
+    recentRows = recentRows.filter((r) => r.at >= cutoff && r.row.isConnected);
+    const rows = full
+      ? Array.from(observedContainer.querySelectorAll(SELECTORS.rowLoose))
+      : recentRows.map((r) => r.row);
+    if (full) netStats.rows = rows.length;
     let swept = 0;
-    for (const row of observedContainer.querySelectorAll(SELECTORS.rowLoose)) {
+    for (const row of rows) {
       // handleRow's first check (handledRows) makes an already-handled row
-      // cost one price read however long the tab has been open, while a row
-      // re-priced in place still gets a new key and is forwarded again
+      // cost one price read, while a row re-priced in place still gets a
+      // new key and is forwarded again
       const before = handledRows.get(row);
       if (handleRow(row, false) && handledRows.get(row) !== before) swept += 1;
     }
     if (swept) console.info(`[valdo] sweep recovered ${swept} missed row(s)`);
-    refreshRewardIdentity();
+    // the reward check reads every row too: once the rows have named the
+    // reward, re-check it only on full sweeps (before that, only while new
+    // rows are arriving - they are what can name it)
+    if (full || (!lastRewardFromRows && recentRows.length > 0)) refreshRewardIdentity();
+    netStats.sweepMsMax = Math.max(netStats.sweepMsMax, Math.round(performance.now() - started));
   }, SENTINEL_MS);
 
   // --- click path ----------------------------------------------------------
@@ -903,5 +1012,13 @@ if (window.__VALDO_TEST__) {
     parseRow, parseFetchItem, listingId, SeenSet,
   };
 } else {
-  main();
+  // document-start, so the push clock is in place before the page opens its
+  // live socket; everything else starts once the DOM is parsed, which is
+  // when it used to start under document-idle
+  installPushClock();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(main, 0), { once: true });
+  } else {
+    main();
+  }
 }

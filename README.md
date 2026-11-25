@@ -272,11 +272,12 @@ also work their sum through for the listing on screen, e.g. NET shows
 | Element | What it tells you |
 |---|---|
 | **Reward worth …** | What the map's reward unique sells for and when that price was last checked on the trade site (`price checked 4m ago`). A price from anywhere else says so (last session / poe.ninja estimate / your price). NET is worked out from it |
+| **Stash spot** | Where the item sits in the seller's tab: a mini grid with its cell marked, the rough area (`bottom right`), the tab name and the exact `col, row`. Read it while the hideout loads and the click at Faustus is already aimed. Shown for listings caught from the network (almost all of them). The trade site doesn't give the tab size, so a 12×12 tab is assumed unless the position only fits a quad tab |
 | **PRICE** | What you pay, and in which currency. Turns red on a currency mismatch (the classic "20 exalted, not 20 divine" bait) — a full-width banner also appears |
-| **NET DIV** | Reward value − asking price − the running cost. What the map actually leaves you |
+| **NET** | Reward value − asking price − the running cost, in divine (`+48 div`). What the map actually leaves you |
 | **YIELD** | The decision number, in the tinted cell: net ÷ difficulty × 100, i.e. profit per unit of pain. It decides alerts and the hotkey's pick, so an easy map with modest profit can beat a brutal one. Green means it clears your threshold |
 | **DIFFICULTY** | How hard the mods make the map; 100 is a typical map. The toughest encounter's base (or the clean-map default) × every dangerous mod and pairing. Plain ≤100, amber >100, red >300 |
-| **latency badge** | The delay between the seller listing the map (the trade site's own index time) and your Chrome tab receiving it from the live search: the head start every other sniper had. Not your reaction time. Green under 2s, red past 5s |
+| **latency badge** | The delay between the seller listing the map (the trade site's own index time) and your Chrome tab receiving it from the live search: the head start every other sniper had. Not your reaction time. Green under 2s, red past 5s. A busy tab creeps up over hours; when one does, the status strip says `reload Mageblood` (or whichever tab) |
 | **☠ rows** | Deadly pairings, with the reason |
 | **Mod list** | Each mod with its contribution (`base 120`, `×2.5`), marked red/amber by severity, modifiers right-aligned |
 
@@ -543,6 +544,7 @@ searches you aren't actually racing for.
 | Update pill says *failed* | The download didn't finish or didn't match GitHub's checksum, so nothing was installed. It retries by itself; or click the pill and download the exe by hand into the same folder |
 | `start.bat` says Python not found | Install Python 3.12+ with *Add to PATH* ticked, then run it again. Delete the `.venv` folder to force a clean reinstall |
 | `RATE LIMITED` / `Est. prices N/M` | Trade API refused us; margins fall back to poe.ninja medians and every affected alert is flagged. Close some searches |
+| Status strip says `reload <reward>` | That tab's listings now arrive seconds later than when it was freshly loaded. A busy live search slows down as its results pile up over hours; reload the tab (F5) and it is fast again |
 | Alert shows no latency | The DOM path captured it, or the tab is on an old userscript. `python tools/capture_report.py` says which |
 | Alerts but hotkey does nothing | `PoE not running` in the status strip — the hotkey is deliberately inert without the game |
 | Travel says `item no longer available` | Someone beat you to it — the runner-up is promoted to the top slot, press again to take it. Check the latency figure on the alerts you're losing |

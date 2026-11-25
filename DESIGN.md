@@ -58,6 +58,8 @@ Userscript -> Python:
   "indexed_at": "ISO-8601 or null: GGG's own index time (network capture only)",
   "capture": "\"net\" | \"dom\": which path produced this listing",
   "type_line": "string or null: the item's base type (\"Vermillion Ring\")",
+  "stash": { "name": "7", "x": 8, "y": 8 },
+  "timing": { "push_to_fetch_ms": 12, "fetch_ms": 180, "hidden": true },
   "generic": false
 }
 ```
@@ -94,6 +96,16 @@ timestamps come from different clocks (GGG's server vs the browser) and
 `indexed` is second-granular, so treat it as a multi-second signal, not a
 precise measurement; negative values mean the browser clock trails GGG's and
 are reported rather than clamped, so skew stays visible.
+
+`stash` (or null) is `listing.stash` from the fetch payload: the seller's
+tab name and the item's 0-based cell. Network capture only; the DOM row does
+not show it. The overlay draws it as a mini grid under the alert's name
+(`_set_stash`) so the item can be found in Faustus' shop the moment the
+hideout loads. The payload does not say how big the tab is, so the grid is
+12×12 unless a coordinate is 12 or more, then 24×24 (a quad tab). A quad
+tab with the item in its top-left quarter is therefore drawn as 12×12; the
+exact "col, row" beside the grid stays correct either way. Each listing's
+stash is logged in `listing_received` so that assumption can be checked.
 
 `currency` is the short trade id from the currency image's `alt` attribute
 ("divine", "chaos"), falling back to the visible text ("Divine Orb") only
@@ -160,6 +172,49 @@ real response (2026-08-10, sanitized copy in
   not `seen`: on a tab holding more than 500 live rows the cap would
   otherwise evict old keys every sweep and re-send those rows as new
   listings (reproduced: 1,200 rows → 27,400 stale re-sends in 40 s).
+- The 2 s sweep reads only rows the observer saw arrive in the last 60 s;
+  the whole page is re-read once a minute, and the reward check (which
+  also reads every row) runs on those full sweeps once rows have named the
+  reward. Reading every row every 2 s made the sweep's cost grow with the
+  hours a tab stayed open, in a background tab whose timers Chrome rations.
+  `net_stats` reports `rows` (at the last full sweep) and `sweepMsMax`
+  (slowest sweep since the last hello) so that cost stays visible.
+
+**Where a listing's delay goes (`timing`).** `index_lag_ms` is GGG's index
+time to the listing reaching us. Since 0.8.3 the script runs at
+`document-start` and wraps the `WebSocket` constructor, adding one passive
+`message` listener to the trade site's live socket (`/api/trade/live/...`;
+every other socket, ours included, passes straight through). The rest of
+the script still starts at DOMContentLoaded, as it did under
+`document-idle`. Each `/api/trade/fetch` call is attributed to the latest
+push before it, which splits the delay:
+
+- `index_to_push_ms` (derived server-side) = `index_lag_ms` −
+  `push_to_fetch_ms` − `fetch_ms`: GGG's side, plus clock skew and the up
+  to 1 s truncation of the second-granular index time;
+- `push_to_fetch_ms`: the page reacting to the push. A page bogged down
+  by hours of accumulated rows shows up here;
+- `fetch_ms`: the details request itself;
+- `hidden`: whether the tab was in the background.
+
+All four are logged on `listing_received`. `push_to_fetch_ms` is null when
+no push was seen (an older script, or a socket opened before the hook);
+`net_stats.liveSockets` says whether the hook found the socket at all.
+
+**Slow tabs (`sniper.tablag`).** A busy tab left open slows down: Mageblood
+went from ~1.6 s to 4-6 s over a day and back to ~1.6 s on reload, while
+quiet tabs barely moved. Per tab, the server keeps the median delay of the
+first 15 network-captured listings after a page load and of the latest 15.
+A tab is slow when its recent median is ≥ 2.5 s, ≥ 1.6 × its freshly loaded
+median, and ≥ 1 s above the other tabs' (when every tab is slow it is GGG,
+and a reload changes nothing). It clears under 2 s or 1.3 ×. The status
+strip then reads `N tabs · reload Mageblood` in amber; `tab_slow` and
+`tab_recovered` are logged. Only a real reload resets a tab: the hello's
+`page_id` (one per page load) and `page_age_s` tell it apart from the app
+reconnecting, which every app restart does to every tab. A page first seen
+already older than 15 minutes has no fresh baseline and is judged against
+the other tabs only. Replayed over the logs, the rule flags Mageblood about
+4 hours after a reload, at 2.6 s against 1.55 s fresh.
 
 Python -> Userscript:
 
@@ -173,7 +228,8 @@ item no longer available) surface in the overlay instead of failing
 silently.
 
 Heartbeat: userscript sends `{"type": "hello", "search_id": ..., "tab_id":
-..., "search_reward": ..., "search_kind": ...}` on connect and every 30s;
+..., "search_reward": ..., "search_kind": ..., "version": ..., "net_stats":
+{...}, "page_id": ..., "page_age_s": ...}` on connect and every 30s;
 the overlay shows a per-tab connection indicator so a dead tab is visible
 before it costs a snipe. `search_reward` is taken from the tab's own query
 state (`window.tradeOpts`), falling back to the majority reward among
@@ -291,7 +347,7 @@ for regex, `match_all` for combos where every pattern must hit):
 - Alert ranking and the hotkey's best-pick use **yield** — net divine per
   100 difficulty (`margin.net_yield`) — not raw surplus. "Net" because the
   flat running cost is already subtracted, which is what the overlay's
-  NET DIV column shows:
+  NET column shows:
   the hotkey should take the map that pays best for what it costs to run.
   A clean 25-difficulty map at +20 div (80/100D) outranks a Feared+VOID
   map at +50 div (4/100D). This is the overlay's Yield feed column, and

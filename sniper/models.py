@@ -41,6 +41,60 @@ class Price:
 
 
 @dataclass(frozen=True)
+class StashSpot:
+    """Where the item sits in the seller's shop: tab name and 0-based cell."""
+
+    name: str
+    x: int
+    y: int
+
+
+# Largest stash grid (a quad tab is 24x24); anything outside is not a cell
+STASH_MAX_CELLS = 24
+
+
+@dataclass(frozen=True)
+class FetchTiming:
+    """Where a network-captured listing's delay went inside the browser tab.
+
+    push_to_fetch_ms: from the live socket's push to the page asking for the
+    listing's details (None when no push was seen - an older script, or the
+    socket opened before the script could hook it). fetch_ms: that request's
+    round trip. hidden: whether the tab was in the background."""
+
+    push_to_fetch_ms: float | None
+    fetch_ms: float | None
+    hidden: bool | None
+
+
+def _ms(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0 <= value < 600_000 else None
+
+
+def _parse_timing(raw) -> FetchTiming | None:
+    if not isinstance(raw, dict):
+        return None
+    hidden = raw.get("hidden")
+    return FetchTiming(
+        push_to_fetch_ms=_ms(raw.get("push_to_fetch_ms")),
+        fetch_ms=_ms(raw.get("fetch_ms")),
+        hidden=hidden if isinstance(hidden, bool) else None,
+    )
+
+
+def _parse_stash(raw) -> StashSpot | None:
+    if not isinstance(raw, dict):
+        return None
+    x, y, name = raw.get("x"), raw.get("y"), raw.get("name")
+    for v in (x, y):
+        if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v < STASH_MAX_CELLS:
+            return None
+    return StashSpot(name=name if isinstance(name, str) else "", x=x, y=y)
+
+
+@dataclass(frozen=True)
 class Listing:
     search_id: str
     tab_id: str
@@ -65,6 +119,20 @@ class Listing:
     # carries indexed_at) or "dom" (the rendered row). Logged so a silent
     # regression in either path is visible instead of guessed at.
     capture: str = ""
+    # the seller's tab and the item's cell in it (network capture only)
+    stash: StashSpot | None = None
+    # where the delay went inside the tab (network capture, script 0.8.3+)
+    timing: FetchTiming | None = None
+
+    @property
+    def index_to_push_ms(self) -> float | None:
+        """The part of index_lag_ms spent before the live socket pushed the
+        listing: GGG's side, plus clock skew and the up-to-1s truncation of
+        the second-granular index time. None without push timing."""
+        lag, t = self.index_lag_ms, self.timing
+        if lag is None or t is None or t.push_to_fetch_ms is None or t.fetch_ms is None:
+            return None
+        return lag - t.push_to_fetch_ms - t.fetch_ms
 
     @property
     def index_lag_ms(self) -> float | None:
@@ -100,6 +168,10 @@ class Hello:
     # network-capture counters (see the userscript's netStats): why the
     # network path did or did not forward listings on this tab
     net_stats: dict | None = None
+    # one id per page load, and the page's age: tells a real reload (which
+    # cures a slow tab) from the app reconnecting to a page that stayed open
+    page_id: str | None = None
+    page_age_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +217,7 @@ def parse_frame(msg: object) -> Frame:
         reward = msg.get("search_reward")
         version = msg.get("version")
         stats = msg.get("net_stats")
+        page_id, page_age = msg.get("page_id"), msg.get("page_age_s")
         return Hello(
             search_id=search_id,
             tab_id=tab_id,
@@ -152,6 +225,10 @@ def parse_frame(msg: object) -> Frame:
             search_kind="any" if msg.get("search_kind") == "any" else "valdo",
             version=version if isinstance(version, str) and version else None,
             net_stats=stats if isinstance(stats, dict) else None,
+            page_id=page_id if isinstance(page_id, str) and page_id else None,
+            page_age_s=float(page_age)
+            if isinstance(page_age, (int, float)) and not isinstance(page_age, bool)
+            else None,
         )
 
     if mtype == "click_result":
@@ -226,6 +303,8 @@ def parse_frame(msg: object) -> Frame:
             # reward-less one was never a Valdo map.
             generic=msg.get("generic") is True or reward is None,
             type_line=type_line if isinstance(type_line, str) and type_line else None,
+            stash=_parse_stash(msg.get("stash")),
+            timing=_parse_timing(msg.get("timing")),
         )
 
     return FrameError(reason=f"unknown frame type {mtype!r}", raw=msg)

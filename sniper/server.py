@@ -23,6 +23,7 @@ from sniper.models import ClickResult, Decision, FrameError, Hello, Listing, par
 from sniper.modrules import ModRules, ModScoring
 from sniper.paths import resource
 from sniper.prices import PriceBook
+from sniper.tablag import TabLagMonitor
 
 _ROUTE_CAP = 1000
 # The userscript version this build expects. A browser tab keeps running the
@@ -30,7 +31,7 @@ _ROUTE_CAP = 1000
 # tab silently loses whatever the new version added - new fields simply
 # arrive missing, which reads as a broken feature rather than an old script.
 # KEEP IN SYNC with @version in userscript/valdo-sniper.user.js.
-EXPECTED_USERSCRIPT_VERSION = "0.8.1"
+EXPECTED_USERSCRIPT_VERSION = "0.8.3"
 
 # The app serves its own userscript over plain HTTP on the websocket port, so
 # installing is one click (Tampermonkey intercepts any *.user.js URL) and the
@@ -117,6 +118,7 @@ class SniperServer:
         self._listing_tab: OrderedDict[str, str] = OrderedDict()  # listing_id -> tab_id
         self._recent_rewards: dict[str, float] = {}  # reward -> last seen monotonic
         self._net_stats: dict[str, dict] = {}  # tab_id -> last capture counters
+        self._tab_lag = TabLagMonitor()  # spots a tab that has gone slow
 
     def set_scoring(self, scoring: ModScoring) -> None:
         """Swap the difficulty engine (tuning panel). Call from the asyncio
@@ -175,6 +177,9 @@ class SniperServer:
                         search_kind=frame.search_kind,
                         version=frame.version,
                     )
+                    # a reload starts the tab's delay history over; the
+                    # app reconnecting to a page that stayed open does not
+                    self._tab_lag.page_seen(tab_id, frame.page_id, frame.page_age_s)
                     if not known:
                         event(
                             "tab_connect",
@@ -212,6 +217,7 @@ class SniperServer:
             if tab_id and self.tabs.get(tab_id) and self.tabs[tab_id].ws is ws:
                 del self.tabs[tab_id]
                 self._net_stats.pop(tab_id, None)
+                self._tab_lag.forget(tab_id)
                 event("tab_disconnect", tab_id=tab_id)
                 self._notify_tabs()
 
@@ -242,6 +248,7 @@ class SniperServer:
         event(
             "listing_received",
             listing_id=listing.listing_id,
+            tab_id=listing.tab_id,
             item=listing.item_name,
             reward=listing.reward,
             amount=listing.price.amount,
@@ -258,6 +265,19 @@ class SniperServer:
             # how long it was already live before we saw it: the head start
             # every other sniper had. Null on DOM-captured listings.
             index_lag_ms=None if listing.index_lag_ms is None else round(listing.index_lag_ms),
+            # seller's tab and cell (network capture only); logged so the
+            # grid size the overlay assumes can be checked against reality
+            stash=None
+            if listing.stash is None
+            else {"name": listing.stash.name, "x": listing.stash.x, "y": listing.stash.y},
+            # index_lag_ms split up: GGG -> push, push -> the page's fetch,
+            # the fetch itself, and whether the tab was in the background
+            index_to_push_ms=None
+            if listing.index_to_push_ms is None
+            else round(listing.index_to_push_ms),
+            push_to_fetch_ms=None if listing.timing is None else listing.timing.push_to_fetch_ms,
+            fetch_ms=None if listing.timing is None else listing.timing.fetch_ms,
+            tab_hidden=None if listing.timing is None else listing.timing.hidden,
             mods=list(listing.mods),  # raw wording, for tuning match patterns
         )
 
@@ -291,6 +311,8 @@ class SniperServer:
         )
         if self._on_decision:
             self._on_decision(decision)
+        # after the alert is on its way: bookkeeping, not detection
+        self._track_lag(listing)
 
     # ------------------------------------------------------------- click path
 
@@ -326,19 +348,45 @@ class SniperServer:
         rewards.update(t.search_reward for t in self.tabs.values() if t.search_reward)
         return rewards
 
+    def _track_lag(self, listing: Listing) -> None:
+        """Feed the slow-tab monitor; log and publish a change of verdict."""
+        lag = listing.index_lag_ms
+        if lag is None or listing.tab_id not in self.tabs:
+            return
+        changed = self._tab_lag.record(listing.tab_id, lag)
+        if changed is None:
+            return
+        recent, base, _slow = self._tab_lag.status(listing.tab_id)
+        event(
+            "tab_slow" if changed else "tab_recovered",
+            tab_id=listing.tab_id,
+            search_reward=self.tabs[listing.tab_id].search_reward,
+            recent_lag_ms=None if recent is None else round(recent),
+            fresh_lag_ms=None if base is None else round(base),
+        )
+        self._notify_tabs()
+
     def tab_snapshot(self) -> list[dict]:
         now = time.monotonic()
-        return [
-            {
-                "tab_id": tid,
-                "search_id": t.search_id,
-                "search_reward": t.search_reward,
-                "search_kind": t.search_kind,
-                "version": t.version,
-                "hello_age_s": round(now - t.last_hello_monotonic, 1),
-            }
-            for tid, t in self.tabs.items()
-        ]
+        rows = []
+        for tid, t in self.tabs.items():
+            recent, base, slow = self._tab_lag.status(tid)
+            rows.append(
+                {
+                    "tab_id": tid,
+                    "search_id": t.search_id,
+                    "search_reward": t.search_reward,
+                    "search_kind": t.search_kind,
+                    "version": t.version,
+                    "hello_age_s": round(now - t.last_hello_monotonic, 1),
+                    # listing delay: recent median, median when freshly
+                    # loaded, and whether it has crept up enough to reload
+                    "lag_ms": None if recent is None else round(recent),
+                    "fresh_lag_ms": None if base is None else round(base),
+                    "slow": slow,
+                }
+            )
+        return rows
 
     def _notify_tabs(self) -> None:
         if self._on_tabs_changed:

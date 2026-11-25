@@ -64,7 +64,7 @@ SCROLLBAR_HIDE_MS = 900  # overlay scrollbar lingers this long after scrolling
 # be prominent), the rest are fixed.
 STAT_COLUMNS = (
     ("price", "PRICE · DIVINE"),
-    ("profit", "NET DIV"),
+    ("profit", "NET"),
     ("ratio", "YIELD"),
     ("difficulty", "DIFFICULTY"),
 )
@@ -101,8 +101,10 @@ HELP = {
         "Chrome tabs on the trade site running the Valdo Sniper script. Each one is a "
         "live search: the trade site pushes new listings into the tab and the script "
         "forwards them here the same instant. Green = connected. “stale” = a tab "
-        "stopped checking in (reload it). Red = none connected; click to install the "
-        "script.",
+        "stopped checking in (reload it). “reload Mageblood” = that tab's listings "
+        "now arrive seconds later than when it was freshly loaded - a busy tab slows "
+        "down as its results pile up over hours, and a reload makes it fast again. "
+        "Red = none connected; click to install the script.",
     ),
     "game": (
         "Game client",
@@ -194,6 +196,14 @@ HELP = {
         "These mods together are far worse than either one alone, so difficulty is "
         "multiplied again on top of their own multipliers.",
     ),
+    "stash": (
+        "Where it is in the shop",
+        "The item's spot in the seller's stash tab, so you can click it in Faustus' "
+        "shop the moment the hideout loads. The grid marks the cell; col and row "
+        "count from the top left. The trade site does not say how big the tab is, so "
+        "a 12×12 tab is assumed unless the position only fits a quad (24×24) tab. "
+        "Unknown for listings caught from the page instead of the network.",
+    ),
     "risk": (
         "Failure risk",
         "Chance the map cannot be completed with these mods. A failed map pays nothing "
@@ -253,6 +263,20 @@ def _ago(seconds: float | None) -> str:
     if seconds < 3600:
         return f"{seconds / 60:.0f}m ago"
     return f"{seconds / 3600:.0f}h ago"
+
+
+def _stash_spot(x: int, y: int) -> tuple[int, str]:
+    """(grid side, "bottom right") for a 0-based cell in the seller's tab.
+
+    The trade data gives the cell but not the tab's size, so a normal 12×12
+    tab is assumed unless the cell only fits a quad tab (24×24). The words
+    split the tab into thirds each way."""
+    side = 12 if max(x, y) < 12 else 24
+    row = ("top", "middle", "bottom")[min(2, y * 3 // side)]
+    col = ("left", "centre", "right")[min(2, x * 3 // side)]
+    if row == "middle" and col == "centre":
+        return side, "centre"
+    return side, f"{row} {col}"
 
 
 def _display_name(key: str) -> str:
@@ -383,6 +407,9 @@ def _difficulty_breakdown(view, base_default: float) -> str:
     return f"{start}{steps} = {view.difficulty:.0f}"
 
 
+# The stash mini grid's size in pixels (square): 4px per cell on a 12x12 tab
+STASH_GRID_PX = 48
+
 # Palette - design A, "Refined". One slate ground, one surface for the alert
 # card, 1px hairlines instead of boxes. Colour is kept for meaning only:
 # green = good, amber = warning/estimated, red = danger, magenta = jackpot.
@@ -390,6 +417,7 @@ BG = "#0f1216"
 STRIP = "#0b0e11"  # status strip and mod panel: one step darker than the ground
 SURFACE = "#161b21"  # the alert card and runner-up rows
 HAIR = "#262e38"  # dividers and card outlines
+STASH_BG = "#0b0e11"  # the stash mini grid's tab, one step darker than the card
 FG = "#e6eaef"
 DIM = "#9aa5b1"
 FAINT = "#7d8894"  # diminished: feed rows that did not reach the threshold
@@ -872,6 +900,34 @@ class Overlay:
             ),
         )
 
+        # Where the item sits in the seller's tab: a mini grid with the cell
+        # marked, then "bottom right · tab 7 · col 9, row 9". Read during the
+        # hideout load so the click at Faustus is already aimed.
+        self._stash_row = tk.Frame(card, bg=SURFACE)
+        self._stash_grid = tk.Canvas(
+            self._stash_row,
+            width=STASH_GRID_PX + 2,
+            height=STASH_GRID_PX + 2,
+            bg=SURFACE,
+            highlightthickness=0,
+        )
+        self._stash_grid.pack(side="left")
+        self._stash_where = tk.Label(
+            self._stash_row, text="", bg=SURFACE, fg=FG, font=self._font("semi", 13)
+        )
+        self._stash_where.pack(side="left", padx=(10, 0))
+        self._stash_detail = tk.Label(
+            self._stash_row, text="", bg=SURFACE, fg=DIM, font=self._font("ui", 10)
+        )
+        self._stash_detail.pack(side="left", padx=(10, 0))
+        self._stash_widgets = (
+            self._stash_row,
+            self._stash_grid,
+            self._stash_where,
+            self._stash_detail,
+        )
+        self._bind_help(self._stash_widgets, HELP["stash"])
+
         # First-run guide: shown in place of the numbers while no live-search
         # tab is connected. Both rows act on a click only.
         self._setup_panel = tk.Frame(card, bg=SURFACE)
@@ -915,6 +971,9 @@ class Overlay:
         self._stat_cells: dict[str, tk.Frame] = {}
         self._stat_caps: dict[str, tk.Label] = {}
         self._stat_vals: dict[str, tk.Label] = {}
+        # widgets inside a cell beyond its caption and number (the net's
+        # "div" unit and the row holding it): clickable and hoverable too
+        self._stat_extras: list[tk.Widget] = []
         last = len(STAT_COLUMNS) - 1
         for col, (key, caption) in enumerate(STAT_COLUMNS):
             self._stats.grid_columnconfigure(col, weight=1, uniform="stat")
@@ -924,15 +983,32 @@ class Overlay:
                 cell, text=caption, bg=SURFACE, fg=DIM, font=self._font("ui", 7, "bold"), anchor="w"
             )
             cap.pack(fill="x", padx=12, pady=(8, 0))
-            val = tk.Label(
-                cell, text="", bg=SURFACE, fg=PRICE, font=self._font("num", 21), anchor="w"
-            )
-            val.pack(fill="x", padx=12, pady=(0, 6))
+            extras: tuple[tk.Widget, ...] = ()
+            if key == "profit":
+                # "+15 div": the unit follows the number, smaller, so a
+                # three-digit net still fits the cell
+                row = tk.Frame(cell, bg=SURFACE)
+                row.pack(fill="x", padx=12, pady=(0, 6))
+                val = tk.Label(row, text="", bg=SURFACE, fg=PRICE, font=self._font("num", 21))
+                val.pack(side="left")
+                self._net_unit = tk.Label(
+                    row, text="", bg=SURFACE, fg=DIM, font=self._font("ui", 10, "bold")
+                )
+                self._net_unit.pack(side="left", anchor="s", padx=(4, 0), pady=(0, 5))
+                extras = (row, self._net_unit)
+                self._stat_extras.extend(extras)
+            else:
+                val = tk.Label(
+                    cell, text="", bg=SURFACE, fg=PRICE, font=self._font("num", 21), anchor="w"
+                )
+                val.pack(fill="x", padx=12, pady=(0, 6))
             self._stat_cells[key] = cell
             self._stat_caps[key] = cap
             self._stat_vals[key] = val
             # below the whole row, so it never covers the numbers being read
-            self._bind_help((cell, cap, val), lambda k=key: self._stat_help(k), anchor=self._stats)
+            self._bind_help(
+                (cell, cap, val, *extras), lambda k=key: self._stat_help(k), anchor=self._stats
+            )
 
         self._chips = tk.Frame(card, bg=SURFACE)  # warning chips
         # Deadly mod pairings get their own full-width rows rather than a
@@ -953,6 +1029,7 @@ class Overlay:
             (self._banner, {"fill": "x"}),
             (self._title_row, {"fill": "x", "padx": 12, "pady": (10, 8)}),
             (self._subtitle, {"fill": "x", "padx": 12, "pady": (0, 6)}),
+            (self._stash_row, {"fill": "x", "padx": 12, "pady": (0, 8)}),
             (self._setup_panel, {"fill": "x", "padx": 12, "pady": (0, 10)}),
             (self._stats, {"fill": "x"}),
             (self._chips, {"fill": "x", "padx": 12, "pady": (8, 0)}),
@@ -1098,6 +1175,8 @@ class Overlay:
             *self._stat_vals.values(),
             *self._stat_caps.values(),
             *self._stat_cells.values(),
+            *self._stat_extras,
+            *self._stash_widgets,
         )
         self._top_widgets = clickable
         for widget in clickable:
@@ -1202,13 +1281,22 @@ class Overlay:
                     }
                 )
                 text = f"{n} tab{'' if n == 1 else 's'}" + (f" · {stale} stale" if stale else "")
+                # a tab whose listings have crept from ~1.5s late to 4-6s
+                # late over hours (see sniper.tablag): a reload fixes it
+                slow = sorted(
+                    _display_name(t.get("search_reward") or "a tab")
+                    for t in ev.tabs
+                    if t.get("slow")
+                )
+                if slow:
+                    text += f" · reload {', '.join(slow)}"
                 if old:
                     # clicking the pill reinstalls; Tampermonkey also picks
                     # the new version up by itself via @updateURL
                     text += " · update script"
                     event("userscript_outdated", running=old, expected=EXPECTED_USERSCRIPT_VERSION)
                 self._tabs_label.config(
-                    text=text, fg=BAD if old else WARN if stale else GOOD if n else BAD
+                    text=text, fg=BAD if old else WARN if stale or slow else GOOD if n else BAD
                 )
                 self._tabs_need_install = bool(old) or n == 0
                 self._tabs_label.set_cursor("hand2" if self._tabs_need_install else "")
@@ -1682,6 +1770,7 @@ class Overlay:
             for col in ("profit", "ratio", "difficulty"):
                 self._stat_caps[col].config(text="")
                 self._stat_vals[col].config(text="")
+            self._net_unit.config(text="")
             return
         for key, caption in STAT_COLUMNS[1:]:
             self._stat_caps[key].config(text=caption)
@@ -1705,6 +1794,7 @@ class Overlay:
             text=f"{top.net_div:+.0f}",
             fg=jp.soft if jp else GOOD if top.net_div > 0 else BAD,
         )
+        self._net_unit.config(text="div")
         if ratio is None:
             ratio_text = "?"
         else:  # a decimal matters at 3.8, not at 128
@@ -1727,6 +1817,7 @@ class Overlay:
         countdown: bool,
         subtitle: bool = False,
         *,
+        stash: bool = False,
         jackpot: bool = False,
         mismatch: bool = False,
         setup: bool = False,
@@ -1744,6 +1835,7 @@ class Overlay:
             self._banner: mismatch,
             self._title_row: True,
             self._subtitle: subtitle,
+            self._stash_row: stash,
             self._setup_panel: setup,
             self._stats: stats,
             self._chips: chips,
@@ -1757,6 +1849,31 @@ class Overlay:
         for widget, opts in self._card_blocks:
             if show[widget]:
                 widget.pack(**opts)
+
+    def _set_stash(self, stash: tuple[str, int, int] | None) -> None:
+        """Draw the item's cell in the seller's tab (see _stash_spot)."""
+        canvas = self._stash_grid
+        canvas.delete("all")
+        if stash is None:
+            return
+        name, x, y = stash
+        side, where = _stash_spot(x, y)
+        px = STASH_GRID_PX
+        cell = px / side
+        canvas.create_rectangle(1, 1, px + 1, px + 1, fill=STASH_BG, outline=HAIR)
+        for i in (1, 2):  # thirds, matching the words beside it
+            at = 1 + round(px * i / 3)
+            canvas.create_line(at, 1, at, px + 1, fill=HAIR)
+            canvas.create_line(1, at, px + 1, at, fill=HAIR)
+        # the marked cell, never smaller than a readable dot on a quad tab
+        size = max(cell, 6)
+        cx, cy = 1 + (x + 0.5) * cell, 1 + (y + 0.5) * cell
+        canvas.create_rectangle(
+            cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2, fill=GOOD, outline=""
+        )
+        self._stash_where.config(text=where)
+        tab = f"tab “{name}”  ·  " if name else ""
+        self._stash_detail.config(text=f"{tab}col {x + 1}, row {y + 1}")
 
     def _set_age(self, lag_ms: float | None) -> None:
         """Show the head start other snipers had. Green means we saw it
@@ -1887,6 +2004,7 @@ class Overlay:
             for key, caption in STAT_COLUMNS:
                 self._stat_caps[key].config(text=caption, fg=DIM)
                 self._stat_vals[key].config(text="—", fg=FAINT)
+            self._net_unit.config(text="")
             self._set_age(None)
             self._set_travel_button(has_target=False, pinned=False)
             self._clear_frame(self._chips)
@@ -1938,6 +2056,7 @@ class Overlay:
         self._price_panel.pack_forget()  # the alert names its own reward price
         self._set_stats(top)
         self._set_age(top.index_lag_ms)
+        self._set_stash(top.stash)
         self._set_travel_button(has_target=True, pinned=pinned is not None, jackpot=tier)
         for label, note, mult in top.pairings:
             row = tk.Frame(self._pairings, bg=PAIR_BG)
@@ -2017,6 +2136,7 @@ class Overlay:
             mods=bool(top.mods),
             countdown=True,
             subtitle=bool(self._subtitle.cget("text")),
+            stash=top.stash is not None,
             jackpot=top.jackpot,
             mismatch=top.mismatch,
         )
