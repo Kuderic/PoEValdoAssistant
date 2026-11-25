@@ -1,8 +1,8 @@
-"""A jackpot's alarm plays twice (a super jackpot's three times), and the
+"""A jackpot's alarm plays once (a super jackpot's own alarm, once), and the
 banner is not a button.
 
 The alarm used to loop until the banner was clicked. Now its repeats are
-baked into the WAV, and a routine alert arriving while it plays does not cut
+baked into the WAV (now one play each), and a routine alert arriving while it plays does not cut
 it off.
 """
 
@@ -104,13 +104,13 @@ def test_repeat_wav_plays_the_sound_n_times_back_to_back():
     assert sound.repeat_wav(b"not a wav", 3) == b"not a wav"  # plays once, not never
 
 
-def test_jackpot_wavs_hold_two_and_three_plays(tmp_path):
+def test_repeated_wavs_hold_n_plays_and_jackpots_play_once(tmp_path):
     src = tmp_path / "alarm.wav"
     src.write_bytes(tone(0.5))
     for plays, volume in ((2, 1.0), (3, 0.5)):
         path = sound.alert_wav_path(str(src), volume, repeat=plays)
         assert sound.wav_seconds(path) == pytest.approx(0.5 * plays)
-    assert (sound.JACKPOT_PLAYS, sound.SUPER_JACKPOT_PLAYS) == (2, 3)
+    assert (sound.JACKPOT_PLAYS, sound.SUPER_JACKPOT_PLAYS) == (1, 1)
 
 
 def test_routine_alerts_stay_quiet_for_the_whole_repeated_alarm(ov, monkeypatch):

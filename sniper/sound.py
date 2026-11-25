@@ -37,13 +37,13 @@ DEFAULT_WAV = Path(r"C:\Windows\Media\Windows Exclamation.wav")
 # playing after the travel it announced.
 GENERIC_WAV = Path(r"C:\Windows\Media\tada.wav")
 # Jackpot (big net AND big yield): an alarm, played JACKPOT_PLAYS times
-# (2 x 3.75 s). A routine alert arriving meanwhile does not cut it off.
+# (once, 3.75 s). A routine alert arriving meanwhile does not cut it off.
 JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm02.wav")
-JACKPOT_PLAYS = 2
+JACKPOT_PLAYS = 1
 # Super jackpot (the tier above): a different alarm, so the two tiers can be
-# told apart by ear, and played one more time (3 x 4.0 s).
+# told apart by ear (once, 4.0 s).
 SUPER_JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm03.wav")
-SUPER_JACKPOT_PLAYS = 3
+SUPER_JACKPOT_PLAYS = 1
 
 
 @dataclass(frozen=True)

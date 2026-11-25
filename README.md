@@ -377,7 +377,7 @@ A Valdo listing that is **both** big money and cheap to run (net ≥ 15d
 - it stays magenta with `★ JACKPOT` in the live feed, so one you missed is
   obvious later.
 
-It also **plays an alarm twice** (`Alarm02.wav`, about 7.5 seconds in all,
+It also **plays an alarm once** (`Alarm02.wav`, about 4 seconds,
 at the volume slider) instead of the usual alert sound. An ordinary alert
 arriving while it plays stays quiet rather than cut it off. If you travel
 to the jackpot and it turns out to be sold already, the alarm stops. The
@@ -398,7 +398,7 @@ yield ≥ 10 by default) is a super jackpot:
 <img src="docs/overlay-super-jackpot.png" alt="A super jackpot alert: Nimis at 80 divine, +80 net, yield +144, with a gold SUPER JACKPOT banner, gold frame and gold TELEPORT button; a magenta jackpot runner-up sits below it" width="420">
 
 - a gold **★★ SUPER JACKPOT** banner, frame and TELEPORT button;
-- its own alarm (`Alarm03.wav`), played three times (about 12 seconds), so
+- its own alarm (`Alarm03.wav`), played once (about 4 seconds), so
   you can tell the tiers apart by ear;
 - it outranks a jackpot for the hotkey;
 - `★★ SUPER` in gold in the live feed.
@@ -465,7 +465,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (15 / 8), also in the ⚙ panel |
-| `alerts.jackpot_alarm` / `jackpot_sound` | Play an alarm on a jackpot (twice; a super jackpot's three times) instead of the ordinary sound / its .wav |
+| `alerts.jackpot_alarm` / `jackpot_sound` | Play an alarm on a jackpot (once; a super jackpot its own alarm, once) instead of the ordinary sound / its .wav |
 | `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 10), also in the ⚙ panel / its alarm .wav |
 | `trade_pricing.cache_max_age_minutes` | How stale a restored price may be (720) |
 | `updates.auto_download` / `enabled` | Download new releases in the background (on) / check for them at all (on) |

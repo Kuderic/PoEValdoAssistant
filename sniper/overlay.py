@@ -539,8 +539,8 @@ def _tier(item) -> _Tier | None:
 
 TITLE = "Valdo Sniper"
 TRADE_URL = "https://www.pathofexile.com/trade/search"
-# A jackpot's alarm plays twice, a super jackpot's three times (the repeats
-# are baked into the WAV, see sound.repeat_wav). Until it has finished, a
+# A jackpot's alarm plays SOUND_PLAYS times - once each, currently (any
+# repeats are baked into the WAV, see sound.repeat_wav). Until it has finished, a
 # routine alert sound is skipped rather than cut it off.
 SOUND_PLAYS = {"jackpot": JACKPOT_PLAYS, "super": SUPER_JACKPOT_PLAYS}
 # one play's length if the WAV cannot be read: the default alarms run
@@ -3450,13 +3450,13 @@ class Overlay:
                 "Super jackpot",
                 f"A jackpot that also clears the super bars: net ≥ {self._super_net:g}d "
                 f"and yield ≥ {self._super_yield:g}. It outranks every other alert for "
-                "the hotkey and plays its own alarm three times.",
+                "the hotkey and plays its own alarm once.",
             )
         return (
             "Jackpot",
             f"Net ≥ {self._jackpot_net:g}d and yield ≥ {self._jackpot_yield:g}, rare "
             "enough to drop what you are doing. It takes the hotkey's top slot and "
-            "plays an alarm twice.",
+            "plays an alarm once.",
         )
 
     def _countdown_help(self):

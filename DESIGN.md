@@ -306,10 +306,12 @@ both bars, so it is what the hotkey takes.
 Generic hits and currency mismatches are never jackpots (the scam guard's
 case must not be pushed to the top). The one exception is a chaos price: a
 normal way to list, and the unit every price normalizes to, so its net is
-trustworthy. It keeps its MISMATCH banner but may be a jackpot. A jackpot gets a magenta banner,
-frame and feed row, and plays an alarm twice (`alerts.alert_sound` picks a
+trustworthy. It keeps its MISMATCH banner but may be a jackpot. A jackpot
+gets a magenta banner, frame and feed row, and plays an alarm once (a super
+jackpot its own alarm, once; `alerts.alert_sound` picks a
 batch's one sound: super, then jackpot, then generic, then Valdo). The
-repeats are baked into the WAV (`sound.repeat_wav`, cached per volume), so
+play count (`sound.JACKPOT_PLAYS` / `SUPER_JACKPOT_PLAYS`, both 1) is baked
+into the WAV (`sound.repeat_wav`, cached per volume), so
 it is still one async PlaySound that a mute can cut off. Until the alarm has
 finished (its WAV's length), a routine alert sound is skipped so it cannot
 cut it off. A travel that fails because the listing is gone
