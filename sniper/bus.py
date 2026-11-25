@@ -44,6 +44,12 @@ class GameStatus:
 
 
 @dataclass(frozen=True)
+class HotkeyPressed:
+    """The travel hotkey was pressed (whatever it then does); lets the
+    overlay come to the front when the user has asked for that."""
+
+
+@dataclass(frozen=True)
 class Traveled:
     """A travel click just went out for this listing; the overlay pins its
     mods for a few seconds so they're readable during the loading screen."""
@@ -156,6 +162,7 @@ UiEvent = (
     | ClickOutcome
     | GameStatus
     | Traveled
+    | HotkeyPressed
     | ListingSeen
     | RewardPrices
     | WarmupStatus

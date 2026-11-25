@@ -76,6 +76,7 @@ def save_scoring_overrides(
     jackpot_min_yield: float | None = None,
     super_jackpot_min_net: float | None = None,
     super_jackpot_min_yield: float | None = None,
+    raise_overlay: bool | None = None,
 ) -> None:
     """Persist tuning-panel values (numbers, hotkey combo, alert volume;
     match patterns stay in config.yaml)."""
@@ -108,6 +109,8 @@ def save_scoring_overrides(
         data["super_jackpot_min_net"] = super_jackpot_min_net
     if super_jackpot_min_yield is not None:
         data["super_jackpot_min_yield"] = super_jackpot_min_yield
+    if raise_overlay is not None:
+        data["raise_overlay"] = raise_overlay
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
@@ -123,6 +126,7 @@ def load_extra_overrides(path: Path) -> dict:
         "hotkey_combo",
         "alert_volume",
         "running_cost",
+        "raise_overlay",
         *JACKPOT_KEYS,
     )
     return {k: raw[k] for k in keys if raw.get(k) is not None}
@@ -181,6 +185,9 @@ class AlertsConfig:
 class HotkeyConfig:
     combo: str = "ctrl+alt+t"
     consume: str = "all"  # "all" | "top"
+    # bring the overlay to the front (restoring it if minimized) on every
+    # press, without taking focus from the game
+    raise_overlay: bool = False
 
 
 @dataclass(frozen=True)
@@ -637,6 +644,8 @@ def load_config(
         raise ConfigError(f"thresholds.min_net must be >= 0, got {thresholds.min_net}")
     if "hotkey_combo" in extra:
         hotkey = replace(hotkey, combo=str(extra["hotkey_combo"]))
+    if "raise_overlay" in extra:
+        hotkey = replace(hotkey, raise_overlay=extra["raise_overlay"] is True)
     if "running_cost" in extra:
         thresholds = replace(thresholds, running_cost=float(extra["running_cost"]))
     if "alert_volume" in extra:

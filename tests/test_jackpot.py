@@ -98,6 +98,18 @@ def test_currency_mismatch_is_never_a_jackpot():
     s = store()
     d = replace(decision("scam", 150, 25), currency_mismatch=True)
     assert not s.is_jackpot(d)
+    ex = decision("ex", 150, 25, price={"amount": 900, "currency": "exalted"})
+    assert ex.currency_mismatch and not s.is_jackpot(ex)
+
+
+def test_a_chaos_listing_can_still_be_a_jackpot():
+    """Chaos is a normal way to price, not bait: listed in chaos against a
+    divine reference it keeps its MISMATCH flag but can be a jackpot."""
+    s = super_store()
+    d = decision("chaos", 150, 25, price={"amount": 2000, "currency": "chaos"})
+    assert d.currency_mismatch
+    assert s.is_jackpot(d)
+    assert s.is_super_jackpot(d)
 
 
 def test_generic_hit_is_never_a_jackpot():

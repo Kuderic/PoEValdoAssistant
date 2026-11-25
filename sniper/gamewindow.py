@@ -52,6 +52,23 @@ class GameWatcher:
             await asyncio.sleep(self._poll_s)
 
 
+def raise_without_focus(hwnd: int) -> bool:
+    """Put a window on top (topmost) and restore it if minimized, WITHOUT
+    activating it: the game keeps keyboard focus. False when win32 is
+    unavailable or the calls fail; the caller falls back to Tk."""
+    if win32gui is None or not hwnd:
+        return False
+    try:
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
+        flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE
+        win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, flags)
+    except Exception as e:
+        event("overlay_raise_failed", reason=repr(e))
+        return False
+    return True
+
+
 def focus_poe_window(title: str) -> bool:
     """Bring the PoE window to the foreground. Blocking win32 calls - run in
     the executor. Windows refuses SetForegroundWindow from background

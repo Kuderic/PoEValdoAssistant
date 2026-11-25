@@ -304,7 +304,9 @@ generic tabs open ranks exactly as it always did.
 jackpot. It outranks every other alert, generic hits included: it clears
 both bars, so it is what the hotkey takes.
 Generic hits and currency mismatches are never jackpots (the scam guard's
-case must not be pushed to the top). A jackpot gets a magenta banner,
+case must not be pushed to the top). The one exception is a chaos price: a
+normal way to list, and the unit every price normalizes to, so its net is
+trustworthy. It keeps its MISMATCH banner but may be a jackpot. A jackpot gets a magenta banner,
 frame and feed row, and plays an alarm twice (`alerts.alert_sound` picks a
 batch's one sound: super, then jackpot, then generic, then Valdo). The
 repeats are baked into the WAV (`sound.repeat_wav`, cached per volume), so
@@ -591,7 +593,9 @@ listing can still be judged after its alert has gone.
   post-click watch reports `click_result {ok: false, reason:
   "item_no_longer_available"}`; if the error span is already present when
   `click_travel` arrives, the click is not attempted at all. The overlay
-  shows TRAVEL FAILED and drops the traveled pin, and the AlertStore hands
+  shows TRAVEL FAILED in a red bar at the very top of the window (plain
+  words, e.g. "item already sold"; it clears after 10s, on the next press,
+  on a travel that works, or on a click) and drops the traveled pin, and the AlertStore hands
   back the runners-up that press had cleared (see "Hotkey and focus path"),
   so the next-best alert takes the top slot and is targetable immediately.
 
@@ -622,6 +626,11 @@ listing can still be judged after its alert has gone.
 - On press: send `click_travel`, then focus the PoE window via
   `pygetwindow`/`pywin32`. Focus switching is a local OS action and is the
   only thing automated besides the single click bound to the press.
+- `hotkey.raise_overlay` (⚙ panel toggle, off by default): every press also
+  brings the overlay to the front, restoring it if minimized, via
+  `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)` / `SW_SHOWNOACTIVATE`
+  (`gamewindow.raise_without_focus`) - never activating it, so the game
+  keeps the keyboard. The press publishes `HotkeyPressed` on the bus first.
 - Hotkey is inert (no-op with a soft warning) if the PoE process is not
   detected.
 

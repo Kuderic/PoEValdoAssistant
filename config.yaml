@@ -63,6 +63,9 @@ hotkey:
   # Either way, a travel that FAILS (item sold, row gone) gives the
   # runners-up back so the next-best alert is immediately targetable.
   consume: all
+  # true: every press also brings the overlay to the front (restoring it if
+  # minimized) without taking focus from the game. Also in the ⚙ panel.
+  raise_overlay: false
 
 ninja:
   enabled: true

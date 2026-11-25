@@ -387,7 +387,8 @@ instead.
 
 Tune the bars in the ⚙ panel under **Alerts** (applied live and saved), or
 with `alerts.jackpot_min_net` / `jackpot_min_yield` in `config.yaml`. A
-currency mismatch is never a jackpot.
+currency mismatch is never a jackpot, except a listing priced in chaos: it
+keeps its MISMATCH banner but can still be a jackpot.
 
 #### Super jackpots
 
@@ -460,6 +461,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `mod_risks` | Chance (0–1) a mod combination makes the map fail; net becomes an expected value. Chances also in the ⚙ panel |
 | `mod_warnings` | `block` rules — logged, never alerted, at any price |
 | `hotkey.combo` / `.consume` | Travel key; `all` clears every alert per press, `top` keeps runners-up (a *failed* travel gives them back either way) |
+| `hotkey.raise_overlay` | `true`: every press also brings the overlay to the front (restoring it if minimized) without taking focus from the game. Also a toggle in ⚙ Settings |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (15 / 8), also in the ⚙ panel |

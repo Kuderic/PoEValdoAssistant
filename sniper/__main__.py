@@ -28,6 +28,7 @@ from sniper.bus import (
     ClickOutcome,
     FeedEntry,
     GameStatus,
+    HotkeyPressed,
     ListingSeen,
     PriceStatus,
     PricingHealth,
@@ -277,6 +278,8 @@ class App:
     async def hotkey_pressed(self) -> None:
         """One user press = at most one click_travel (hard ToS constraint).
         Runs on the asyncio loop, scheduled by the keyboard hook thread."""
+        if self.bus:
+            self.bus.put(HotkeyPressed())  # overlay comes forward if set to
         alert = self.store.consume_best()
         self._push_alerts(new_alert=False)
         if alert is None:

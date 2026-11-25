@@ -167,8 +167,15 @@ class AlertStore:
         the scam guard's case: an implausibly good price in an unexpected
         currency is exactly the listing that must NOT be made louder and
         pushed to the top of the hotkey - it still alerts normally, with its
-        mismatch banner."""
-        if decision.listing.generic or decision.currency_mismatch:
+        mismatch banner.
+
+        Except chaos: plenty of sellers price in chaos rather than divine,
+        and chaos is the unit every price is normalized to, so a chaos
+        listing's net is as trustworthy as a divine one's. It still shows
+        its MISMATCH banner; it just is not barred from the jackpot tier."""
+        if decision.listing.generic:
+            return False
+        if decision.currency_mismatch and decision.listing.price.currency != "chaos":
             return False
         return is_jackpot(
             decision.net_div,

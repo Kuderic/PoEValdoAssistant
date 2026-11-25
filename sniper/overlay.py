@@ -27,6 +27,7 @@ from sniper.bus import (
     Bus,
     ClickOutcome,
     GameStatus,
+    HotkeyPressed,
     ListingSeen,
     PriceStatus,
     PricingHealth,
@@ -37,6 +38,7 @@ from sniper.bus import (
     WarmupStatus,
 )
 from sniper.config import Config
+from sniper.gamewindow import raise_without_focus
 from sniper.logging_setup import event
 from sniper.margin import net_yield
 from sniper.server import EXPECTED_USERSCRIPT_VERSION, INSTALL_PATH
@@ -544,6 +546,16 @@ SOUND_PLAYS = {"jackpot": JACKPOT_PLAYS, "super": SUPER_JACKPOT_PLAYS}
 # one play's length if the WAV cannot be read: the default alarms run
 # 3.75 s (Alarm02) and 4.0 s (Alarm03)
 JACKPOT_SOUND_S = 4.0
+# A failed travel shows in a red bar at the top for this long (or until the
+# next press / a travel that works), then clears.
+TRAVEL_FAIL_S = 10.0
+# plain words for the userscript's click_result reasons
+FAIL_TEXT = {
+    "row_gone": "listing is gone from the trade page",
+    "item_no_longer_available": "item already sold",
+    "already_clicked": "already traveled to this listing",
+    "button_missing": "no Travel button on that listing",
+}
 # click_result reasons meaning the listing is gone (sold or delisted): a
 # jackpot alarm still ringing for it has nothing left to announce
 GONE_REASONS = frozenset({"row_gone", "item_no_longer_available"})
@@ -704,6 +716,8 @@ class Overlay:
         self._current_min_net = config.thresholds.min_net
         self._current_running_cost = config.thresholds.running_cost
         self._current_combo = config.hotkey.combo
+        self._raise_on_hotkey = config.hotkey.raise_overlay
+        self._fail_token = 0  # cancels a pending hide of the failure bar
         self._tune_window: tk.Toplevel | None = None
         self._tooltip: tk.Toplevel | None = None
         # hover help: the widget group whose help is showing or pending,
@@ -826,6 +840,24 @@ class Overlay:
         self._bind_help((self._mute_btn,), HELP["mute"])
         self._bind_help((tune_btn,), HELP["settings"])
         tk.Frame(root, bg=HAIR, height=1).pack(fill="x")
+
+        # A failed travel, at the very top where the eye already is after a
+        # press (it used to be a line at the bottom, under the feed). Shown
+        # for TRAVEL_FAIL_S; a click dismisses it.
+        self._fail_bar = tk.Label(
+            root,
+            text="",
+            bg=BAD_FILL,
+            fg="white",
+            font=self._font("ui", 11, "bold"),
+            anchor="w",
+            justify="left",
+            wraplength=490,
+            padx=12,
+            pady=6,
+            cursor="hand2",
+        )
+        self._fail_bar.bind("<Button-1>", lambda e: self._hide_fail())
 
         # Slow-tab warning: an amber bar of its own, shown only while a tab
         # has fallen behind (sniper.tablag). It used to be a few words at the
@@ -1437,8 +1469,11 @@ class Overlay:
             elif isinstance(ev, ClickOutcome):
                 if ev.ok:
                     text = "Travel sent" + (f" ({ev.reason})" if ev.reason else "")
+                    self._hide_fail()
                 else:
-                    text = f"TRAVEL FAILED: {ev.reason.replace('_', ' ')}"
+                    reason = FAIL_TEXT.get(ev.reason, ev.reason.replace("_", " "))
+                    text = f"TRAVEL FAILED: {reason}"
+                    self._show_fail(text)
                     if ev.reason in GONE_REASONS:
                         self._listing_gone(ev.listing_id)
                     # a failed travel (item sold, row gone...) must not keep
@@ -1451,6 +1486,10 @@ class Overlay:
                         self._pinned_top = None
                         alerts_dirty = True
                 self._status_line.config(text=text, fg=GOOD if ev.ok else BAD)
+            elif isinstance(ev, HotkeyPressed):
+                self._hide_fail()  # a new press: the old failure is news no more
+                if self._raise_on_hotkey:
+                    self._raise_overlay()
             elif isinstance(ev, GameStatus):
                 self._game_label.config(
                     text="PoE running" if ev.running else "PoE not running",
@@ -2052,6 +2091,37 @@ class Overlay:
         self._travel_btn.config(bg=bg, cursor=cursor)
         self._travel_text.config(bg=bg, fg=fg, cursor=cursor)
         self._travel_key.config(bg=key_bg, fg=key_fg, cursor=cursor)
+
+    def _show_fail(self, text: str) -> None:
+        """The red TRAVEL FAILED bar, topmost in the window, for a while."""
+        self._fail_bar.config(text=f"✖  {text}")
+        if not self._fail_bar.winfo_manager():
+            first = self._reload_bar if self._reload_bar.winfo_manager() else self._searches_label
+            self._fail_bar.pack(fill="x", before=first)
+        self._fail_token += 1
+        token = self._fail_token
+        self._root.after(
+            int(TRAVEL_FAIL_S * 1000), lambda: token == self._fail_token and self._hide_fail()
+        )
+
+    def _hide_fail(self) -> None:
+        self._fail_token += 1
+        self._fail_bar.pack_forget()
+
+    def _raise_overlay(self) -> None:
+        """Bring the overlay forward (restoring it if minimized) without
+        taking focus: the game must keep the keyboard."""
+        root = self._root
+        try:
+            hwnd = int(root.wm_frame(), 16)
+        except (tk.TclError, ValueError):
+            hwnd = 0
+        if not raise_without_focus(hwnd):
+            if root.state() == "iconic":
+                root.deiconify()
+            root.lift()
+            root.attributes("-topmost", True)
+        event("overlay_raised")
 
     def _show_reload(self, notes: list[str]) -> None:
         """The amber RELOAD bar, under the status strip, while a tab lags."""
@@ -2706,6 +2776,49 @@ class Overlay:
         # ---- 2. Hotkey & sound
         heading("Hotkey & sound", "Value")
         combo_e = field("Hotkey combo", self._current_combo, width=16, search="key travel")
+        # a toggle, not a typed value: applies and saves on click
+        raise_state = [self._raise_on_hotkey]
+        r = row_cursor[0]
+        raise_name = tk.Label(
+            body,
+            text="Bring overlay to front on press ⓘ",
+            bg=BG,
+            fg=DIM,
+            font=self._font("ui", 9),
+            anchor="w",
+            cursor="question_arrow",
+        )
+        raise_name.grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
+        self._bind_tooltip(
+            raise_name,
+            (
+                (
+                    "Every hotkey press also brings this window to the front,\n"
+                    "restoring it if minimized. The game keeps the keyboard.",
+                    "",
+                    "none",
+                ),
+            ),
+        )
+        raise_btn = tk.Label(body, bg=BOX, font=self._font("ui", 9), padx=8, cursor="hand2")
+
+        def show_raise() -> None:
+            on = raise_state[0]
+            raise_btn.config(text="☑ On" if on else "☐ Off", fg=GOOD if on else DIM)
+
+        def toggle_raise(_event=None) -> None:
+            raise_state[0] = not raise_state[0]
+            show_raise()
+            collect(save=True)
+
+        show_raise()
+        raise_btn.bind("<Button-1>", toggle_raise)
+        raise_btn.grid(row=r, column=1, padx=(2, 10), pady=1, sticky="w")
+        self._raise_toggle = (raise_btn, toggle_raise)  # for tests
+        sections[-1]["rows"].append(
+            ("bring overlay to front on press raise window focus hotkey", [raise_name, raise_btn])
+        )
+        row_cursor[0] += 1
         vol_e = field("Alert volume (0 - 1)", _fmt(self._volume), search="sound")
 
         # ---- 3. Reward prices. A reference price is occasionally just wrong -
@@ -2921,6 +3034,7 @@ class Overlay:
             self._current_min_net = new_min_net
             self._current_running_cost = new_flat
             self._current_combo = new_combo
+            self._raise_on_hotkey = raise_state[0]
             bars = (new_jp_net, new_jp_yield, new_sjp_net, new_sjp_yield)
             current = (self._jackpot_net, self._jackpot_yield, self._super_net, self._super_yield)
             if bars != current:
@@ -2960,6 +3074,7 @@ class Overlay:
                     jackpot_min_yield=new_jp_yield,
                     super_jackpot_min_net=new_sjp_net,
                     super_jackpot_min_yield=new_sjp_yield,
+                    raise_overlay=raise_state[0],
                 )
             # never claim a pinned price was saved: it lives for this session
             # only, and "Saved" would read as a promise the app does not keep
