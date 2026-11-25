@@ -1,6 +1,6 @@
 """Self-update from GitHub Releases.
 
-The packaged exe asks the GitHub API for the latest release every few hours
+The app asks the GitHub API for the latest release every hour (by default)
 (one small, ETag-conditional request: a 304 does not count against the
 unauthenticated 60/hour limit). When the release is newer than this build it
 downloads the release's ValdoSniper.exe in the background, verifies its size

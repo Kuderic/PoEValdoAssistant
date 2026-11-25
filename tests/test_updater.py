@@ -208,7 +208,7 @@ async def test_source_checkout_only_announces():
     delay = await up.check_once()
     assert [s.state for s in published] == ["available"]
     assert published[0].version == "1.1.0"
-    assert delay == 6 * 3600
+    assert delay == 3600  # check_interval_hours default: 1
 
 
 async def test_packaged_exe_downloads_verifies_and_stages(tmp_path):
@@ -259,7 +259,7 @@ async def test_the_same_version_publishes_nothing(tmp_path):
 
 async def test_no_release_yet_is_not_an_error():
     up, published = make_updater(FakeGitHub(status=404), exe=None)
-    assert await up.check_once() == 6 * 3600
+    assert await up.check_once() == 3600
     assert published == []
 
 

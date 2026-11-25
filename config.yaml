@@ -403,5 +403,5 @@ logging:
 updates:
   enabled: true
   repo: Kuderic/PoEValdoAssistant
-  check_interval_hours: 6
+  check_interval_hours: 1   # one small ETag request; an unchanged answer is free
   auto_download: true   # false: only announce new versions

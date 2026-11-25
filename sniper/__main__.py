@@ -787,14 +787,16 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
 
 def _load(args: argparse.Namespace) -> Config:
     """The config to run with. Packaged: bundled defaults, with the user's
-    optional config.yaml beside the exe layered over them, and per-user
-    state in the exe's folder. Source: config.yaml as before."""
+    optional config.yaml from the state folder (%LOCALAPPDATA%/ValdoSniper)
+    layered over them, and per-user state there too. Source: config.yaml as
+    before."""
     try:
         if paths.FROZEN:
+            state = Path.cwd()  # prepare_frozen_dir ran from the state folder
             return load_config(
-                args.config or paths.app_dir() / paths.CONFIG_NAME,
+                args.config or state / paths.CONFIG_NAME,
                 defaults=paths.default_config(),
-                state_dir=paths.app_dir(),
+                state_dir=state,
             )
         return load_config(args.config or paths.CONFIG_NAME)
     except ConfigError as e:
@@ -856,7 +858,7 @@ def main() -> None:
         from sniper.updater import wait_for_exit
 
         wait_for_exit(args.wait_pid)  # the old version still holds the port
-    paths.prepare_frozen_dir()
+    migrated = paths.prepare_frozen_dir()
     if paths.FROZEN:
         from sniper.updater import cleanup_old
 
@@ -873,6 +875,8 @@ def main() -> None:
     )
     if args.updated_from:
         event("update_installed", version=__version__, previous=args.updated_from)
+    if paths.FROZEN:
+        event("state_dir", path=str(config.state_dir), migrated=migrated)
     restart = False
     try:
         # an update downloaded last session installs before anything binds

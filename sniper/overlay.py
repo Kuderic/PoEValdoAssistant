@@ -12,6 +12,7 @@ delivers AlertsChanged(new_alert=True); the frame->UI delta is logged as
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import tkinter as tk
@@ -592,6 +593,39 @@ def _update_pill(status: UpdateStatus) -> tuple[str, str, str]:
     }.get(status.state, (f"↑ {v}", FAINT, DIM))
 
 
+def _update_banner(status: UpdateStatus, packaged: bool) -> tuple[str, str, str] | None:
+    """(headline, hint, background) for the update bar at the top of the
+    window, or None when there is nothing to announce (just installed)."""
+    v = f"v{status.version}"
+    if status.state == "ready":
+        return (
+            f"↑  UPDATE {v} READY",
+            f"Click to restart into it now (you have v{__version__}). "
+            "Otherwise it installs the next time you start Valdo Sniper.",
+            GOOD,
+        )
+    if status.state == "downloading":
+        return (
+            f"↑  NEW VERSION {v}",
+            "Downloading in the background. Nothing changes until you restart.",
+            GOOD,
+        )
+    if status.state == "failed":
+        return (
+            f"↑  NEW VERSION {v}: download failed",
+            "Click to open the release page and download it by hand.",
+            WARN,
+        )
+    if status.state == "available":
+        how = (
+            "Click to open the release page."
+            if packaged
+            else "Running from source: git pull and restart. Click for what changed."
+        )
+        return (f"↑  NEW VERSION {v} IS OUT", f"You have v{__version__}. {how}", GOOD)
+    return None
+
+
 def _update_help(status: UpdateStatus, packaged: bool) -> tuple[str, str]:
     v = f"v{status.version}"
     if status.state == "ready":
@@ -840,6 +874,48 @@ class Overlay:
         self._bind_help((self._mute_btn,), HELP["mute"])
         self._bind_help((tune_btn,), HELP["settings"])
         tk.Frame(root, bg=HAIR, height=1).pack(fill="x")
+
+        # A newer release (sniper.updater), announced at the very top: the
+        # strip's small pill was easy to run for days without noticing. Click
+        # = what the pill does (restart into a staged update, else open the
+        # release page); ✕ hides it until the next state or version.
+        self._update_bar = tk.Frame(root, bg=GOOD, cursor="hand2")
+        self._update_close = tk.Label(
+            self._update_bar,
+            text="✕",
+            bg=GOOD,
+            fg=BTN_FG,
+            font=self._font("ui", 11, "bold"),
+            padx=12,
+            cursor="hand2",
+        )
+        self._update_close.pack(side="right", fill="y")
+        self._update_title = tk.Label(
+            self._update_bar,
+            text="",
+            bg=GOOD,
+            fg=BTN_FG,
+            font=self._font("ui", 11, "bold"),
+            anchor="w",
+            cursor="hand2",
+        )
+        self._update_title.pack(fill="x", padx=12, pady=(5, 0))
+        self._update_hint = tk.Label(
+            self._update_bar,
+            text="",
+            bg=GOOD,
+            fg=BTN_FG,
+            font=self._font("ui", 8),
+            anchor="w",
+            justify="left",
+            wraplength=440,
+            cursor="hand2",
+        )
+        self._update_hint.pack(fill="x", padx=12, pady=(0, 5))
+        for w in (self._update_bar, self._update_title, self._update_hint):
+            w.bind("<Button-1>", lambda e: self._update_clicked())
+        self._update_close.bind("<Button-1>", lambda e: self._dismiss_update())
+        self._update_dismissed: tuple[str, str] | None = None  # (state, version)
 
         # A failed travel, at the very top where the eye already is after a
         # press (it used to be a line at the bottom, under the feed). Shown
@@ -2095,9 +2171,7 @@ class Overlay:
     def _show_fail(self, text: str) -> None:
         """The red TRAVEL FAILED bar, topmost in the window, for a while."""
         self._fail_bar.config(text=f"✖  {text}")
-        if not self._fail_bar.winfo_manager():
-            first = self._reload_bar if self._reload_bar.winfo_manager() else self._searches_label
-            self._fail_bar.pack(fill="x", before=first)
+        self._pack_top_bar(self._fail_bar)
         self._fail_token += 1
         token = self._fail_token
         self._root.after(
@@ -2129,8 +2203,7 @@ class Overlay:
             self._reload_bar.pack_forget()
             return
         self._reload_label.config(text="⟳  RELOAD  " + "  ·  ".join(notes))
-        if not self._reload_bar.winfo_manager():  # not packed yet
-            self._reload_bar.pack(fill="x", before=self._searches_label)
+        self._pack_top_bar(self._reload_bar)
 
     def _tabs_clicked(self) -> None:
         if self._tabs_need_install:
@@ -2149,8 +2222,38 @@ class Overlay:
         self._update_pill.config(text=text, fg=dot, text_fg=text_fg)
         if not self._update_pill.frame.winfo_ismapped():
             self._update_pill.pack(side="left", padx=(14, 0))
+        self._render_update_bar()
         if status.state == "installed":
             self._root.after(UPDATED_NOTICE_MS, self._clear_installed_notice)
+
+    def _render_update_bar(self) -> None:
+        status = self._update
+        banner = None if status is None else _update_banner(status, packaged=paths.FROZEN)
+        if banner is None or self._update_dismissed == (status.state, status.version):
+            self._update_bar.pack_forget()
+            return
+        title, hint, bg = banner
+        for w in (self._update_bar, self._update_title, self._update_hint, self._update_close):
+            w.config(bg=bg)
+        self._update_title.config(text=title)
+        self._update_hint.config(text=hint)
+        self._pack_top_bar(self._update_bar)
+
+    def _dismiss_update(self) -> None:
+        if self._update is not None:
+            self._update_dismissed = (self._update.state, self._update.version)
+            event("update_bar_dismissed", state=self._update.state, version=self._update.version)
+        self._update_bar.pack_forget()
+
+    def _pack_top_bar(self, bar: tk.Widget) -> None:
+        """Pack one of the top bars in its fixed slot - update, then travel
+        failed, then reload - whichever others are showing."""
+        if bar.winfo_manager():
+            return
+        order = [self._update_bar, self._fail_bar, self._reload_bar]
+        after = order[order.index(bar) + 1 :]
+        nxt = next((b for b in after if b.winfo_manager()), self._searches_label)
+        bar.pack(fill="x", before=nxt)
 
     def _clear_installed_notice(self) -> None:
         if self._update is not None and self._update.state == "installed":
@@ -2176,6 +2279,17 @@ class Overlay:
             f"https://github.com/{self._config.updates.repo}/releases/tag/v{status.version}"
         )
         self._open_link(url)
+
+    def _open_state_folder(self) -> dict:
+        """Show the per-user folder in Explorer; returns the note's config."""
+        folder = self._config.state_dir.resolve()
+        try:
+            os.startfile(folder)  # noqa: S606 - our own folder, in Explorer
+        except (OSError, AttributeError) as e:
+            event("open_folder_failed", path=str(folder), error=repr(e))
+            return {"text": f"Could not open {folder}", "fg": BAD}
+        event("open_folder", path=str(folder))
+        return {"text": f"Opened {folder}", "fg": GOOD}
 
     def _open_link(self, url: str) -> None:
         """In Chrome, where the live searches and Tampermonkey are - never
@@ -2820,6 +2934,35 @@ class Overlay:
         )
         row_cursor[0] += 1
         vol_e = field("Alert volume (0 - 1)", _fmt(self._volume), search="sound")
+
+        # ---- Files: settings, price cache and logs live in a per-user folder
+        # (%LOCALAPPDATA%/ValdoSniper for the exe), out of sight - so say where
+        heading("Files")
+        r = row_cursor[0]
+        folder = self._config.state_dir.resolve()
+        folder_name = tk.Label(
+            body,
+            text="Settings & logs folder ⓘ",
+            bg=BG,
+            fg=DIM,
+            font=self._font("ui", 9),
+            anchor="w",
+            cursor="question_arrow",
+        )
+        folder_name.grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
+        self._bind_tooltip(
+            folder_name,
+            ((f"{folder}\nYour config.yaml, saved settings, price cache and logs.", "", "none"),),
+        )
+        folder_btn = tk.Label(
+            body, text="Open", bg=BOX, fg=FG, font=self._font("ui", 9), padx=8, cursor="hand2"
+        )
+        folder_btn.grid(row=r, column=1, padx=(2, 10), pady=1, sticky="w")
+        folder_btn.bind("<Button-1>", lambda e: note.config(**self._open_state_folder()))
+        sections[-1]["rows"].append(
+            ("settings logs folder files config location appdata", [folder_name, folder_btn])
+        )
+        row_cursor[0] += 1
 
         # ---- 3. Reward prices. A reference price is occasionally just wrong -
         # a thin unid market, a reward whose listings the average lands badly

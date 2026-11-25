@@ -152,9 +152,10 @@ You need Windows, Chrome and Path of Exile. About five minutes:
 1. **Download `ValdoSniper.exe`** from the
    [latest release](https://github.com/Kuderic/PoEValdoAssistant/releases/latest).
    Nothing else to install: no Python, no setup.
-2. **Put it in a folder of its own**, e.g. `Documents\ValdoSniper`. It keeps
-   its logs and your settings next to itself, and updates itself in place,
-   so not `Downloads` or `Program Files`.
+2. **Put it anywhere you can write to**, `Downloads` included (just not
+   `Program Files`: it updates itself in place). Your settings, price cache
+   and logs go to `%LOCALAPPDATA%\ValdoSniper`, not next to the exe; ⚙
+   Settings → **Files** → **Open** shows that folder.
 3. **Double-click it.** Windows may say *"Windows protected your PC"* the
    first time, because the exe is not code-signed: click **More info → Run
    anyway**. The overlay opens with a setup guide:
@@ -197,10 +198,11 @@ can't stay on top. Sound works either way.
 
 ### Updates
 
-**The exe updates itself.** A few times a day it asks GitHub whether a newer
-release is out. If one is, it downloads it in the background, checks it
-against the checksum GitHub publishes, and a green pill appears in the
-status strip: **↑ v1.2.0 · restart**. Click it to restart into the new
+**The exe updates itself.** Every hour it asks GitHub whether a newer
+release is out. If one is, a green bar at the top of the overlay says so,
+and it downloads it in the background and checks it against the checksum
+GitHub publishes. Then the bar (and a pill in the status strip) says
+**UPDATE v1.2.0 READY**. Click it to restart into the new
 version (a few seconds; open trade tabs reconnect by themselves), or ignore
 it and the update installs the next time you start Valdo Sniper. It never
 restarts by itself, so it can't interrupt a snipe. After the restart the
@@ -208,8 +210,10 @@ strip says **✓ updated to v1.2.0** for a couple of minutes; click it to see
 what changed.
 
 Updates keep your settings: everything you change in the ⚙ panel is saved
-to `scoring_overrides.yaml` beside the exe, and your price cache, logs and
-`.env` stay there too. New default rules (pairings, risks, mod scores) come
+to `scoring_overrides.yaml` in `%LOCALAPPDATA%\ValdoSniper`, and your
+`config.yaml`, price cache, logs and `.env` live there too. (Versions before
+1.3.4 kept them next to the exe; the first start of a newer one moves them
+over by itself.) New default rules (pairings, risks, mod scores) come
 with each update.
 
 Tampermonkey picks up the new browser script by itself. If a tab is still on
@@ -217,7 +221,7 @@ an old one, the tabs light turns red with *update script*, and clicking it
 reinstalls. Hard-reload open trade tabs afterwards, since a tab keeps
 running the script it loaded with.
 
-To switch it off, put this in the `config.yaml` beside the exe:
+To switch it off, put this in your `config.yaml` (⚙ → **Files** → **Open**):
 
 ```yaml
 updates:
@@ -227,7 +231,8 @@ updates:
 
 ### Your own config.yaml
 
-On first start the exe writes a `config.yaml` beside itself, all comments.
+On first start the exe writes a `config.yaml`, all comments, to
+`%LOCALAPPDATA%\ValdoSniper` (⚙ Settings → **Files** → **Open**).
 Anything you put there overrides the built-in defaults **key by key**, so it
 only needs what you change; the rest keeps tracking the defaults as they
 update. The full list of settings is the
@@ -247,7 +252,8 @@ For development, or if you'd rather not run an exe:
    environment (about 20 seconds); after that it starts instantly.
 
 Here `config.yaml` in the folder is the whole config. A source checkout
-can't replace itself, so the update pill only says a new version is out:
+can't replace itself, so a green bar at the top of the overlay only says a
+new version is out:
 update with `git pull` (or download the ZIP again) and restart `start.bat`.
 
 `start.bat` passes arguments through: `start.bat --headless` runs without
@@ -263,7 +269,7 @@ Developer extras: `pip install -e .[dev]` (pytest, ruff, PyInstaller).
 The **Release** GitHub Action runs the tests, builds `ValdoSniper.exe`
 (refusing if the tag and `__version__` disagree), proves the exe works with
 `--self-check`, and publishes it as a release. Every installed copy picks it
-up within a few hours. To build locally: `python tools/build_exe.py`, which
+up within the hour: a green bar at the top of its overlay announces it. To build locally: `python tools/build_exe.py`, which
 writes `dist/ValdoSniper.exe`.
 
 ---

@@ -339,7 +339,7 @@ class UpdatesConfig:
 
     enabled: bool = True
     repo: str = "Kuderic/PoEValdoAssistant"
-    check_interval_hours: float = 6.0
+    check_interval_hours: float = 1.0
     # False: only announce a new version, never download it
     auto_download: bool = True
     api_base: str = "https://api.github.com"

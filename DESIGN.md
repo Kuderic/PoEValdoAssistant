@@ -648,10 +648,18 @@ the config, reads the bundled browser script and imports every native
 module, exiting non-zero if anything is missing. The window icon is
 generated from `sniper/icon.py`'s pixel map, so there is no binary in git.
 
-**Where state lives.** Frozen, the process `chdir`s to the exe's folder
-(so `logs/` and `.env` resolve there) and `Config.state_dir` is that folder:
-`scoring_overrides.yaml` and `price_cache.json` are written beside the exe
-and survive updates. `load_config(path, defaults=bundled, state_dir=...)`
+**Where state lives.** Frozen, per-user files live in
+`%LOCALAPPDATA%/ValdoSniper` (`paths.state_dir`), not beside the exe:
+people run the exe straight from Downloads. The process `chdir`s there (so
+`logs/` and `.env` resolve there) and `Config.state_dir` is that folder:
+the user's `config.yaml`, `scoring_overrides.yaml` and `price_cache.json`
+are written there and survive updates. Before 1.3.4 they sat beside the
+exe; `paths.migrate_state` moves them on first start (never overwriting a
+file already in the new folder; an untouched config template is deleted)
+and the moved names are logged as `state_dir`. Only the updater's
+transient `.new` / `.part` / `.old` stay beside the exe, since its swap is a
+rename. Without `LOCALAPPDATA`, or if the folder cannot be created, the
+exe's folder is used as before. ⚙ Settings → Files → Open shows the folder. `load_config(path, defaults=bundled, state_dir=...)`
 layers the user's optional `config.yaml` over the bundled defaults
 (`merge_config`: mappings merge key by key, lists are replaced), so a user
 file holding one key keeps every other default current as releases change
@@ -664,7 +672,7 @@ the tag disagrees with `__version__`, because an exe that under-reports its
 version would update itself in a loop.
 
 **Self-update (`sniper.updater`).** An asyncio task, off the hot path,
-20 s after start and then every `updates.check_interval_hours` (6):
+20 s after start and then every `updates.check_interval_hours` (1):
 `GET /repos/{repo}/releases/latest` with `If-None-Match` (a 304 does not
 count against GitHub's 60/hour unauthenticated limit). `Retry-After` and
 an exhausted `X-RateLimit-Remaining` + `X-RateLimit-Reset` are honoured;
@@ -678,7 +686,11 @@ against the asset's `size` and the `sha256:` `digest` GitHub publishes,
 and only then renamed to `.new`, with `.new.json` (version, size) written
 last. A crash mid-way therefore never leaves anything that counts as
 staged. `UpdateStatus` events drive the overlay's update pill: available /
-downloading / ready / failed / installed.
+downloading / ready / failed / installed. Every state but installed also
+shows a bar at the very top of the window (`overlay._update_banner`; green,
+amber for failed), above the TRAVEL FAILED and RELOAD bars
+(`_pack_top_bar` keeps that order whichever appears first). Clicking it does
+what the pill does; its ✕ hides it until the state or version changes.
 
 **Install.** Never automatic mid-session. Clicking the pill when an update
 is `ready` closes the overlay cleanly (hotkey unhooked, loop stopped, logs
