@@ -161,6 +161,10 @@ class Hello:
     # "valdo" (a map-reward search, scored and priced) or "any" (any other
     # live search: alerts on arrival, see margin._generic_decision)
     search_kind: str = "valdo"
+    # False when the tab is on a plain (non-live) search page: its rows were
+    # not pushed, so it is no search of ours. Absent means True, so a
+    # userscript older than 0.8.4 keeps working as before.
+    live: bool = True
     # userscript @version. A browser tab keeps running the script it loaded
     # with until it is reloaded, so "which version is actually live" is not
     # otherwise answerable from the logs when diagnosing a missed snipe.
@@ -223,6 +227,7 @@ def parse_frame(msg: object) -> Frame:
             tab_id=tab_id,
             search_reward=reward if isinstance(reward, str) and reward else None,
             search_kind="any" if msg.get("search_kind") == "any" else "valdo",
+            live=msg.get("live") is not False,
             version=version if isinstance(version, str) and version else None,
             net_stats=stats if isinstance(stats, dict) else None,
             page_id=page_id if isinstance(page_id, str) and page_id else None,

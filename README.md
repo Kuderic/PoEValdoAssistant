@@ -379,8 +379,9 @@ A Valdo listing that is **both** big money and cheap to run (net ≥ 15d
 
 It also **plays an alarm twice** (`Alarm02.wav`, about 7.5 seconds in all,
 at the volume slider) instead of the usual alert sound. An ordinary alert
-arriving while it plays stays quiet rather than cut it off. The speaker icon mutes
-everything. The overlay is never pulled to the front. Set
+arriving while it plays stays quiet rather than cut it off. If you travel
+to the jackpot and it turns out to be sold already, the alarm stops. The
+speaker icon mutes everything. The overlay is never pulled to the front. Set
 `alerts.jackpot_alarm: false` to have jackpots play the ordinary alert sound
 instead.
 

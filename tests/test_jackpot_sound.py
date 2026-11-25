@@ -18,7 +18,7 @@ from conftest import make_config
 
 from sniper import overlay as overlay_mod
 from sniper import sound
-from sniper.bus import AlertsChanged, Bus
+from sniper.bus import AlertsChanged, Bus, ClickOutcome
 from sniper.overlay import Overlay
 
 
@@ -126,3 +126,60 @@ def test_the_banner_has_no_silence_hint_and_no_click(ov):
     assert "silence" not in ov._jp_left.cget("text")
     for widget in (ov._jackpot_banner, ov._jp_left, ov._jp_right):
         assert "<Button-1>" not in widget.bind()
+
+
+@pytest.fixture
+def stops(ov, monkeypatch):
+    """The SoundCommands that reach the sound worker."""
+    sent = []
+    monkeypatch.setattr(overlay_mod, "winsound", object())
+    monkeypatch.setattr(ov._sound, "submit", sent.append)
+    return sent
+
+
+def failed(o: Overlay, lid: str, reason: str) -> None:
+    o._bus.put(ClickOutcome(lid, False, reason))
+    o._drain_once()
+
+
+def test_traveling_to_a_gone_jackpot_stops_its_alarm(ov, stops):
+    jp = view("jp", jackpot=True)
+    arrive(ov, [jp], jp)
+    failed(ov, "jp", "item_no_longer_available")
+    assert [c.kind for c in stops] == ["stop"]
+    assert ov._jp_sound_until == 0.0  # the next routine alert may sound again
+
+
+def test_a_row_gone_failure_stops_it_too(ov, stops):
+    sup = view("sup", super_jackpot=True)
+    arrive(ov, [sup], sup)
+    failed(ov, "sup", "row_gone")
+    assert [c.kind for c in stops] == ["stop"]
+
+
+def test_the_alarm_keeps_ringing_for_anything_but_its_own_gone_listing(ov, stops):
+    jp = view("jp", jackpot=True)
+    arrive(ov, [jp], jp)
+    failed(ov, "other", "item_no_longer_available")  # a different listing
+    failed(ov, "jp", "tab gone - travel not sent")  # the listing may still be there
+    assert stops == []
+
+
+def test_a_batch_alarm_stops_only_once_every_jackpot_in_it_is_gone(ov, stops):
+    a, b = view("a", jackpot=True), view("b", jackpot=True)
+    # both arrive before the overlay drains: one batch, one alarm
+    ov._bus.put(AlertsChanged((a,), new_alert=True, new_view=a))
+    ov._bus.put(AlertsChanged((a, b), new_alert=True, new_view=b))
+    ov._drain_once()
+    failed(ov, "a", "row_gone")
+    assert stops == []
+    failed(ov, "b", "row_gone")
+    assert [c.kind for c in stops] == ["stop"]
+
+
+def test_a_finished_alarm_is_not_stopped_again(ov, stops):
+    jp = view("jp", jackpot=True)
+    arrive(ov, [jp], jp)
+    ov._jp_sound_until = 0.0  # the alarm already played out
+    failed(ov, "jp", "row_gone")
+    assert stops == []

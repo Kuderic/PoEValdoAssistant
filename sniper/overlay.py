@@ -544,6 +544,9 @@ SOUND_PLAYS = {"jackpot": JACKPOT_PLAYS, "super": SUPER_JACKPOT_PLAYS}
 # one play's length if the WAV cannot be read: the default alarms run
 # 3.75 s (Alarm02) and 4.0 s (Alarm03)
 JACKPOT_SOUND_S = 4.0
+# click_result reasons meaning the listing is gone (sold or delisted): a
+# jackpot alarm still ringing for it has nothing left to announce
+GONE_REASONS = frozenset({"row_gone", "item_no_longer_available"})
 # a preset clicked again this soon is ignored: its tabs are still loading
 PRESET_REPEAT_S = 30.0
 # Font roles -> the first installed family. Every _font() call names a role,
@@ -713,6 +716,9 @@ class Overlay:
         # A jackpot's alarm plays to the end (SOUND_PLAYS times): until then
         # a routine alert sound must not cut it off (monotonic finish time)
         self._jp_sound_until = 0.0
+        # the jackpot listings that alarm is announcing; once a travel finds
+        # every one of them gone, the alarm stops early
+        self._jp_sound_ids: set[str] = set()
         self._jp_tier: _Tier = JACKPOT_TIER  # the banner's current tier
         # (kind, sound path, volume) -> playable WAV | None; see _alert_wav.
         # A DICT, not a single slot: the alert kinds alternate, and a
@@ -1433,6 +1439,8 @@ class Overlay:
                     text = "Travel sent" + (f" ({ev.reason})" if ev.reason else "")
                 else:
                     text = f"TRAVEL FAILED: {ev.reason.replace('_', ' ')}"
+                    if ev.reason in GONE_REASONS:
+                        self._listing_gone(ev.listing_id)
                     # a failed travel (item sold, row gone...) must not keep
                     # the ➜ pin up as if the teleport were in progress
                     if (
@@ -1490,6 +1498,9 @@ class Overlay:
             now = time.monotonic()
             if kind in SOUND_PLAYS:
                 self._jp_sound_until = now + self._jackpot_sound_s(kind)
+                self._jp_sound_ids = {
+                    v.listing_id for v in new_views if v.jackpot or v.super_jackpot
+                }
                 self._play_sound(kind)
             elif now >= self._jp_sound_until:
                 # a jackpot's alarm still playing is not cut off by a
@@ -3356,6 +3367,20 @@ class Overlay:
             self._sound.submit(SoundCommand("stop"))  # cut a sound mid-play
 
     # ----------------------------------------------------------------- sound
+
+    def _listing_gone(self, listing_id: str) -> None:
+        """A travel found `listing_id` sold or delisted. If the jackpot alarm
+        still ringing was for it (and no other jackpot in that batch is still
+        up for grabs), stop the alarm: it is announcing nothing anymore."""
+        if listing_id not in self._jp_sound_ids:
+            return
+        self._jp_sound_ids.discard(listing_id)
+        if self._jp_sound_ids or time.monotonic() >= self._jp_sound_until:
+            return
+        self._jp_sound_until = 0.0
+        event("jackpot_sound_stopped", listing_id=listing_id, reason="listing_gone")
+        if winsound is not None:
+            self._sound.submit(SoundCommand("stop"))
 
     def _alert_wav(self, kind: str = "valdo") -> str | None:
         """Path to the volume-scaled WAV for this alert kind + volume.

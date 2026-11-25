@@ -31,7 +31,7 @@ _ROUTE_CAP = 1000
 # tab silently loses whatever the new version added - new fields simply
 # arrive missing, which reads as a broken feature rather than an old script.
 # KEEP IN SYNC with @version in userscript/valdo-sniper.user.js.
-EXPECTED_USERSCRIPT_VERSION = "0.8.3"
+EXPECTED_USERSCRIPT_VERSION = "0.8.4"
 
 # The app serves its own userscript over plain HTTP on the websocket port, so
 # installing is one click (Tampermonkey intercepts any *.user.js URL) and the
@@ -119,6 +119,9 @@ class SniperServer:
         self._recent_rewards: dict[str, float] = {}  # reward -> last seen monotonic
         self._net_stats: dict[str, dict] = {}  # tab_id -> last capture counters
         self._tab_lag = TabLagMonitor()  # spots a tab that has gone slow
+        # tabs whose page is a plain (non-live) search: not listed among the
+        # searches, and anything they send is dropped
+        self._static_tabs: set[str] = set()
 
     def set_scoring(self, scoring: ModScoring) -> None:
         """Swap the difficulty engine (tuning panel). Call from the asyncio
@@ -169,6 +172,10 @@ class SniperServer:
                     if frame.net_stats and self._net_stats.get(tab_id) != frame.net_stats:
                         self._net_stats[tab_id] = frame.net_stats
                         event("capture_stats", tab_id=tab_id, **frame.net_stats)
+                    if not frame.live:
+                        self._tab_not_live(tab_id, frame.search_id)
+                        continue
+                    self._static_tabs.discard(tab_id)  # back on a live search
                     self.tabs[tab_id] = TabState(
                         ws=ws,
                         search_id=frame.search_id,
@@ -200,6 +207,15 @@ class SniperServer:
                         )
                         self._notify_tabs()
                 elif isinstance(frame, Listing):
+                    if frame.tab_id in self._static_tabs:
+                        # a plain search's rows were not pushed: never alert
+                        event(
+                            "listing_ignored",
+                            listing_id=frame.listing_id,
+                            tab_id=frame.tab_id,
+                            reason="not_live",
+                        )
+                        continue
                     try:
                         self._handle_listing(frame)
                     except Exception as e:  # one bad listing must not drop the tab
@@ -214,12 +230,25 @@ class SniperServer:
                     if self._on_click_result:
                         self._on_click_result(frame)
         finally:
+            if tab_id:
+                self._static_tabs.discard(tab_id)
             if tab_id and self.tabs.get(tab_id) and self.tabs[tab_id].ws is ws:
                 del self.tabs[tab_id]
                 self._net_stats.pop(tab_id, None)
                 self._tab_lag.forget(tab_id)
                 event("tab_disconnect", tab_id=tab_id)
                 self._notify_tabs()
+
+    def _tab_not_live(self, tab_id: str, search_id: str) -> None:
+        """The tab is on a plain search page (or navigated away from its
+        live search): drop it from the searches until it goes live again."""
+        if tab_id not in self._static_tabs:
+            self._static_tabs.add(tab_id)
+            event("tab_not_live", tab_id=tab_id, search_id=search_id)
+        if self.tabs.pop(tab_id, None) is not None:
+            self._net_stats.pop(tab_id, None)
+            self._tab_lag.forget(tab_id)
+            self._notify_tabs()
 
     # --------------------------------------------------------------- hot path
 

@@ -199,3 +199,59 @@ async def test_hello_without_net_stats_logs_nothing_extra(running_server, monkey
         await ws.send(json.dumps({"type": "hello", "search_id": "s", "tab_id": "old"}))
         await asyncio.sleep(0.2)
     assert "capture_stats" not in logged
+
+
+def _listing(tab_id, listing_id):
+    return {
+        "type": "new_listing",
+        "search_id": "s",
+        "tab_id": tab_id,
+        "listing_id": listing_id,
+        "item_name": "Twisted Sands",
+        "price": {"amount": 30, "currency": "divine"},
+        "seller": "S",
+        "reward": "Foil Headhunter",
+        "mods": [],
+        "row_index": 0,
+        "detected_at": "2026-08-10T12:00:00.000Z",
+    }
+
+
+async def test_a_plain_search_page_is_no_search_and_never_alerts(running_server):
+    """Browsing a non-live search shows results nobody pushed: the tab is
+    left out of the searches and its listings never reach a decision."""
+    server, config, decisions, clicks = running_server
+    url = f"ws://127.0.0.1:{config.server.port}"
+    async with websockets.connect(url) as ws:
+        hello = {"type": "hello", "search_id": "s", "tab_id": "tab-s"}
+        await ws.send(json.dumps({**hello, "live": False, "search_reward": "Foil Headhunter"}))
+        await ws.send(json.dumps(_listing("tab-s", "static1")))
+        await asyncio.sleep(0.3)
+        assert server.tab_snapshot() == []
+        assert server.active_rewards() == set()
+        assert decisions == []
+
+        # the user activates live search on the same page: it counts again
+        await ws.send(json.dumps({**hello, "live": True}))
+        await ws.send(json.dumps(_listing("tab-s", "live1")))
+        await asyncio.sleep(0.3)
+        assert [t["tab_id"] for t in server.tab_snapshot()] == ["tab-s"]
+        assert [d.listing.listing_id for d in decisions] == ["live1"]
+
+        # ...and leaving the live search for a plain one drops it again
+        await ws.send(json.dumps({**hello, "live": False}))
+        await ws.send(json.dumps(_listing("tab-s", "static2")))
+        await asyncio.sleep(0.3)
+        assert server.tab_snapshot() == []
+        assert [d.listing.listing_id for d in decisions] == ["live1"]
+
+
+async def test_an_older_script_without_the_live_flag_still_counts(running_server):
+    server, config, decisions, clicks = running_server
+    url = f"ws://127.0.0.1:{config.server.port}"
+    async with websockets.connect(url) as ws:
+        await ws.send(json.dumps({"type": "hello", "search_id": "s", "tab_id": "tab-old"}))
+        await ws.send(json.dumps(_listing("tab-old", "old1")))
+        await asyncio.sleep(0.3)
+        assert [t["tab_id"] for t in server.tab_snapshot()] == ["tab-old"]
+        assert [d.listing.listing_id for d in decisions] == ["old1"]

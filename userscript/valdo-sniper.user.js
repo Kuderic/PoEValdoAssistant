@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.8.3
+// @version      0.8.4
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
@@ -66,7 +66,7 @@ const CONFIRM_WINDOW_MS = 3_000;
    script it loaded with until it is reloaded, so this is the only way to
    tell from logs/ whether a live tab is on a stale userscript.
    KEEP IN SYNC with the @version header above. */
-const SCRIPT_VERSION = '0.8.3';
+const SCRIPT_VERSION = '0.8.4';
 
 const WS_URL = 'ws://127.0.0.1:8765';
 const HEARTBEAT_MS = 30_000;
@@ -80,6 +80,17 @@ const TRADE_FETCH_RE = /\/api\/trade\/fetch\//;
 /* the trade site's live-search socket: it pushes new result ids, and the
    page then fetches their details from /api/trade/fetch */
 const LIVE_WS_RE = /\/api\/trade\d?\/live\//;
+
+/* A live search's URL ends in /live. Anything else (a plain search the user
+   is browsing, the bulk exchange) shows results that were NOT pushed - its
+   rows must never reach the app as listings, or browsing a search would
+   alert and ring. Checked at send time, not load time: the site switches
+   between the two in place, without a reload. */
+const LIVE_PATH_RE = /\/live\/?$/;
+function isLivePage() {
+  return LIVE_PATH_RE.test(location.pathname);
+}
+
 /* a fetch more than this long after the last push was not caused by it */
 const PUSH_MATCH_MS = 60_000;
 /* The 2s sweep re-reads only rows that appeared this recently; every
@@ -507,6 +518,9 @@ function main() {
       tab_id: tabId,
       search_reward: lastSentReward,
       search_kind: isGenericSearch() ? 'any' : 'valdo',
+      // false on a plain (non-live) search: the app leaves the tab out of
+      // its searches and ignores anything it sends
+      live: isLivePage(),
       version: SCRIPT_VERSION,
       net_stats: { ...netStats, pushes: pushClock.count, liveSockets: pushClock.sockets },
       // a reload runs the script afresh (new id, age near 0); the app
@@ -592,7 +606,9 @@ function main() {
     }
     seen.add(key);
     rememberRow(id, rowEl, key);
-    if (silent) return true;
+    // not a live search: remember the row (so it can't resurface as a push
+    // if the user then activates live search) but never forward it
+    if (silent || !isLivePage()) return true;
     const rows = Array.from(rowEl.parentElement?.children ?? []);
     const generic = isGenericSearch();
     send({
@@ -751,7 +767,7 @@ function main() {
     else if (via === 'xhr') netStats.viaXhr += 1;
     // live search pages only: fetches on static search pages come from the
     // user browsing, not from pushes - leave those to the DOM path
-    if (!location.pathname.endsWith('/live')) return;
+    if (!isLivePage()) return;
     try {
       // the ?query= param is the real search id (the URL path ends in
       // "live", which is what the path-derived searchId degrades to)

@@ -255,14 +255,23 @@ item no longer available) surface in the overlay instead of failing
 silently.
 
 Heartbeat: userscript sends `{"type": "hello", "search_id": ..., "tab_id":
-..., "search_reward": ..., "search_kind": ..., "version": ..., "net_stats":
-{...}, "page_id": ..., "page_age_s": ...}` on connect and every 30s;
+..., "search_reward": ..., "search_kind": ..., "live": ..., "version": ...,
+"net_stats": {...}, "page_id": ..., "page_age_s": ...}` on connect and every 30s;
 the overlay shows a per-tab connection indicator so a dead tab is visible
 before it costs a snipe. `search_reward` is taken from the tab's own query
 state (`window.tradeOpts`), falling back to the majority reward among
 visible rows — it tells the trade pricer what to price before the first
 live push arrives. `search_kind` is `"valdo"` or `"any"`; absent means
 `"valdo"`, so an older userscript keeps its scored behaviour.
+
+`live` is `false` when the tab is on a plain (non-live) search page — its
+URL does not end in `/live`. Those results were never pushed, so the
+userscript forwards none of its rows (it still marks them seen, so they
+cannot resurface as pushes once live search is activated) and the server
+leaves the tab out of the searches and drops any listing it sends
+(`listing_ignored`, reason `not_live`). Absent means `true` (scripts older
+than 0.8.4). The check runs at send time, because the site switches between
+a plain and a live search in place, without a reload.
 
 ## Generic live searches
 
@@ -301,8 +310,12 @@ batch's one sound: super, then jackpot, then generic, then Valdo). The
 repeats are baked into the WAV (`sound.repeat_wav`, cached per volume), so
 it is still one async PlaySound that a mute can cut off. Until the alarm has
 finished (its WAV's length), a routine alert sound is skipped so it cannot
-cut it off. The banner is not
-clickable, and the window is never pulled forward.
+cut it off. A travel that fails because the listing is gone
+(`click_result` reason `row_gone` or `item_no_longer_available`) stops the
+alarm early once every jackpot in the batch that set it off is gone
+(`jackpot_sound_stopped` is logged); any other failure leaves it ringing,
+since the listing may still be there. The banner is not clickable, and the
+window is never pulled forward.
 
 A **super jackpot** is a jackpot that also clears
 `alerts.super_jackpot_min_net` / `super_jackpot_min_yield`
