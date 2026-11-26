@@ -116,9 +116,31 @@ def test_trade_price_expires_to_ninja_fallback(config):
     book._ninja_rewards = {"Foil Sublime Vision": 18284.0}
     book.set_trade_price("Foil Sublime Vision", 82.0)
     assert book.reference_for("Foil Sublime Vision").source == "trade"
-    book._trade_rewards["Foil Sublime Vision"] = (82.0, -(10**9), False, 0.0)  # force stale
+    # past its refresh AND older than the cache's 12h max age
+    book._trade_rewards["Foil Sublime Vision"] = (82.0, -(10**9), False, 0.0)
     ref = book.reference_for("Foil Sublime Vision")
     assert ref.source in ("live", "stale")  # fell back to the ninja median
+
+
+def test_an_overdue_trade_price_beats_the_ninja_median(config):
+    """A Headhunter search closed for 7h: its 199d trade price missed every
+    refresh, fell back to ninja's 342d median, and the first listing after
+    the tab reopened (190d) alerted as a +152d super jackpot. Market: 209d."""
+    import time
+
+    book = PriceBook(config)
+    book._ninja_rewards = {"Foil Headhunter": 31746.0}
+    seven_hours = 7 * 3600
+    book._trade_rewards["Foil Headhunter"] = (
+        199.0,
+        time.monotonic() - seven_hours,
+        False,
+        time.time() - seven_hours,
+    )
+    ref = book.reference_for("Foil Headhunter")
+    assert (ref.source, ref.display_amount) == ("trade", 199.0)
+    assert book.has_primary_price("Foil Headhunter")
+    assert book.price_age_s("Foil Headhunter") >= seven_hours  # reads as overdue
 
 
 def test_to_divine(config):

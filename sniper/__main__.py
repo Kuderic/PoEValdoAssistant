@@ -54,6 +54,12 @@ from sniper.server import SniperServer
 # large batch can legitimately take minutes, and a fixed deadline would
 # degrade a run that was working fine.
 WARMUP_STALL_S = 90.0
+# After the warm-up, a reward with no trade price at all (a search opened
+# mid-session for a reward never priced, or priced too long ago) holds its
+# listings the same way, for at most this long: one paced fetch with the
+# identified fallback takes about three minutes. Past it, listings are judged
+# on the poe.ninja fallback, so a broken pricer cannot hide a reward forever.
+MIDSESSION_HOLD_S = 300.0
 
 
 class App:
@@ -107,6 +113,8 @@ class App:
         # rewards the trade API answered for but had no listings of: they can
         # never get a primary price, so they must not stall the warm-up
         self._warmup_settled: set[str] = set()
+        # reward -> when its first listing was held after the warm-up
+        self._held_since: dict[str, float] = {}
         self._pricing_now: str | None = None  # reward being fetched right now
         # rewards the user asked to re-check now (the price panel's ↻ button):
         # they jump the queue on the price loop's next pass, still under the
@@ -117,10 +125,11 @@ class App:
     # ------------------------------------------------------------ callbacks
 
     def _hold_listing(self, decision: Decision) -> bool:
-        """True when this listing must not surface yet: during the startup
-        warm-up a reward with no primary price would be judged against the
-        poe.ninja median (or nothing), producing exactly the inaccurate
-        profit figures the warm-up exists to avoid. The listing is still
+        """True when this listing must not surface yet: a reward with no
+        primary price would be judged against the poe.ninja median (or
+        nothing), producing exactly the inaccurate profit figures the hold
+        exists to avoid. During the startup warm-up the hold lasts until the
+        warm-up ends; after it, up to MIDSESSION_HOLD_S per reward. The listing is still
         logged, and its reward still registers with the server so the price
         loop picks it up."""
         # A generic (non-Valdo) listing has no reward to price, so the
@@ -128,8 +137,18 @@ class App:
         # showing it at all.
         if decision.listing.generic:
             return False
-        if not self._warmup_active or self.book.has_primary_price(decision.key):
+        key = decision.key
+        if not self.config.trade_pricing.enabled or self.book.has_primary_price(key):
+            self._held_since.pop(key, None)
             return False
+        if key in self._warmup_settled:
+            return False  # the trade API has no listings: ninja is all there is
+        if not self._warmup_active:
+            # Mid-session: a ninja median once turned a 209d Headhunter into
+            # a 342d "super jackpot". Hold until the fetch lands, capped.
+            since = self._held_since.setdefault(key, time.monotonic())
+            if time.monotonic() - since > MIDSESSION_HOLD_S:
+                return False
         event(
             "listing_held",
             listing_id=decision.listing.listing_id,
@@ -155,6 +174,9 @@ class App:
             timed_out = time.monotonic() >= self._warmup_deadline
             if (rewards and len(ready) == len(rewards)) or timed_out:
                 self._warmup_active = False
+                # the stall already waited for these: no second hold
+                for reward in set(rewards) - set(ready):
+                    self._held_since[reward] = float("-inf")
                 event("warmup_done", ready=len(ready), total=len(rewards), stalled=timed_out)
         if self.bus:
             self.bus.put(

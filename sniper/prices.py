@@ -58,6 +58,10 @@ class PriceBook:
         # replaces it, and reported as source="cached" so the UI can say so.
         self._trade_rewards: dict[str, tuple[float, float, bool, float]] = {}
         self._trade_ttl_s = max(config.trade_pricing.refresh_minutes * 60 * 2, 300)
+        # Past its TTL a trade price is still far better than poe.ninja's
+        # per-map median (a 7h-old 199d Headhunter vs ninja's 342d), so it
+        # stays in use up to the same age a restored price may be.
+        self._trade_max_age_s = config.trade_pricing.cache_max_age_minutes * 60
         # Session price corrections from the settings panel: reward -> divine.
         # Highest precedence of all sources - the user is looking at the real
         # market and correcting a reference they can see is wrong - and
@@ -233,9 +237,14 @@ class PriceBook:
         entry = self._trade_rewards.get(key)
         if entry is None:
             return None
-        divine_value, set_at, cached, _priced_at = entry
-        if time.monotonic() - set_at > self._trade_ttl_s:
-            return None  # too old - fall through to ninja
+        divine_value, set_at, cached, priced_at = entry
+        # Past its TTL it missed its refresh: its search was closed for a
+        # while, or the trade API is backing off. Still used (the overlay
+        # marks it "overdue" from its age) until it is older than a restored
+        # price may be; past that it is too old to trade on and ninja takes over.
+        overdue = time.monotonic() - set_at > self._trade_ttl_s
+        if overdue and time.time() - priced_at > self._trade_max_age_s:
+            return None
         divine_rate = self.rate_chaos("divine")
         if not divine_rate:
             return None

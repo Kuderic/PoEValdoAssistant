@@ -345,7 +345,9 @@ correctly via chaos normalization; a mismatch warns, it never blocks.
 `mod_risks` (`config.ModRisk`, matched like a pairing but one pattern is
 allowed) model mods that can make the map FAIL rather than be harder:
 Bismuth bugging out, Protect the Altar under less damage/delirium, an
-unclearable Breach. A failed map pays nothing and the asking price is spent,
+unclearable Breach. Blight, Legion and Breach also carry a 5% floor
+(Ultimatum's plain entry is 10%), each stepping aside via `unless` for its
+mechanic's bigger risk so the floor never stacks on it. A failed map pays nothing and the asking price is spent,
 so `margin.evaluate` computes an expected value:
 
     net = (1 - p) x reference - listing price - running_cost
@@ -433,9 +435,17 @@ for regex, `match_all` for combos where every pattern must hit):
   — a handful of requests per refresh cycle — not listing polling for
   snipes (which remains push-only via the live-search tabs).
 - Reference precedence: session override (⚙ panel) -> manual `prices:` ->
-  trade average (fresh, TTL 2x refresh) -> poe.ninja median (fallback until
-  the first trade fetch, or when trade data goes stale). Currency rates
-  still come from ninja.
+  trade average -> poe.ninja median (fallback until the first trade fetch,
+  or once the trade average is older than `cache_max_age_minutes`, 12h).
+  A trade average past its TTL (2x refresh: its search was closed, or the
+  API is backing off) is still used and shows as overdue; ninja's per-map
+  median is far worse (a 199d Headhunter read 342d). Currency rates still
+  come from ninja.
+- Listing hold: a Valdo listing whose reward has no primary (trade or
+  manual) price is held, not judged on the ninja median - until the startup
+  warm-up ends, and after it for up to 5 min per reward (`MIDSESSION_HOLD_S`,
+  a search opened mid-session). Rewards the trade API has no listings for,
+  and rewards the warm-up already gave up on, are not held.
 
 ### Session price overrides
 

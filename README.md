@@ -116,9 +116,17 @@ NET  =  (1 − fail chance) × market price  −  asking price  −  running cos
 | Ultimatum | 10% | Can brick the map even without penalties |
 | Ultimatum + less damage or delirium | 25% (replaces the 10%) | Protect the Altar, if it rolls, is likely to fail |
 | Ultimatum + fatal timer | 80% (replaces both above) | The fatal timer runs out during the Ultimatum waves |
-| Breach + less damage or delirium | 100% | Breaches can't be stabilised: unclearable |
-| Blight + rares with extra modifiers | 50% | Buffed rares leak through the towers |
+| Breach | 5% | A Breach can fail to stabilise |
+| Breach + less damage or delirium | 100% (replaces the 5%) | Breaches can't be stabilised: unclearable |
+| Blight | 5% | Monsters can leak through the towers |
+| Blight + rares with extra modifiers | 50% (replaces the 5%) | Buffed rares leak through the towers |
+| Legion | 5% | The Legion encounter can fail |
+| Legion + melee-range only | 25% (replaces the 5%) | Packs fought point-blank often outlast the encounter |
 | Bismuth | 30% | Bismuth maps bug out and fail |
+| 1 portal | 3% | One death ends the map |
+
+Every league mechanic (Blight, Legion, Breach, Ultimatum) carries at least a
+5% chance of failing, however easy the rest of the map is.
 
 A 200d reward listed at 100d with Bismuth on it nets 0.7 × 200 − 100 =
 **+40d**, not +100d. Several risks on one map combine as independent chances

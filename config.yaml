@@ -229,6 +229,16 @@ mod_risks:
     regex: true
     fail_chance: 0.80
     note: "The fatal timer runs out during the Ultimatum waves"
+  # Every league mechanic can fail even on an easy map: Blight, Legion and
+  # Breach carry a 5% floor (Ultimatum's own floor is the 10% above). Each
+  # steps aside, via `unless`, for its more specific entry below, so the
+  # floor never stacks on top of a bigger risk for the same mechanic.
+  - label: "Breach"
+    match: "unstable breaches must be stabilised"
+    unless: "less damage per equipped item|100% delirious"
+    regex: true
+    fail_chance: 0.05
+    note: "A Breach can fail to stabilise"
   - label: "Breach + less damage/delirium"
     match_all:
       - "unstable breaches must be stabilised"
@@ -236,16 +246,39 @@ mod_risks:
     regex: true
     fail_chance: 1.0
     note: "Breaches can't be stabilised: unclearable"
+  - label: "Blight"
+    match: "blight"
+    unless: "rare monsters each have"
+    fail_chance: 0.05
+    note: "Monsters can leak through the towers"
   # "Rare Monsters each have 2 additional Modifiers" (or "1 ... Modifier"):
   # extra-tanky rares walk through the Blight towers.
   - label: "Blight + rares extra modifiers"
     match_all: ["blight", "rare monsters each have"]
     fail_chance: 0.50
     note: "Buffed rares leak through the towers and fail the Blight"
+  - label: "Legion"
+    match: "legion"
+    unless: "within 2 metres of a player"
+    fail_chance: 0.05
+    note: "The Legion encounter can fail"
+  # Replaces the 5% above (its `unless` names the melee line). Stacks with
+  # the "Legion + melee-range only" difficulty pairing: that one prices the
+  # slow clear, this one the chance the encounter times out.
+  - label: "Legion + melee-range only"
+    match_all: ["legion", "within 2 metres of a player"]
+    fail_chance: 0.25
+    note: "Packs fought point-blank often outlast the encounter"
   - label: "Bismuth"
     match: "bismuth"
     fail_chance: 0.30
     note: "Bismuth maps bug out and fail"
+  # One death and the map is over. Stacks with the ×1.3 difficulty rule
+  # of the same name: that one prices the care it takes, this one the death.
+  - label: "1 portal"
+    match: "only opens 1 portal"
+    fail_chance: 0.03
+    note: "One death ends the map"
 
 # Difficulty scoring. Every listing gets:
 #   score = max(base_default, min_base of matched rules) x product(multipliers)
@@ -317,7 +350,7 @@ mod_scoring:
     - label: "Reduced Non-Curse Auras"
       match: "reduced effect of non-curse auras"
       multiplier: 1.4
-    - { label: "Instability on Kill", match: "instability on kill", multiplier: 1.5 }
+    - { label: "Instability on Kill", match: "instability on kill", multiplier: 2.5 }
     - label: "2-3 Tormented Spirits"
       match: "possessed by 2 to 3 tormented spirits"
       multiplier: 1.7

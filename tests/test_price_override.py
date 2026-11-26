@@ -93,9 +93,10 @@ def test_override_is_published_beside_the_price_it_replaced():
 def test_override_releases_a_listing_held_by_the_warmup():
     """A reward the trade API cannot price is exactly the case a hand-set
     price exists for, so pinning one must let its listings through."""
-    config = replace(make_config(prices={}))
+    config = make_config(prices={})
+    config = replace(config, trade_pricing=replace(config.trade_pricing, enabled=True))
     app = App(config, Bus())
-    app._warmup_active = True
+    assert app._warmup_active
     app.server._handle_listing(parse_frame(make_listing_frame(listing_id="held", reward=REWARD)))
     assert [e for e in app.bus.drain() if isinstance(e, ListingSeen)] == []
 

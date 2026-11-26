@@ -165,6 +165,42 @@ def test_progress_still_published_after_warmup_ends():
     assert dict((r, s) for r, s, _price, _age in status.rewards)[REWARD] == "working"
 
 
+def _warm_app():
+    app = make_app()
+    app.book.set_trade_price(REWARD, 202.0)
+    feed_listing(app, "a", reward=REWARD)
+    app._update_warmup()
+    assert not app._warmup_active
+    return app
+
+
+def test_a_new_reward_mid_session_is_held_until_priced():
+    """After the warm-up, a search opened for a reward with no trade price
+    must not alert on poe.ninja's median either."""
+    app = _warm_app()
+    assert feed_listing(app, "b", reward="Foil Headhunter") == []
+    app.book.set_trade_price("Foil Headhunter", 209.0)
+    assert len(feed_listing(app, "c", reward="Foil Headhunter")) == 1
+
+
+def test_the_mid_session_hold_gives_up_after_a_while():
+    """A pricer that never answers must not hide the reward forever."""
+    import time
+
+    from sniper import __main__ as main_mod
+
+    app = _warm_app()
+    assert feed_listing(app, "b", reward="Foil Headhunter") == []
+    app._held_since["Foil Headhunter"] = time.monotonic() - main_mod.MIDSESSION_HOLD_S - 1
+    assert len(feed_listing(app, "c", reward="Foil Headhunter")) == 1
+
+
+def test_a_reward_with_no_trade_listings_is_not_held_mid_session():
+    app = _warm_app()
+    app._warmup_settled.add("Foil Headhunter")
+    assert len(feed_listing(app, "b", reward="Foil Headhunter")) == 1
+
+
 def test_a_reward_from_a_new_tab_shows_as_pending():
     """Opening another live search mid-session must surface its pricing."""
     app = make_app()

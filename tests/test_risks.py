@@ -35,6 +35,8 @@ FATAL = "Area becomes fatal after some time"
 BLIGHT = "Area contains a Blight Encounter"
 RARES = "Rare Monsters each have 2 additional Modifiers"
 RARES_ONE = "Rare Monsters each have 1 additional Modifier"
+LEGION = "Area contains an additional Legion Encounter"
+MELEE = "Monsters can only be Damaged while within 2 metres of a Player"
 
 
 def shipped() -> ModScoring:
@@ -60,6 +62,12 @@ def risk(label, *patterns, chance, regex=False) -> ModRisk:
         ([ULTIMATUM, FATAL], "Ultimatum + fatal timer", 0.80),
         ([BLIGHT, RARES], "Blight + rares extra modifiers", 0.50),
         ([BLIGHT, RARES_ONE], "Blight + rares extra modifiers", 0.50),
+        # every league mechanic can fail: a 5% floor
+        ([BLIGHT], "Blight", 0.05),
+        ([LEGION], "Legion", 0.05),
+        ([BREACH], "Breach", 0.05),
+        ([LEGION, MELEE], "Legion + melee-range only", 0.25),
+        (["Only opens 1 Portal to Area"], "1 portal", 0.03),
     ],
 )
 def test_shipped_risks_fire_on_real_mod_text(mods, label, chance):
@@ -72,15 +80,36 @@ def test_shipped_risks_fire_on_real_mod_text(mods, label, chance):
     "mods",
     [
         [NO_ULTIMATUM, DELIRIOUS],  # the "no chance of Ultimatum" line
-        [BREACH],  # breach alone is fine
         [NO_DMG, DELIRIOUS],  # the penalties alone are difficulty, not failure
         [FATAL],  # the timer alone is difficulty, not failure
-        [BLIGHT],  # Blight alone is fine
         [RARES],  # tougher rares alone are difficulty, not failure
     ],
 )
 def test_shipped_risks_stay_quiet_otherwise(mods):
     assert shipped().evaluate(mods).risks == ()
+
+
+@pytest.mark.parametrize(
+    ("mods", "label", "chance"),
+    [
+        ([BLIGHT, RARES], "Blight + rares extra modifiers", 0.50),
+        ([BREACH, NO_DMG], "Breach + less damage/delirium", 1.0),
+        ([BREACH, DELIRIOUS], "Breach + less damage/delirium", 1.0),
+        ([LEGION, MELEE], "Legion + melee-range only", 0.25),
+    ],
+)
+def test_the_5_percent_floor_steps_aside_for_a_bigger_risk(mods, label, chance):
+    """A floor, not an extra: Blight + rares stays 50%, not 52.5%."""
+    result = shipped().evaluate(mods)
+    assert [lbl for lbl, _n, _c in result.risks] == [label]
+    assert result.fail_chance == pytest.approx(chance)
+
+
+def test_each_mechanic_carries_its_own_floor():
+    """Two mechanics on one map are two chances to fail."""
+    result = shipped().evaluate([BLIGHT, LEGION, ULTIMATUM])
+    assert {lbl for lbl, _n, _c in result.risks} == {"Blight", "Legion", "Ultimatum"}
+    assert result.fail_chance == pytest.approx(1 - 0.95 * 0.95 * 0.90)
 
 
 @pytest.mark.parametrize("penalty", [NO_DMG, DELIRIOUS])
