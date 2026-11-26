@@ -208,7 +208,7 @@ async def test_source_checkout_only_announces():
     delay = await up.check_once()
     assert [s.state for s in published] == ["available"]
     assert published[0].version == "1.1.0"
-    assert delay == 3600  # check_interval_hours default: 1
+    assert delay == 900  # check_interval_hours default: 0.25
 
 
 async def test_packaged_exe_downloads_verifies_and_stages(tmp_path):
@@ -259,7 +259,7 @@ async def test_the_same_version_publishes_nothing(tmp_path):
 
 async def test_no_release_yet_is_not_an_error():
     up, published = make_updater(FakeGitHub(status=404), exe=None)
-    assert await up.check_once() == 3600
+    assert await up.check_once() == 900
     assert published == []
 
 
@@ -356,7 +356,7 @@ def test_a_bad_user_config_names_the_file(tmp_path):
 
 @pytest.mark.parametrize(
     ("updates", "needle"),
-    [("check_interval_hours: 0.1", "at least 1"), ("repo: nope", "owner/name")],
+    [("check_interval_hours: 0.05", "at least 0.1"), ("repo: nope", "owner/name")],
 )
 def test_bad_update_settings_raise(tmp_path, updates, needle):
     user = tmp_path / "config.yaml"

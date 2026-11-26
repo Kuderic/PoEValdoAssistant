@@ -65,7 +65,7 @@ def test_net_breakdown_says_nothing_across_currencies():
 
 def test_yield_breakdown_states_the_formula_and_the_verdict():
     text = _yield_breakdown(48.0, 105.6, 2.5)
-    assert text.startswith("+48.0 net ÷ 105.6 difficulty × 100 = +45.5")
+    assert text.startswith("+48.0 EV ÷ 105.6 difficulty × 100 = +45.5")
     assert "so this alerts" in text
     assert "below the bar" in _yield_breakdown(1.0, 100.0, 2.5)
 

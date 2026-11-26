@@ -290,7 +290,7 @@ the opposite mistake turns a Valdo tab into one that alerts on every
 listing regardless of profit.
 
 Generic alerts carry `difficulty = 0`, which makes `net_yield`
-return `None` — they can never enter the Yield column or perturb the Valdo
+return `None` — they can never enter the Score column or perturb the Valdo
 ranking maths. A generic alert holds the top slot above every ordinary
 Valdo alert (only a jackpot or super jackpot outranks it): it comes from a
 search the user built by hand for one item, so it is the rare one worth
@@ -387,13 +387,14 @@ for regex, `match_all` for combos where every pattern must hit):
   map; a 200-difficulty map needs 2x the profit, a 50-difficulty map only
   half. Example: The Feared (base 100) + 100% Delirious (x1.8) = 180
   points -> 1.8x the base threshold.
-- Alert ranking and the hotkey's best-pick use **yield** — net divine per
-  100 difficulty (`margin.net_yield`) — not raw surplus. "Net" because the
-  flat running cost is already subtracted, which is what the overlay's
-  NET column shows:
-  the hotkey should take the map that pays best for what it costs to run.
+- Alert ranking and the hotkey's best-pick use **yield** (shown as SCORE)
+  — net divine per 100 difficulty (`margin.net_yield`) — not raw surplus.
+  `net_div` is shown as EV (expected value): the flat running cost is
+  already subtracted and failure risks scale the market price down.
+  Code and config keep the names net/yield; only the overlay says EV/SCORE.
+  The hotkey should take the map that pays best for what it costs to run.
   A clean 25-difficulty map at +20 div (80/100D) outranks a Feared+VOID
-  map at +50 div (4/100D). This is the overlay's Yield feed column, and
+  map at +50 div (4/100D). This is the overlay's SCORE feed column, and
   the same unit as the threshold — yield >= threshold is the alert
   condition, together with a flat floor `net >= thresholds.min_net`: an
   easy map can reach a high yield on a profit too small to travel for.
@@ -545,7 +546,7 @@ with `Overlay._bind_help`):
 - **Never over what it explains.** Stat help opens below the whole stats
   row, and price-panel help below the whole table. Popups stay inside the
   overlay's width and flip above when they would leave the screen.
-- **Worked examples must match.** NET, YIELD and DIFFICULTY add a live line
+- **Worked examples must match.** EV, SCORE and DIFFICULTY add a live line
   that works the sum through for the listing on screen
   (`_net_breakdown`, `_yield_breakdown`, `_difficulty_breakdown`). Each
   builder returns nothing unless its parts reproduce the figure shown, for
@@ -686,7 +687,8 @@ the tag disagrees with `__version__`, because an exe that under-reports its
 version would update itself in a loop.
 
 **Self-update (`sniper.updater`).** An asyncio task, off the hot path,
-20 s after start and then every `updates.check_interval_hours` (1):
+20 s after start and then every `updates.check_interval_hours` (0.25,
+i.e. 15 min; at least 0.1):
 `GET /repos/{repo}/releases/latest` with `If-None-Match` (a 304 does not
 count against GitHub's 60/hour unauthenticated limit). `Retry-After` and
 an exhausted `X-RateLimit-Remaining` + `X-RateLimit-Reset` are honoured;

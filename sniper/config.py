@@ -339,7 +339,10 @@ class UpdatesConfig:
 
     enabled: bool = True
     repo: str = "Kuderic/PoEValdoAssistant"
-    check_interval_hours: float = 1.0
+    # 15 min: a release used to sit unnoticed for up to an hour. Still far
+    # inside GitHub's 60/hour anonymous limit, and an unchanged answer is a
+    # tiny ETag 304.
+    check_interval_hours: float = 0.25
     # False: only announce a new version, never download it
     auto_download: bool = True
     api_base: str = "https://api.github.com"
@@ -656,8 +659,8 @@ def load_config(
             alerts = replace(alerts, **{key: max(0.0, float(extra[key]))})
 
     updates = build(UpdatesConfig, "updates")
-    if updates.check_interval_hours < 1:
-        raise ConfigError("updates.check_interval_hours must be at least 1")
+    if updates.check_interval_hours < 0.1:
+        raise ConfigError("updates.check_interval_hours must be at least 0.1 (6 minutes)")
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", updates.repo):
         raise ConfigError(f"updates.repo must look like owner/name, got {updates.repo!r}")
 

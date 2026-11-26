@@ -70,12 +70,13 @@ SCROLLBAR_HIDE_MS = 900  # overlay scrollbar lingers this long after scrolling
 # be prominent), the rest are fixed.
 STAT_COLUMNS = (
     ("price", "PRICE · DIVINE"),
-    ("profit", "NET"),
-    ("ratio", "YIELD"),
+    ("profit", "EV"),
+    ("ratio", "SCORE"),
     ("difficulty", "DIFFICULTY"),
 )
-# yield is the number the alert decision and the hotkey's pick both turn
-# on, so its cell is tinted where the other three are plain.
+# SCORE (internally "yield"/"ratio"; NET is now shown as EV) is the number
+# the alert decision and the hotkey's pick both turn on, so its cell is
+# tinted where the other three are plain.
 TINTED_STAT = "ratio"
 # Difficulty colouring, tiered off the reference difficulty of 100 that the
 # threshold is calibrated for: at or under it is an easy map, 3x it is brutal.
@@ -150,16 +151,17 @@ HELP = {
         "reward is priced in, a common bait (e.g. 80 chaos dressed up as 80 divine).",
     ),
     "net": (
-        "Net profit",
+        "EV (expected value)",
         "Divine you expect to keep after buying: what the reward sells for, minus the "
-        "asking price, minus the flat running cost per map. With a failure risk "
-        "(“NET · EXPECTED”) only the share of maps that succeed counts.",
+        "asking price, minus the flat running cost per map. With a failure risk only "
+        "the share of maps that succeed counts, so it is an average over many buys, "
+        "not a guaranteed profit.",
     ),
     "yield": (
-        "Yield",
-        "Profit per unit of difficulty: net ÷ difficulty × 100. This is what decides "
+        "Score",
+        "EV per unit of difficulty: EV ÷ difficulty × 100. This is what decides "
         "an alert and which listing the hotkey takes, so an easy map with modest "
-        "profit can beat a brutal one with more. Same number as the YIELD column in "
+        "profit can beat a brutal one with more. Same number as the SCORE column in "
         "the list below.",
     ),
     "difficulty": (
@@ -173,7 +175,7 @@ HELP = {
         "Watching",
         "The reward of each Valdo live search you have open, what it sells for and "
         "how long ago that price was fetched - so you know before an alert whether "
-        "its NET can be trusted. The dot says how far:\n"
+        "its EV can be trusted. The dot says how far:\n"
         "Green: a fresh trade price.\n"
         "Amber: overdue for a re-check, from your last session, a poe.ninja "
         "estimate, or a price you pinned - check it before travelling.\n"
@@ -184,15 +186,15 @@ HELP = {
     "reward_value": (
         "Reward value",
         "What this map's reward unique sells for, and how long ago that price was "
-        "checked on the trade site. NET is worked out from it.",
+        "checked on the trade site. EV is worked out from it.",
     ),
     "feed": (
         "Recent listings",
         "Every listing your searches caught, newest first. Bright rows alerted; dim "
-        "rows did not clear the yield bar.\n"
+        "rows did not clear the score bar.\n"
         "PRICE  asking price\n"
-        "NET  expected profit, in divine\n"
-        "YIELD  net per 100 difficulty\n"
+        "EV  expected profit, in divine\n"
+        "SCORE  EV per 100 difficulty\n"
         "DIFF  difficulty (100 = a typical map)\n"
         "AGE  how long ago it arrived\n"
         "Hover a row for its mods; click it to teleport.",
@@ -213,7 +215,7 @@ HELP = {
     "risk": (
         "Failure risk",
         "Chance the map cannot be completed with these mods. A failed map pays nothing "
-        "back, so NET already counts only the share of maps that succeed.",
+        "back, so EV already counts only the share of maps that succeed.",
     ),
     "ESTIMATED PRICE": (
         "Estimated price",
@@ -392,7 +394,7 @@ def _yield_breakdown(net_div: float | None, difficulty: float, bar: float) -> st
         return ""
     verdict = "alerts" if ratio >= bar else "below the bar"
     return (
-        f"{net_div:+.1f} net ÷ {_num(difficulty)} difficulty × 100 = {ratio:+.1f}\n"
+        f"{net_div:+.1f} EV ÷ {_num(difficulty)} difficulty × 100 = {ratio:+.1f}\n"
         f"alert bar is ≥ {bar:g}, so this {verdict}"
     )
 
@@ -1272,16 +1274,16 @@ class Overlay:
             (self._threshold_note,),
             lambda: (
                 "Alert bar",
-                f"A listing alerts when its NET is at least {self._current_min_net:g}d "
-                f"AND its YIELD is at least {self._current_threshold:g}. "
-                "Change them in ⚙ Settings (Alert at NET ≥ / Alert at YIELD ≥).",
+                f"A listing alerts when its EV is at least {self._current_min_net:g}d "
+                f"AND its SCORE is at least {self._current_threshold:g}. "
+                "Change them in ⚙ Settings → Alerts.",
             ),
         )
         feed_header = tk.Label(
             feed_box,
-            # yield = net per 100 difficulty: the same unit as the threshold
+            # score = EV per 100 difficulty: the same unit as the threshold
             # noted directly above, and the alert ranking key
-            text=f"{'PRICE':<8}{'NET':<9}{'YIELD':<9}{'DIFF':<12}{'AGE':<10}REWARD",
+            text=f"{'PRICE':<8}{'EV':<9}{'SCORE':<9}{'DIFF':<12}{'AGE':<10}REWARD",
             bg=BG,
             fg=DIM,
             font=self._font("mono", 8, "bold"),
@@ -1685,11 +1687,11 @@ class Overlay:
                 label.config(text=self._price_editor_text(entry))
 
     def _update_threshold_note(self) -> None:
-        """Stated in the Yield column's units so the cutoff can be read
+        """Stated in the Score column's units so the cutoff can be read
         straight off the feed."""
-        net = f"NET ≥ {self._current_min_net:g}  ·  " if self._current_min_net > 0 else ""
+        net = f"EV ≥ {self._current_min_net:g}  ·  " if self._current_min_net > 0 else ""
         self._threshold_note.config(
-            text=f"RECENT LISTINGS  ·  ALERTING AT {net}YIELD ≥ {self._current_threshold:g}"
+            text=f"RECENT LISTINGS  ·  ALERTING AT {net}SCORE ≥ {self._current_threshold:g}"
         )
 
     def _render_price_pill(self) -> None:
@@ -1968,9 +1970,6 @@ class Overlay:
             return
         for key, caption in STAT_COLUMNS[1:]:
             self._stat_caps[key].config(text=caption)
-        if top.fail_chance > 0:
-            # net is an expected value once a failure risk is in play
-            self._stat_caps["profit"].config(text="NET · EXPECTED")
         jp = _tier(top)
         self._paint_cell(
             TINTED_STAT,
@@ -2349,7 +2348,7 @@ class Overlay:
         tier = _tier(top)
         if tier is not None:
             ratio = net_yield(top.net_div, top.difficulty) or 0.0
-            self._jp_right.config(text=f"{top.net_div:+.0f}d net  ·  {ratio:+.0f} yield")
+            self._jp_right.config(text=f"{top.net_div:+.0f}d EV  ·  score {ratio:+.0f}")
             self._jp_tier = tier
             self._jackpot_banner.config(bg=tier.banner)
             self._jp_left.config(text=tier.title, bg=tier.banner)
@@ -2502,7 +2501,7 @@ class Overlay:
             summary, color = "Fails every time: you would lose what you pay.", BAD
         else:
             summary = (
-                f"Net counts a {top.fail_chance:.0%} chance of failing "
+                f"EV counts a {top.fail_chance:.0%} chance of failing "
                 f"(−{top.risk_cost_div:.0f}d of the reward's value)."
             )
             color = DIM
@@ -2860,25 +2859,25 @@ class Overlay:
         tab("Alerts")
         heading("When to alert")
         min_net_e = field(
-            "Alert at NET ≥",
+            "Alert at EV ≥",
             _fmt(self._current_min_net),
-            hint="Divines a listing must net to alert at all, on top of the\n"
-            "YIELD bar: an easy map can reach a high yield on a profit too\n"
-            "small to travel for. 0 = yield alone decides.",
-            search="threshold min_net profit",
+            hint="Divines a listing must be expected to make to alert at all,\n"
+            "on top of the SCORE bar: an easy map can reach a high score on a\n"
+            "profit too small to travel for. 0 = score alone decides.",
+            search="threshold min_net profit net expected value",
         )
         thr_e = field(
-            "Alert at YIELD ≥",
+            "Alert at SCORE ≥",
             _fmt(self._current_threshold),
-            hint="YIELD = net divine per 100 difficulty. A 200-difficulty map\n"
-            "must net twice as much as a 100 one to reach the same yield.\n"
-            "Highest yield is also what the hotkey travels to.",
-            search="threshold min_yield",
+            hint="SCORE = EV in divine per 100 difficulty. A 200-difficulty map\n"
+            "needs twice the EV of a 100 one to reach the same score.\n"
+            "Highest score is also what the hotkey travels to.",
+            search="threshold min_yield yield",
         )
         flat_e = field(
             "Running cost (div)",
             _fmt(self._current_running_cost),
-            hint="Taken off every listing BEFORE Net and Yield are computed: it\n"
+            hint="Taken off every listing BEFORE EV and Score are computed: it\n"
             "accounts for loss on selling and the time spent running the map.\n"
             "Recommended value is 1.",
         )
@@ -2889,7 +2888,7 @@ class Overlay:
         heading("Jackpots")
         card, r = next_row()
         bars_head = []
-        for c, text in ((1, "NET ≥"), (2, "YIELD ≥")):
+        for c, text in ((1, "EV ≥"), (2, "SCORE ≥")):
             lbl = tk.Label(card, text=text, bg=SURFACE, fg=FAINT, font=self._font("ui", 8))
             lbl.grid(row=r, column=c, sticky="w", padx=(2, 12 if c == 2 else 6))
             bars_head.append(lbl)
@@ -2905,13 +2904,13 @@ class Overlay:
             yld_e.insert(0, _fmt(yld))
             yld_e.grid(row=r, column=2, padx=(0, 12), pady=2, sticky="w")
             sections[-1]["rows"].append(
-                (f"{label} {hint} {search} net yield".casefold(), [name, net_e, yld_e])
+                (f"{label} {hint} {search} ev score net yield".casefold(), [name, net_e, yld_e])
             )
             return net_e, yld_e
 
         jp_net_e, jp_yield_e = tier_row(
             "Jackpot",
-            "A listing is a JACKPOT when its net AND its yield both\n"
+            "A listing is a JACKPOT when its EV AND its score both\n"
             "clear these bars: it gets a magenta banner and frame and\n"
             "becomes the hotkey's top pick.",
             self._jackpot_net,
@@ -2926,7 +2925,7 @@ class Overlay:
             self._super_yield,
             "super jackpot",
         )
-        caption("Each tier needs both bars (e.g. +80d net at yield 144).")
+        caption("Each tier needs both bars (e.g. +80d EV at score 144).")
         end_card()
 
         # ================================================== tab: Map scoring
@@ -2938,7 +2937,7 @@ class Overlay:
             heading("Failure risks", "Fail %")
             caption(
                 "Chance the map fails, losing what you paid for it:\n"
-                "net = (1 − fail) × market − price − running cost.\n"
+                "EV = (1 − fail) × market − price − running cost.\n"
                 "100 = never worth buying; 0 = ignore the risk."
             )
             for risk in sc.risks:
@@ -3261,7 +3260,7 @@ class Overlay:
                 note.config(text="Jackpot bars must be >= 0", fg=BAD)
                 return
             if new_min_net < 0:
-                note.config(text="Alert at NET must be >= 0", fg=BAD)
+                note.config(text="Alert at EV must be >= 0", fg=BAD)
                 return
 
             error = None
@@ -3686,13 +3685,13 @@ class Overlay:
         if self._jp_tier is SUPER_TIER:
             return (
                 "Super jackpot",
-                f"A jackpot that also clears the super bars: net ≥ {self._super_net:g}d "
-                f"and yield ≥ {self._super_yield:g}. It outranks every other alert for "
+                f"A jackpot that also clears the super bars: EV ≥ {self._super_net:g}d "
+                f"and score ≥ {self._super_yield:g}. It outranks every other alert for "
                 "the hotkey and plays its own alarm once.",
             )
         return (
             "Jackpot",
-            f"Net ≥ {self._jackpot_net:g}d and yield ≥ {self._jackpot_yield:g}, rare "
+            f"EV ≥ {self._jackpot_net:g}d and score ≥ {self._jackpot_yield:g}, rare "
             "enough to drop what you are doing. It takes the hotkey's top slot and "
             "plays an alarm once.",
         )

@@ -89,10 +89,12 @@ def test_a_failed_download_turns_amber_and_installed_hides_it(ov):
     assert ov._update_bar.winfo_manager() == ""
 
 
-def test_checks_hourly_by_default():
+def test_checks_every_15_minutes_by_default():
+    """Hourly left a fresh release unnoticed for up to an hour."""
     from pathlib import Path
 
-    from sniper.config import load_config
+    from sniper.config import UpdatesConfig, load_config
 
     root = Path(__file__).resolve().parent.parent
-    assert load_config(root / "config.yaml").updates.check_interval_hours == 1
+    assert load_config(root / "config.yaml").updates.check_interval_hours == 0.25
+    assert UpdatesConfig().check_interval_hours == 0.25

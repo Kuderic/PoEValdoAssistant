@@ -7,7 +7,7 @@ run — alerts with sound and an always-on-top overlay, and travels to the
 seller's hideout on a single hotkey press. PoE 3.27+ asynchronous trading:
 no whispers, you complete the purchase manually at Faustus.
 
-<img src="docs/overlay-alert.png" alt="Valdo Sniper overlay: an Emperor's Mastery map alerting at +48 divine net and yield +45.5, with its difficulty-scored mods, a deadly-pairing warning, two runner-up alerts, and the live feed of recent listings" width="420">
+<img src="docs/overlay-alert.png" alt="Valdo Sniper overlay: an Emperor's Mastery map alerting at +48 divine EV and score +45.5, with its difficulty-scored mods, a deadly-pairing warning, two runner-up alerts, and the live feed of recent listings" width="420">
 
 **Trade etiquette / ToS stance (non-negotiable, see CLAUDE.md):** one user
 input = one server action. The Travel click fires only in direct response to
@@ -22,36 +22,42 @@ polling the trade API.
 Everything the app does comes down to one number.
 
 ```
-NET    =  market price  −  asking price  −  running cost
-YIELD  =  NET  ÷  difficulty  ×  100
+EV     =  (1 − fail chance) × market price  −  asking price  −  running cost
+SCORE  =  EV  ÷  difficulty  ×  100
 ```
 
-**NET** is what the map actually leaves you: the reward's market price, minus
-what you pay, minus the running cost — a flat charge for the time and losses
-that running *any* map incurs (see below). It is deliberately not called
-profit, because that cost has already come off it.
+**EV** (expected value) is what the map leaves you on average: the reward's
+market price, minus what you pay, minus the running cost — a flat charge for
+the time and losses that running *any* map incurs (see below). Mods that can
+make the map fail scale the market price down by the chance it succeeds
+([Failure risks](#failure-risks)), so EV is an average over many buys, not a
+guaranteed profit.
 
-**YIELD** is that net figure per unit of difficulty. Since net is already
-time-adjusted and difficulty measures how nasty the map is to run, yield is
+**SCORE** is that EV per unit of difficulty. Since EV is already
+time-adjusted and difficulty measures how nasty the map is to run, score is
 what the map pays you **per unit of pain**. An alert fires when it clears
-your threshold and the net is worth the trip:
+your threshold and the EV is worth the trip:
 
 ```
-alert  ⟺  YIELD  ≥  thresholds.min_yield   (4 by default)
-       and NET   ≥  thresholds.min_net     (7 divines by default)
+alert  ⟺  SCORE  ≥  thresholds.min_yield   (4 by default)
+       and EV     ≥  thresholds.min_net     (7 divines by default)
 ```
 
-The net floor is there because an easy map can reach a high yield on a
-profit too small to travel for. Set it to 0 to let yield alone decide.
+The EV floor is there because an easy map can reach a high score on a
+profit too small to travel for. Set it to 0 to let score alone decide.
 
 Why a rate rather than raw surplus: a clean 25-difficulty map at +20 div and
 a Feared + VOID nightmare at +50 div are not the same trade. The second pays
-more and is worth less. Yield says so, and it is what the hotkey ranks on
+more and is worth less. Score says so, and it is what the hotkey ranks on
 when several maps are alerting at once.
 
 The threshold is in those same units, so it reads directly: **"a
-100-difficulty map must net this much."** A 200-difficulty map needs twice as
-much; a 50-difficulty map half.
+100-difficulty map must be expected to make this much."** A 200-difficulty
+map needs twice as much; a 50-difficulty map half.
+
+(Earlier versions called these NET and YIELD. The config keys keep their
+old names — `min_net`, `min_yield`, `jackpot_min_net`, … — so existing
+settings keep working.)
 
 ### Difficulty
 
@@ -74,9 +80,8 @@ every pairing`.
 you — the time it takes plus what you lose reselling — and it comes off every
 listing before anything else looks at it. Running any map costs you something, so
 an easy map with a 0.5 div margin is not actually worth doing. It is
-subtracted at the source, which is why the column is called NET rather than
-profit: the number on screen, the yield, the alert cutoff and the hotkey's
-ranking all already account for it.
+subtracted at the source: the EV on screen, the score, the alert cutoff and
+the hotkey's ranking all already account for it.
 
 ### Deadly pairings
 
@@ -105,10 +110,10 @@ in `config.yaml`.
 
 Some mods don't make a map harder, they make it **fail**, and a failed map
 loses everything you paid for it. `mod_risks` gives each one a chance of
-failing, and net becomes an *expected* value:
+failing, which is what makes EV an *expected* value:
 
 ```
-NET  =  (1 − fail chance) × market price  −  asking price  −  running cost
+EV  =  (1 − fail chance) × market price  −  asking price  −  running cost
 ```
 
 | Risk | Fail chance | Why |
@@ -128,16 +133,15 @@ NET  =  (1 − fail chance) × market price  −  asking price  −  running cos
 Every league mechanic (Blight, Legion, Breach, Ultimatum) carries at least a
 5% chance of failing, however easy the rest of the map is.
 
-A 200d reward listed at 100d with Bismuth on it nets 0.7 × 200 − 100 =
+A 200d reward listed at 100d with Bismuth on it has an EV of 0.7 × 200 − 100 =
 **+40d**, not +100d. Several risks on one map combine as independent chances
 (25% and 30% together is 47.5%, not 55%). A 100% risk can never come out
 positive, so an unclearable Breach never alerts at any price.
 
-Because yield, the alert cutoff, jackpots and the hotkey's ranking are all
-built on net, they all account for the risk. On the overlay the NET caption
-reads **NET · EXPECTED**, each risk gets an amber row with its chance, and a
-line says what it cost (*"Net counts a 48% chance of failing (−95d of the
-reward's value)"*). Feed and runner-up rows carry a `⚠30%` marker.
+Because score, the alert cutoff, jackpots and the hotkey's ranking are all
+built on EV, they all account for the risk. On the overlay each risk gets an
+amber row with its chance, and a line says what it cost (*"EV counts a 48%
+chance of failing (−95d of the reward's value)"*). Feed and runner-up rows carry a `⚠30%` marker.
 
 **Adjust the chances in the ⚙ panel** under *Map scoring → Failure risks* (in percent,
 applied live and saved); 0 switches a risk off. To add a new one, copy an
@@ -334,17 +338,17 @@ the four numbers, then warnings, then the map's mods.
 explanation that pops up instantly: the status pills, the latency badge,
 each of the four numbers, the price markers, ☠ and ⚠ rows, the jackpot
 banner, the countdown bar and the history's column headers. The four numbers
-also work their sum through for the listing on screen, e.g. NET shows
+also work their sum through for the listing on screen, e.g. EV shows
 `101 worth − 52 price − 1 running = +48.0d` and DIFFICULTY shows
 `base 80 × 1.3 × 1.4 = 146`.
 
 | Element | What it tells you |
 |---|---|
-| **Reward worth …** | What the map's reward unique sells for and when that price was last checked on the trade site (`price checked 4m ago`). A price from anywhere else says so (last session / poe.ninja estimate / your price). NET is worked out from it |
+| **Reward worth …** | What the map's reward unique sells for and when that price was last checked on the trade site (`price checked 4m ago`). A price from anywhere else says so (last session / poe.ninja estimate / your price). EV is worked out from it |
 | **Stash spot** | Where the item sits in the seller's tab: a mini grid with its cell marked, the rough area (`bottom right`), the tab name and the exact `col, row`. Read it while the hideout loads and the click at Faustus is already aimed. Shown for listings caught from the network (almost all of them). The trade site doesn't give the tab size, so a 12×12 tab is assumed unless the position only fits a quad tab |
 | **PRICE** | What you pay, and in which currency. Turns red on a currency mismatch (the classic "20 exalted, not 20 divine" bait) — a full-width banner also appears |
-| **NET** | Reward value − asking price − the running cost, in divine (`+48 div`). What the map actually leaves you |
-| **YIELD** | The decision number, in the tinted cell: net ÷ difficulty × 100, i.e. profit per unit of pain. It decides alerts and the hotkey's pick, so an easy map with modest profit can beat a brutal one. Green means it clears your threshold |
+| **EV** | Expected value: reward value (scaled by the chance the map succeeds) − asking price − the running cost, in divine (`+48 div`). What the map leaves you on average |
+| **SCORE** | The decision number, in the tinted cell: EV ÷ difficulty × 100, i.e. profit per unit of pain. It decides alerts and the hotkey's pick, so an easy map with modest profit can beat a brutal one. Green means it clears your threshold |
 | **DIFFICULTY** | How hard the mods make the map; 100 is a typical map. The toughest encounter's base (or the clean-map default) × every dangerous mod and pairing. Plain ≤100, amber >100, red >300 |
 | **latency badge** | The delay between the seller listing the map (the trade site's own index time) and your Chrome tab receiving it from the live search: the head start every other sniper had. Not your reaction time. Green under 2s, red past 5s. A busy tab creeps up over hours; when one does, an amber bar under the status strip says `⟳ RELOAD Mageblood (+2.7s lag)` (or whichever tab) |
 | **☠ rows** | Deadly pairings, with the reason |
@@ -360,7 +364,7 @@ session's trade price, refresh pending), `YOUR PRICE` (a price you pinned in
 the ⚙ panel). The first two disappear once a fresh trade average lands.
 
 **Acting on it:** press the hotkey (default `` ` ``) to travel to the best
-alert by yield, click the **TELEPORT** button, or click any row — including
+alert by score, click the **TELEPORT** button, or click any row — including
 a grayed-out one in the history — to travel to that specific listing. All
 require PoE to be running; the hotkey is deliberately inert otherwise. After
 traveling, the map's mods stay pinned for ~10s so you can read them during
@@ -390,7 +394,7 @@ Doom Coil  ·  Serpent#1234
 +38% to Fire Resistance
 ```
 
-Net, Yield and difficulty are blank because they have no meaning here —
+EV, Score and difficulty are blank because they have no meaning here —
 there is no market average to profit against, and the mod scoring reads
 *map* modifiers, so a ring's stats would invent a difficulty out of nothing.
 These rows show `[search]` in the history list.
@@ -404,7 +408,7 @@ Two things worth knowing:
 - **A non-Valdo hit takes the top of the overlay** above every ordinary
   Valdo alert, so the hotkey travels to it. Only a jackpot or super jackpot
   outranks it. Several of them rank newest first. Valdo alerts still rank
-  among themselves by yield below it, so a session with no generic tabs
+  among themselves by score below it, so a session with no generic tabs
   open behaves exactly as before.
 
 **These get their own sound.** A non-Valdo hit plays `tada.wav` instead of
@@ -422,12 +426,12 @@ the trade site rather than in the app.
 
 ### Jackpots
 
-A Valdo listing that is **both** big money and cheap to run (net ≥ 15d
-**and** yield ≥ 8 by default) is a jackpot:
+A Valdo listing that is **both** big money and cheap to run (EV ≥ 15d
+**and** score ≥ 8 by default) is a jackpot:
 
-<img src="docs/overlay-jackpot.png" alt="A jackpot alert: Nimis at 80 divine, +80 net, yield +144, difficulty 55, with a magenta JACKPOT banner and a magenta frame around the alert card" width="420">
+<img src="docs/overlay-jackpot.png" alt="A jackpot alert: Nimis at 80 divine, +80 EV, score +144, difficulty 55, with a magenta JACKPOT banner and a magenta frame around the alert card" width="420">
 
-- a magenta **★ JACKPOT** banner and frame, with the name, net and yield
+- a magenta **★ JACKPOT** banner and frame, with the name, EV and score
   in magenta and a magenta TELEPORT button;
 - it takes the hotkey's top slot over anything else, non-Valdo hits included;
 - it stays magenta with `★ JACKPOT` in the live feed, so one you missed is
@@ -448,10 +452,10 @@ keeps its MISMATCH banner but can still be a jackpot.
 
 #### Super jackpots
 
-The tier above: a jackpot that **also** clears higher bars (net ≥ 30d **and**
-yield ≥ 10 by default) is a super jackpot:
+The tier above: a jackpot that **also** clears higher bars (EV ≥ 30d **and**
+score ≥ 10 by default) is a super jackpot:
 
-<img src="docs/overlay-super-jackpot.png" alt="A super jackpot alert: Nimis at 80 divine, +80 net, yield +144, with a gold SUPER JACKPOT banner, gold frame and gold TELEPORT button; a magenta jackpot runner-up sits below it" width="420">
+<img src="docs/overlay-super-jackpot.png" alt="A super jackpot alert: Nimis at 80 divine, +80 EV, score +144, with a gold SUPER JACKPOT banner, gold frame and gold TELEPORT button; a magenta jackpot runner-up sits below it" width="420">
 
 - a gold **★★ SUPER JACKPOT** banner, frame and TELEPORT button;
 - its own alarm (`Alarm03.wav`), played once (about 4 seconds), so
@@ -459,8 +463,7 @@ yield ≥ 10 by default) is a super jackpot:
 - it outranks a jackpot for the hotkey;
 - `★★ SUPER` in gold in the live feed.
 
-Tune the bars in the ⚙ panel (*Super jackpot at NET /
-YIELD*) or with `alerts.super_jackpot_min_net` / `super_jackpot_min_yield`.
+Tune the bars in the ⚙ panel's **Alerts** tab (the *Super jackpot* row) or with `alerts.super_jackpot_min_net` / `super_jackpot_min_yield`.
 
 ## Tuning it to actually make money
 
@@ -507,14 +510,14 @@ them when you know better than the market average, e.g. right after a patch.
 
 | Key | Does |
 |---|---|
-| `thresholds.min_yield` | Minimum Yield to alert (4), also in the ⚙ panel |
-| `thresholds.min_net` | Minimum Net to alert, in divines (7), also in the ⚙ panel. 0 turns it off |
+| `thresholds.min_yield` | Minimum SCORE to alert (4), also in the ⚙ panel |
+| `thresholds.min_net` | Minimum EV to alert, in divines (7), also in the ⚙ panel. 0 turns it off |
 | `thresholds.running_cost` | Divine cost of running a map, off every listing |
 | `thresholds.per_map` | Per-reward threshold overrides |
 | `mod_scoring.base_default` | Difficulty of a clean, unmodded map |
 | `mod_scoring.rules` | Per-mod `min_base` / `multiplier`, optional `warning` |
 | `mod_pairings` | Deadly combinations: `multiplier` + `note` |
-| `mod_risks` | Chance (0–1) a mod combination makes the map fail; net becomes an expected value. Chances also in the ⚙ panel |
+| `mod_risks` | Chance (0–1) a mod combination makes the map fail; it scales EV down by the chance of success. Chances also in the ⚙ panel |
 | `mod_warnings` | `block` rules — logged, never alerted, at any price |
 | `hotkey.combo` / `.consume` | Travel key; `all` clears every alert per press, `top` keeps runners-up (a *failed* travel gives them back either way) |
 | `hotkey.raise_overlay` | `true` (default): every press also brings the overlay to the front (restoring it if minimized) without taking focus from the game. `false` leaves it where it is. Also a toggle in ⚙ Settings |

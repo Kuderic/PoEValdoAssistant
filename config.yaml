@@ -9,22 +9,23 @@ server:
   port: 8765
 
 thresholds:
-  # Minimum YIELD to alert, in DIVINE ORBS per 100 difficulty.
-  #   NET   = market price - asking price - running_cost
-  #   YIELD = NET / difficulty * 100
-  # Reads directly as "a 100-difficulty map must net this much".
+  # Minimum SCORE to alert, in DIVINE ORBS per 100 difficulty. (The overlay
+  # calls these EV and SCORE; the keys keep their old names, net and yield.)
+  #   EV    = (1 - fail chance) x market price - asking price - running_cost
+  #   SCORE = EV / difficulty * 100
+  # Reads directly as "a 100-difficulty map must be expected to make this much".
   min_yield: 4
-  # ...AND at least this much NET, in divines. An easy map can reach a high
-  # yield on a profit too small to travel for. 0 = yield alone decides.
+  # ...AND at least this much EV, in divines. An easy map can reach a high
+  # score on a profit too small to travel for. 0 = score alone decides.
   # Both are editable in the ⚙ panel.
   min_net: 7
   # Keyed by the map's Reward name (the value driver, e.g. "Foil Mageblood");
   # item_name is only the fallback key when a listing has no reward line.
   per_map: {}                  # e.g. "Foil Mageblood": 25
   # What running a map costs you, in divines: the time it takes plus what you
-  # lose reselling. Taken off every listing BEFORE net, yield and the alert
-  # cutoff are computed - which is why the column is NET, not profit. An easy
-  # map with a tiny margin is not really worth doing. Editable in the ⚙ panel.
+  # lose reselling. Taken off every listing BEFORE EV, score and the alert
+  # cutoff are computed. An easy map with a tiny margin is not really worth
+  # doing. Editable in the ⚙ panel.
   running_cost: 1
 
 alerts:
@@ -39,8 +40,8 @@ alerts:
   volume: 0.5                  # 0.0-1.0, also editable in the ⚙ panel
   traveled_display_seconds: 10 # traveled map's mods stay readable this long
   feed_rows: 40                # live-feed history rows (the area scrolls)
-  # JACKPOT: a listing whose NET and YIELD BOTH clear these bars (e.g. a
-  # half-price Nimis: +80d net, +144 yield). It gets a magenta banner and
+  # JACKPOT: a listing whose EV and SCORE BOTH clear these bars (e.g. a
+  # half-price Nimis: +80d EV, score +144). It gets a magenta banner and
   # frame, takes the hotkey's top slot, and plays an alarm ONCE (the speaker
   # icon mutes everything). It never pulls the overlay to the front.
   # Stays magenta in the live feed so a missed one is obvious later.
@@ -191,9 +192,9 @@ mod_pairings:
     note: "Slowed with no travel skills, so the storms are hard to escape"
 
 # FAILURE RISKS: mods (or combinations) that can make the map FAIL. A failed
-# map pays nothing and what you paid for it is gone, so each risk turns NET
-# into an expected value:
-#   NET = (1 - fail_chance) x market price - asking price - running cost
+# map pays nothing and what you paid for it is gone, so each risk scales the
+# market price down in the expected value (EV):
+#   EV = (1 - fail_chance) x market price - asking price - running cost
 # fail_chance is 0-1 (0.3 = 30%). Several risks on one map combine as
 # independent chances (two 30% risks = 51%). 1.0 means it can never pay off,
 # so it never alerts. 0 switches a risk off. The chances are editable in the
@@ -444,5 +445,5 @@ logging:
 updates:
   enabled: true
   repo: Kuderic/PoEValdoAssistant
-  check_interval_hours: 1   # one small ETag request; an unchanged answer is free
+  check_interval_hours: 0.25  # every 15 min (min 0.1); one small ETag request, an unchanged answer is free
   auto_download: true   # false: only announce new versions
