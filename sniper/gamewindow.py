@@ -9,6 +9,7 @@ run in the executor, never on the asyncio loop itself.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from collections.abc import Callable
 
@@ -66,7 +67,18 @@ def raise_without_focus(hwnd: int) -> bool:
     except Exception as e:
         event("overlay_raise_failed", reason=repr(e))
         return False
+    stop_taskbar_flash(hwnd)
     return True
+
+
+def stop_taskbar_flash(hwnd: int) -> None:
+    """Cancel a window's orange taskbar flash. Windows starts one whenever
+    it refuses a background process's request for the foreground; the user
+    never wants that nag from this app."""
+    if win32gui is None or not hwnd:
+        return
+    with contextlib.suppress(Exception):
+        win32gui.FlashWindowEx(hwnd, win32con.FLASHW_STOP, 0, 0)
 
 
 def focus_poe_window(title: str) -> bool:
@@ -89,8 +101,14 @@ def focus_poe_window(title: str) -> bool:
         event("focus_failed", reason="window_not_found", title=title)
         return False
     hwnd = matches[0]
+    if win32gui.GetForegroundWindow() == hwnd:
+        # the usual case (the hotkey was pressed in game): nothing to do, and
+        # no ALT tap or foreground request that could flash the taskbar
+        event("game_focused", title=title, already=True)
+        return True
     try:
-        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
         # benign ALT tap so Windows lets a background process take foreground
         import win32api
 
@@ -98,7 +116,12 @@ def focus_poe_window(title: str) -> bool:
         win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
         win32gui.SetForegroundWindow(hwnd)
     except Exception as e:
+        stop_taskbar_flash(hwnd)  # a refused request flashes it instead
         event("focus_failed", reason=repr(e), title=title)
+        return False
+    if win32gui.GetForegroundWindow() != hwnd:
+        stop_taskbar_flash(hwnd)
+        event("focus_failed", reason="refused", title=title)
         return False
     event("game_focused", title=title)
     return True

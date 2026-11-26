@@ -551,6 +551,12 @@ class App:
                 for r in active
                 if r not in forced and now - last_priced.get(r, -interval_s) >= interval_s
             ]
+            if due:
+                # a pass can take minutes (each reward is paced for the rate
+                # limit): show what is known now - last session's cached
+                # prices, once the divine rate is in - rather than "—" rows
+                # until the whole pass is done
+                self._push_reward_prices()
             for reward in due:
                 self._pricing_now = reward  # so the startup panel can say so
                 self._update_warmup()
@@ -609,6 +615,8 @@ class App:
                 # each price landing may be the one that ends the warm-up
                 self._pricing_now = None
                 self._update_warmup()
+                # and goes on screen now, not when the last reward is done
+                self._push_reward_prices()
                 await pricer.pause_between_rewards()
             # however the batch ended (done, backoff, bad reward), nothing is
             # in flight now - a stale "working" marker would be a lie

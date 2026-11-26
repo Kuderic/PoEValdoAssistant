@@ -151,6 +151,14 @@ mod_pairings:
     match_all: ["blight", "within 2 metres of a player"]
     multiplier: 2
     note: "Bricks the CC tower strategy"
+  # Holding a Blight lane means killing nonstop, and every kill builds
+  # Instability while the damage keeps ramping: players die on entry. A
+  # half-price Foil Mageblood with these (and void) killed its runner.
+  # Stacks on top of the individual rules and any void pairings.
+  - label: "Blight + lethal + instability"
+    match_all: ["blight", "increasingly lethal", "instability on kill"]
+    multiplier: 3
+    note: "Nonstop Blight kills build detonations while damage ramps"
   # Void alone is survivable - you simply do not die. It is The Feared that
   # makes it lethal: a fight that can one-shot you, in a map where dying
   # deletes the character. Stacks on top of the VOID and The Feared rules.

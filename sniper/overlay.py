@@ -2191,8 +2191,8 @@ class Overlay:
         except (tk.TclError, ValueError):
             hwnd = 0
         if not raise_without_focus(hwnd):
-            if root.state() == "iconic":
-                root.deiconify()
+            # no deiconify here: it activates the window, and Windows answers
+            # a background activation with a taskbar flash
             root.lift()
             root.attributes("-topmost", True)
         event("overlay_raised")
