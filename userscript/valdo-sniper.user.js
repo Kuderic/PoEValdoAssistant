@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.8.4
+// @version      0.8.5
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
@@ -29,10 +29,16 @@
 //   item name is a random flavor name.
 // - Better Trading extension artifacts (bt-*) exist in the DOM; nothing
 //   below matches them.
-// - One page-structure assumption is deliberately NOT a selector: the
-//   search's own query state, read from `window.tradeOpts` in
-//   filterReward(). See that function for why and for the snapshot it was
-//   verified against.
+// - The search form's "Map Completion Reward" dropdown names the reward the
+//   search is for, before any result exists (verified against a live
+//   Mageblood search's DOM, 2026-11-26; trimmed copy in
+//   tests/fixtures/reward_filter_snapshot.html). The selected option sits
+//   in the vue-multiselect's text input: <input class="multiselect__input"
+//   value="Mageblood">, under div.filter > .filter-title. Matched by the
+//   title's exact text: "Reward Type" and "Reward Unique" are other filters.
+// - A second, older source is deliberately NOT a selector: the search's
+//   page-load state in `window.tradeOpts` (see queryState()). The 2026-11-26
+//   snapshot has no tradeOpts at all, so it is only a last resort.
 // ---------------------------------------------------------------------------
 const SELECTORS = {
   resultsContainer: '.results',
@@ -47,6 +53,11 @@ const SELECTORS = {
   seller: '.details .info .profile-link a',
   modLine: '.item-mod span[data-field^="stat."]',
   rewardValue: '.item-property span[type="76"] > span:last-of-type',
+  /* the search form's reward dropdown (see the note above) */
+  filterTitle: '.filter-title',
+  filterBlock: '.filter',
+  filterInput: '.multiselect__input',
+  filterOpen: '.multiselect--active', // dropdown open: input holds typed text
   travelButton: 'button.direct-btn',
   /* sold/delisted rows render `<span class="error">Item no longer
      available</span>` and hide the .btns group (verified in the
@@ -66,11 +77,13 @@ const CONFIRM_WINDOW_MS = 3_000;
    script it loaded with until it is reloaded, so this is the only way to
    tell from logs/ whether a live tab is on a stale userscript.
    KEEP IN SYNC with the @version header above. */
-const SCRIPT_VERSION = '0.8.4';
+const SCRIPT_VERSION = '0.8.5';
 
 const WS_URL = 'ws://127.0.0.1:8765';
 const HEARTBEAT_MS = 30_000;
 const SENTINEL_MS = 2_000;
+/* exact title of the search form's reward dropdown (see SELECTORS) */
+const REWARD_FILTER_TITLE = 'Map Completion Reward';
 /* network capture: listings taken from /api/trade/fetch responses within
    this window after page init / navigation are page-load fetches for rows
    that were already listed - remembered silently, never alerted (mirrors
@@ -147,7 +160,7 @@ function extractMods(rowEl) {
  * Returns null when the price has not rendered yet.
  */
 function parsePrice(rowEl) {
-  const amountText = textOf(rowEl, SELECTORS.priceAmount).replace(/[,×x]/g, '');
+  const amountText = textOf(rowEl, SELECTORS.priceAmount).replace(/[,Ã—x]/g, '');
   // Prefer the currency image's alt ("divine" - the short trade id used by
   // config and poe.ninja); fall back to the visible text ("Divine Orb").
   const currencyImg = rowEl.querySelector(SELECTORS.priceCurrencyImg);
@@ -482,13 +495,39 @@ function main() {
     return true;
   }
 
-  function filterReward() {
+  /**
+   * The reward picked in the search form's "Map Completion Reward"
+   * dropdown - what the user chose before pressing Live Search. Readable as
+   * soon as the form renders, with no result needed, and it follows an
+   * in-place edit of the search (the page-load tradeOpts never did).
+   *
+   * Null while the dropdown is open (its input then holds whatever is being
+   * typed), and for "Any" or an empty box (no reward filter).
+   */
+  function dropdownReward() {
+    for (const title of document.querySelectorAll(SELECTORS.filterTitle)) {
+      if (title.textContent.trim() !== REWARD_FILTER_TITLE) continue;
+      const block = title.closest(SELECTORS.filterBlock);
+      if (!block || block.querySelector(SELECTORS.filterOpen)) return null;
+      const input = block.querySelector(SELECTORS.filterInput);
+      const option = input ? (input.value || input.placeholder || '').trim() : '';
+      return option && option !== 'Any' ? option : null;
+    }
+    return null;
+  }
+
+  function stateReward() {
     const state = queryState();
     if (!state) return null;
     const filters = state.filters && state.filters.map_filters;
     const reward = filters && filters.filters && filters.filters.map_completion_reward;
     const option = reward && reward.option;
-    if (typeof option !== 'string' || !option) return null;
+    return typeof option === 'string' && option ? option : null;
+  }
+
+  function filterReward() {
+    const option = dropdownReward() || stateReward();
+    if (!option) return null;
     // Rows render this as "Foil Progenesis" while the filter stores the bare
     // unique name. Both paths feed the same reward key on the Python side
     // (which would otherwise price the two spellings as two rewards), and
@@ -897,6 +936,11 @@ function main() {
       hello();
       return;
     }
+    // The search form can render after the first hello: until the tab knows
+    // its reward, look again every tick - the dropdown names it without
+    // waiting for a result row. Before the container check, because a live
+    // search with no results yet is exactly the case this exists for.
+    if (!lastSentReward) refreshRewardIdentity();
     if (!observedContainer || !observedContainer.isConnected) {
       // container replaced in-place (same search): re-attach WITHOUT the
       // silent marking - rows that appeared during the swap are real

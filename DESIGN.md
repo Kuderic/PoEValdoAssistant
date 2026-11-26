@@ -258,10 +258,13 @@ Heartbeat: userscript sends `{"type": "hello", "search_id": ..., "tab_id":
 ..., "search_reward": ..., "search_kind": ..., "live": ..., "version": ...,
 "net_stats": {...}, "page_id": ..., "page_age_s": ...}` on connect and every 30s;
 the overlay shows a per-tab connection indicator so a dead tab is visible
-before it costs a snipe. `search_reward` is taken from the tab's own query
-state (`window.tradeOpts`), falling back to the majority reward among
-visible rows — it tells the trade pricer what to price before the first
-live push arrives. `search_kind` is `"valdo"` or `"any"`; absent means
+before it costs a snipe. `search_reward` is the majority reward among
+visible rows when there are any (their exact spelling), else the search
+form's "Map Completion Reward" dropdown (`Foil ` + its value, readable with
+no results at all), else the page-load `window.tradeOpts` state, which the
+current site no longer ships — it tells the trade pricer what to price
+before the first live push arrives. While it is unknown the script looks
+again every 2 s (the form can render after the first hello). `search_kind` is `"valdo"` or `"any"`; absent means
 `"valdo"`, so an older userscript keeps its scored behaviour.
 
 `live` is `false` when the tab is on a plain (non-live) search page — its
