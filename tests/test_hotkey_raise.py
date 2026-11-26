@@ -48,14 +48,16 @@ def drain(ov, *events) -> None:
     ov._drain_once()
 
 
-def test_the_setting_is_off_by_default_and_round_trips(tmp_path):
-    assert load_config(ROOT / "config.yaml", state_dir=tmp_path).hotkey.raise_overlay is False
-    from sniper.config import save_scoring_overrides
+def test_the_setting_is_on_by_default_and_round_trips(tmp_path):
+    from sniper.config import HotkeyConfig, save_scoring_overrides
 
-    path = tmp_path / "scoring_overrides.yaml"
-    save_scoring_overrides(make_config().mod_scoring, path, raise_overlay=True)
-    assert load_extra_overrides(path) == {"raise_overlay": True}
+    assert HotkeyConfig().raise_overlay is True
     assert load_config(ROOT / "config.yaml", state_dir=tmp_path).hotkey.raise_overlay is True
+    # switching it off in the panel is saved, and wins over the default
+    path = tmp_path / "scoring_overrides.yaml"
+    save_scoring_overrides(make_config().mod_scoring, path, raise_overlay=False)
+    assert load_extra_overrides(path) == {"raise_overlay": False}
+    assert load_config(ROOT / "config.yaml", state_dir=tmp_path).hotkey.raise_overlay is False
 
 
 def test_a_press_raises_the_overlay_only_when_set(make_ov):
@@ -87,7 +89,6 @@ def test_a_failed_travel_shows_at_the_top_in_plain_words(make_ov):
     assert ov._fail_bar.winfo_manager() == "pack"
     assert ov._fail_bar.cget("text") == "✖  TRAVEL FAILED: item already sold"
     order = ov._root.pack_slaves()
-    assert order.index(ov._fail_bar) < order.index(ov._searches_label)
     assert order.index(ov._fail_bar) < order.index(ov._card)
 
 

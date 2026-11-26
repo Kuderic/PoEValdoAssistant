@@ -187,7 +187,7 @@ class HotkeyConfig:
     consume: str = "all"  # "all" | "top"
     # bring the overlay to the front (restoring it if minimized) on every
     # press, without taking focus from the game
-    raise_overlay: bool = False
+    raise_overlay: bool = True
 
 
 @dataclass(frozen=True)

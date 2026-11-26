@@ -131,17 +131,21 @@ reads **NET · EXPECTED**, each risk gets an amber row with its chance, and a
 line says what it cost (*"Net counts a 48% chance of failing (−95d of the
 reward's value)"*). Feed and runner-up rows carry a `⚠30%` marker.
 
-**Adjust the chances in the ⚙ panel** under *Failure risks* (in percent,
+**Adjust the chances in the ⚙ panel** under *Map scoring → Failure risks* (in percent,
 applied live and saved); 0 switches a risk off. To add a new one, copy an
 entry in `mod_risks` in `config.yaml`. An `unless:` pattern makes a general
 risk step aside for a more specific one, which is how plain Ultimatum (10%),
 Ultimatum with less damage or delirium (25%) and Ultimatum with a fatal timer
 (80%) avoid stacking.
 
-**The ⚙ panel has a search box** at the top: type part of a mod or setting
-name (`ghost`, `jackpot`) to filter every section, or a section name
-(`risk`, `pairing`) to show all of it. Esc clears it. Difficulty rules are
-listed alphabetically.
+**The ⚙ panel is in four tabs**: *Alerts* (alert and jackpot bars), *Map
+scoring* (failure risks, deadly pairings, difficulty rules), *Searches*
+(live-search presets, reward price pins) and *General* (hotkey, sound,
+files). Every change applies and saves as you type. The **search box** at
+the top looks through all four tabs at once: type part of a mod or setting
+name (`ghost`, `jackpot`) to see just those rows, or a section name (`risk`,
+`pairing`) to see all of it; each result says which tab it lives on. Esc
+clears it. Difficulty rules are listed alphabetically.
 
 ---
 
@@ -155,10 +159,11 @@ You need Windows, Chrome and Path of Exile. About five minutes:
 2. **Put it anywhere you can write to**, `Downloads` included (just not
    `Program Files`: it updates itself in place). Your settings, price cache
    and logs go to `%LOCALAPPDATA%\ValdoSniper`, not next to the exe; ⚙
-   Settings → **Files** → **Open** shows that folder.
+   Settings → **General** → **Open** shows that folder.
 3. **Double-click it.** Windows may say *"Windows protected your PC"* the
-   first time, because the exe is not code-signed: click **More info → Run
-   anyway**. The overlay opens with a setup guide:
+   first time: click **More info → Run anyway** (or right-click the exe →
+   **Properties** → tick **Unblock** first). If Defender quarantines it, see
+   Troubleshooting. The overlay opens with a setup guide:
 
    <img src="docs/overlay-setup.png" alt="First launch: the overlay says no live searches are connected and lists two clickable steps - install the browser script, open the High profit live searches (6 tabs) - with a link to build your own search instead" width="420">
 
@@ -190,7 +195,7 @@ You need Windows, Chrome and Path of Exile. About five minutes:
    You can instead build your own searches. Click *or build your own search
    on the trade site*, set up a foil Valdo map search, press **Search**, then
    **Activate Live Search**. To reopen the preset later (it skips searches
-   that are already open), use ⚙ Settings → **Live searches** → **Open 6
+   that are already open), use ⚙ Settings → **Searches** → **Open 6
    tabs**.
 
 Run PoE in **windowed fullscreen**, not exclusive fullscreen, or the overlay
@@ -221,7 +226,7 @@ an old one, the tabs light turns red with *update script*, and clicking it
 reinstalls. Hard-reload open trade tabs afterwards, since a tab keeps
 running the script it loaded with.
 
-To switch it off, put this in your `config.yaml` (⚙ → **Files** → **Open**):
+To switch it off, put this in your `config.yaml` (⚙ → **General** → **Open**):
 
 ```yaml
 updates:
@@ -232,7 +237,7 @@ updates:
 ### Your own config.yaml
 
 On first start the exe writes a `config.yaml`, all comments, to
-`%LOCALAPPDATA%\ValdoSniper` (⚙ Settings → **Files** → **Open**).
+`%LOCALAPPDATA%\ValdoSniper` (⚙ Settings → **General** → **Open**).
 Anything you put there overrides the built-in defaults **key by key**, so it
 only needs what you change; the rest keeps tracking the defaults as they
 update. The full list of settings is the
@@ -271,6 +276,43 @@ The **Release** GitHub Action runs the tests, builds `ValdoSniper.exe`
 `--self-check`, and publishes it as a release. Every installed copy picks it
 up within the hour: a green bar at the top of its overlay announces it. To build locally: `python tools/build_exe.py`, which
 writes `dist/ValdoSniper.exe`.
+
+#### Code signing (maintainer)
+
+An unsigned exe gets SmartScreen's *"Windows protected your PC"* on every
+new release and is a regular Defender false positive (`Bearfoos!ml`). The
+Release action signs the exe with **Azure Artifact Signing** (formerly
+Trusted Signing) once it is configured; until then it publishes unsigned
+with a warning. Once configured, a release whose signing fails is not
+published. One-time setup (individual validation needs a US or Canadian
+government ID; about $10/month for the Basic plan):
+
+1. **Azure:** in a pay-as-you-go subscription, *Subscriptions → Resource
+   providers*, register **Microsoft.CodeSigning**.
+2. **Create an Artifact Signing account** (Basic). Its region sets the
+   endpoint, e.g. East US = `https://eus.codesigning.azure.net/`.
+3. On the account's **Access control (IAM)**, give yourself **Artifact
+   Signing Identity Verifier**.
+4. **Identity validations → New → Public → Individual.** Your legal name
+   becomes the publisher shown on the exe. Takes hours to a few days.
+5. **Certificate profiles → Create → Public Trust**, using that validation.
+6. **Microsoft Entra ID → App registrations → New** (e.g.
+   `valdo-sniper-release`). Under *Certificates & secrets → Federated
+   credentials → Add*: scenario *GitHub Actions*, this repo, entity type
+   **Environment**, name **`release`**.
+7. On the signing account's **IAM**, give that app **Artifact Signing
+   Certificate Profile Signer**.
+8. **GitHub → Settings → Secrets and variables → Actions**, at repository
+   level:
+   - secrets `AZURE_CLIENT_ID` (the app's client ID), `AZURE_TENANT_ID`,
+     `AZURE_SUBSCRIPTION_ID`;
+   - variables `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`,
+     `ARTIFACT_SIGNING_PROFILE`.
+
+The next tag is signed. The action checks the signature and its timestamp,
+and re-runs `--self-check` on the signed exe before publishing. SmartScreen
+reputation still builds with downloads, so the warning can linger briefly
+after the first signed release.
 
 ---
 
@@ -391,7 +433,7 @@ speaker icon mutes everything. The overlay is never pulled to the front. Set
 `alerts.jackpot_alarm: false` to have jackpots play the ordinary alert sound
 instead.
 
-Tune the bars in the ⚙ panel under **Alerts** (applied live and saved), or
+Tune the bars in the ⚙ panel's **Alerts** tab (applied live and saved), or
 with `alerts.jackpot_min_net` / `jackpot_min_yield` in `config.yaml`. A
 currency mismatch is never a jackpot, except a listing priced in chaos: it
 keeps its MISMATCH banner but can still be a jackpot.
@@ -467,7 +509,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `mod_risks` | Chance (0–1) a mod combination makes the map fail; net becomes an expected value. Chances also in the ⚙ panel |
 | `mod_warnings` | `block` rules — logged, never alerted, at any price |
 | `hotkey.combo` / `.consume` | Travel key; `all` clears every alert per press, `top` keeps runners-up (a *failed* travel gives them back either way) |
-| `hotkey.raise_overlay` | `true`: every press also brings the overlay to the front (restoring it if minimized) without taking focus from the game. Also a toggle in ⚙ Settings |
+| `hotkey.raise_overlay` | `true` (default): every press also brings the overlay to the front (restoring it if minimized) without taking focus from the game. `false` leaves it where it is. Also a toggle in ⚙ Settings |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (15 / 8), also in the ⚙ panel |
@@ -499,21 +541,22 @@ poe.ninja is still used for currency rates and to resolve `league: auto`.
   the card lists every reward you're searching with its price, how long ago
   it was fetched and where it came from:
 
-  <img src="docs/overlay-prices.png" alt="The idle card: a REWARD PRICES table listing Emperor's Mastery 101d from last session 5h ago in amber, Headhunter with no listings in red, Mageblood 290d 3h ago overdue in amber, Nimis 160.5d 4m ago in green, and Progenesis being re-fetched" width="420">
+  <img src="docs/overlay-prices.png" alt="The idle card: a WATCHING table listing Emperor's Mastery 101d from last session 5h ago in amber, Headhunter with no listings in red, Mageblood 290d 3h ago overdue in amber, Nimis 160.5d 4m ago in green, and Progenesis being re-fetched" width="420">
 
   Green is a fresh trade price. Amber means check it first: overdue for a
   re-check, last session's price, a poe.ninja estimate, or one you pinned.
-  Red means no buyable listings. While an alert is up, the *Watching* line
-  shows the same thing (`Nimis 160.5d (4m ago)`). Hovering a row in the
+  Red means no buyable listings. While an alert is up, its card says what
+  its own reward is worth and when that was checked. Hovering a row in the
   history also shows its reward's current price and age.
-- Prices refresh every `refresh_minutes` (30 by default); `↻` marks whichever
-  reward is being recalculated. Every
+- Prices refresh every `refresh_minutes` (30 by default); a `↻` before a
+  price marks the reward being recalculated, and the `↻` at the end of a row
+  re-prices it now. Every
   active reward re-prices each cycle, so lowering this multiplies the request
   rate by however many live searches you have open — 10 minutes was enough to
   earn a 30-minute API backoff.
 
-- **A price that's plainly wrong is fixable on the spot.** The ⚙ panel's
-  **Reward prices** section pins your own figure (in divine) for any active
+- **A price that's plainly wrong is fixable on the spot.** ⚙ Settings →
+  **Searches** → **Reward prices** pins your own figure (in divine) for any active
   reward; blank means automatic. It beats every other source, applies to
   listings from then on, and shows the automatic price beside the field so
   you can see what you're overriding. Alerts priced from it are flagged
@@ -561,7 +604,8 @@ searches you aren't actually racing for.
 | Overlay shows `0 tabs` | Tab not connected: check **Allow User Scripts** is on for Tampermonkey (`chrome://extensions` → Details), the script is enabled, and you pressed *Live search*. Look for `[valdo]` lines in the tab's DevTools console |
 | `N tabs · M stale` | A tab stopped heartbeating (crashed/asleep) — reload it |
 | `N tabs · update script` (red) | A tab runs an older browser script: click the pill to reinstall, then hard-reload the tab |
-| Windows says *"Windows protected your PC"* | The exe is not code-signed. Click **More info → Run anyway**. Antivirus may also flag a fresh release for a day or two (common for PyInstaller apps); allow it, or run from source |
+| Windows says *"Windows protected your PC"* | A new release has no download reputation yet. Click **More info → Run anyway**, or right-click the exe → **Properties** → **Unblock**. Updates the app installs itself don't ask |
+| Defender quarantines `ValdoSniper.exe` (`Trojan:Win32/Bearfoos…!ml`) | A machine-learning false positive, common for PyInstaller apps. Windows Security → **Protection history** → the detection → **Allow on device**. To stop repeats, keep the exe in its own folder (e.g. `C:\Games\ValdoSniper`) and add that folder under **Exclusions**; don't exclude Downloads. Or run from source |
 | "Valdo Sniper could not start" box | The message says why (often a typo in your `config.yaml`); it is also saved to `logs/crash.txt` |
 | Update pill says *failed* | The download didn't finish or didn't match GitHub's checksum, so nothing was installed. It retries by itself; or click the pill and download the exe by hand into the same folder |
 | `start.bat` says Python not found | Install Python 3.12+ with *Add to PATH* ticked, then run it again. Delete the `.venv` folder to force a clean reinstall |

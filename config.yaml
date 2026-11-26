@@ -65,7 +65,7 @@ hotkey:
   consume: all
   # true: every press also brings the overlay to the front (restoring it if
   # minimized) without taking focus from the game. Also in the ⚙ panel.
-  raise_overlay: false
+  raise_overlay: true
 
 ninja:
   enabled: true

@@ -53,7 +53,7 @@ def test_a_new_version_shows_at_the_very_top(ov):
     order = ov._root.pack_slaves()
     bars = [order.index(b) for b in (ov._update_bar, ov._fail_bar, ov._reload_bar)]
     assert bars == sorted(bars)
-    assert bars[-1] < order.index(ov._searches_label)
+    assert bars[-1] < order.index(ov._card)
 
 
 def test_the_slot_order_holds_when_the_update_arrives_last(ov):

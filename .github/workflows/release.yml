@@ -1,6 +1,7 @@
-# Builds ValdoSniper.exe and publishes it as a GitHub Release when a version
-# tag is pushed. Every installed copy's updater picks the release up within
-# a few hours (sniper/updater.py looks for the asset named ValdoSniper.exe).
+# Builds ValdoSniper.exe, code-signs it, and publishes it as a GitHub Release
+# when a version tag is pushed. Every installed copy's updater picks the
+# release up within the hour (sniper/updater.py looks for the asset named
+# ValdoSniper.exe).
 #
 #   1. bump __version__ in sniper/__init__.py, commit, push
 #   2. git tag v1.2.0 && git push origin v1.2.0
@@ -8,6 +9,22 @@
 # The build refuses to run if the tag and __version__ disagree, the test
 # suite must pass, and the built exe must pass --self-check before anything
 # is published.
+#
+# Code signing (Azure Artifact Signing, formerly Trusted Signing) - see
+# README, "Code signing". Signing is ON once the repository variable
+# ARTIFACT_SIGNING_ACCOUNT is set; from then on a release whose signing
+# fails is NOT published (an unsigned exe is exactly what Defender and
+# SmartScreen flag). Until it is set, releases publish unsigned with a
+# warning. Needs:
+#   variables: ARTIFACT_SIGNING_ENDPOINT  e.g. https://eus.codesigning.azure.net/
+#              ARTIFACT_SIGNING_ACCOUNT   the Artifact Signing account name
+#              ARTIFACT_SIGNING_PROFILE   the certificate profile name
+#   secrets:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#              (an app registration with a GitHub federated credential for
+#              the "release" environment - OIDC, so there is no client
+#              secret to leak)
+#   All six at REPOSITORY level, not on the environment: SIGNING below is
+#   computed before the job, where environment variables are not visible.
 name: Release
 
 on:
@@ -16,10 +33,18 @@ on:
 
 permissions:
   contents: write # create the release and upload the exe
+  id-token: write # OIDC token for the Azure login (code signing)
+
+env:
+  SIGNING: ${{ vars.ARTIFACT_SIGNING_ACCOUNT != '' }}
 
 jobs:
   release:
     runs-on: windows-latest
+    # Azure federated credentials match one exact subject and cannot
+    # wildcard tags, so every tag run presents the same one through this
+    # environment: repo:<owner>/<repo>:environment:release
+    environment: release
     steps:
       - uses: actions/checkout@v4
 
@@ -35,6 +60,56 @@ jobs:
 
       - name: Build exe (checks tag == __version__, then runs --self-check)
         run: python tools/build_exe.py --expect-version "${{ github.ref_name }}"
+
+      - name: Azure login (code signing)
+        if: env.SIGNING == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign exe
+        if: env.SIGNING == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\ValdoSniper.exe
+          description: Valdo Map Sniper
+          description-url: ${{ github.server_url }}/${{ github.repository }}
+          # file digest SHA256 and the Microsoft RFC3161 timestamp are the
+          # action's defaults; the timestamp keeps the signature valid after
+          # the short-lived certificate expires
+          # authenticate with the azure/login session only
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Verify signature, re-run --self-check on the signed exe
+        if: env.SIGNING == 'true'
+        shell: pwsh
+        run: |
+          $exe = "dist\ValdoSniper.exe"
+          $sig = Get-AuthenticodeSignature $exe
+          Write-Host "signature: $($sig.Status) - $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { throw "signature is $($sig.Status): $($sig.StatusMessage)" }
+          if (-not $sig.TimeStamperCertificate) { throw "signature has no timestamp" }
+          # a --windowed exe does not block the shell: wait for its exit code
+          $p = Start-Process $exe -ArgumentList "--self-check" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "signed exe failed --self-check ($($p.ExitCode))" }
+
+      - name: Unsigned release warning
+        if: env.SIGNING != 'true'
+        run: echo "::warning::ARTIFACT_SIGNING_ACCOUNT is not set - publishing an UNSIGNED exe"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

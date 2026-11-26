@@ -15,7 +15,6 @@ from sniper.overlay import (
     _money,
     _net_breakdown,
     _price_status,
-    _price_tag,
     _yield_breakdown,
 )
 
@@ -111,20 +110,6 @@ def price(**kw):
     fields = dict(reward="Foil Nimis", amount=160.0, currency="divine", source="trade", age_s=0)
     fields.update(kw)
     return RewardPrice(**fields)
-
-
-def test_price_tag_shows_price_and_when_it_was_fetched():
-    assert _price_tag(price(), 240.0) == "160d (4m ago)"
-    assert _price_tag(price(currency="chaos", amount=40.0), 5.0) == "40c (5s ago)"
-
-
-def test_price_tag_marks_an_unpriced_or_pinned_reward():
-    assert _price_tag(price(amount=None, currency=""), None) == "(pricing…)"
-    assert _price_tag(price(override_div=150.0, amount=150.0), None) == "150d (yours)"
-
-
-def test_price_tag_without_a_fetch_time_shows_just_the_price():
-    assert _price_tag(price(source="manual"), None) == "160d"
 
 
 def test_money_is_compact_for_the_two_common_currencies():

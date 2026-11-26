@@ -453,8 +453,8 @@ divine, per active reward; blank means automatic. Rules:
   and keeps refreshing underneath, so clearing the pin returns to a current
   price rather than a frozen one.
 - Anything priced from a pin is flagged `✋ YOUR PRICE` on the alert and
-  `(yours)` beside the reward on the Watching line - the profit came from a
-  typed number, not the market.
+  `your price` (amber) on its Watching row - the profit came from a typed
+  number, not the market.
 - **Never persisted.** Unlike the scoring panel, pins are not written to
   `scoring_overrides.yaml`: a correction that outlived the market that
   justified it would be worse than the error it fixed.
@@ -542,30 +542,34 @@ with `Overlay._bind_help`):
   example when a conversion from another currency is not on screen, or when
   the running cost was changed after the alert was scored.
 
-Reward prices sit next to the reward names: on the Watching line
-(`Nimis 160.5d (4m ago)`, items joined with non-breaking spaces so wraps fall
-between rewards) and under a Valdo alert's name (`Reward worth 101d · price
-checked 2m ago`; prices normally come from trade, so only another source -
-last session, poe.ninja, a pinned price - is named). `RewardPrice.age_s` is the age at push time. The
+Reward prices show in the idle card's Watching panel (below) and under a
+Valdo alert's name (`Reward worth 101d · price checked 2m ago`; prices
+normally come from trade, so only another source - last session, poe.ninja,
+a pinned price - is named). There is no separate Watching line at the top of
+the overlay any more: it repeated the panel and pushed the alert card down. `RewardPrice.age_s` is the age at push time. The
 overlay counts on from when the push arrived, and re-renders both lines every
 30 s, so the age keeps ticking between pushes.
 
-**Reward price panel.** With no alert on screen, the card drops its four
-dashes and the space goes to a table of every searched reward: price, age
-and source, coloured by how far to trust it (`_price_status`):
+**Watching panel.** With no alert on screen, the card drops its four
+dashes and the space goes to a table of every searched reward - including
+one whose tab just opened and has no price yet ("pricing…") - then a line
+for any tab that is not a Valdo reward search (`⚡ 1 other live search`,
+`1 tab still loading its search…`). Each row: a trust dot, the reward, a
+note (age or why to double-check), the price, and ↻. Dot, note and price
+are coloured by how far to trust it (`_price_status`):
 - green: a trade price no older than 1.5 × `trade_pricing.refresh_minutes`;
 - amber: overdue (older than that, e.g. rate limited), last session's
   price, a poe.ninja estimate, or a pinned price;
 - red: no buyable listings;
 - ↻: being re-fetched (state from `WarmupStatus`).
 
-Each row has a **recheck** button (`App.request_price_recheck`). One click
+Each row's ↻ is a **recheck** button (`App.request_price_recheck`). One click
 queues one fetch for that reward: it jumps the scheduled queue, wakes the
 price loop's nap (`_price_nap`), and goes through the same `TradePricer`,
 so rate-limit headers and the 429 backoff still apply; a request that hits
 a backoff is kept and runs after it lifts. While queued the row reads
-`recheck queued` (state "queued") and the button is greyed out; a repeat
-click while queued or fetching is ignored.
+`recheck queued` (state "queued") and the ↻ is blank; a repeat click while
+queued or fetching is ignored.
 
 This lets a price be judged before an alert arrives. The panel replaces the
 old warm-up panel, which showed only while pricing was busy. It hides while
@@ -628,7 +632,7 @@ listing can still be judged after its alert has gone.
 - On press: send `click_travel`, then focus the PoE window via
   `pygetwindow`/`pywin32`. Focus switching is a local OS action and is the
   only thing automated besides the single click bound to the press.
-- `hotkey.raise_overlay` (⚙ panel toggle, off by default): every press also
+- `hotkey.raise_overlay` (⚙ panel toggle, on by default): every press also
   brings the overlay to the front, restoring it if minimized, via
   `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)` / `SW_SHOWNOACTIVATE`
   (`gamewindow.raise_without_focus`) - never activating it, so the game
@@ -659,7 +663,7 @@ file already in the new folder; an untouched config template is deleted)
 and the moved names are logged as `state_dir`. Only the updater's
 transient `.new` / `.part` / `.old` stay beside the exe, since its swap is a
 rename. Without `LOCALAPPDATA`, or if the folder cannot be created, the
-exe's folder is used as before. ⚙ Settings → Files → Open shows the folder. `load_config(path, defaults=bundled, state_dir=...)`
+exe's folder is used as before. ⚙ Settings → General → Open shows the folder. `load_config(path, defaults=bundled, state_dir=...)`
 layers the user's optional `config.yaml` over the bundled defaults
 (`merge_config`: mappings merge key by key, lists are replaced), so a user
 file holding one key keeps every other default current as releases change

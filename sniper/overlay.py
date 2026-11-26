@@ -135,12 +135,6 @@ HELP = {
         "Settings",
         "Alert bars, hotkey, how hard each mod is, deadly pairings and reward prices.",
     ),
-    "watching": (
-        "Watching",
-        "The reward of each Valdo live search you have open, with what it sells for "
-        "right now and how long ago that price was fetched from the trade site. Prices "
-        "refresh in the background; NET and YIELD are worked out from them.",
-    ),
     "latency": (
         "Listing delay",
         "How long this listing had already been up when your Chrome tab received it: "
@@ -176,16 +170,16 @@ HELP = {
         "shown beside it below. Amber over 100, red over 300.",
     ),
     "price_panel": (
-        "Reward prices",
-        "What each reward you are searching sells for, how long ago that price was "
-        "fetched and where it came from - so you know before an alert whether its "
-        "NET can be trusted.\n"
+        "Watching",
+        "The reward of each Valdo live search you have open, what it sells for and "
+        "how long ago that price was fetched - so you know before an alert whether "
+        "its NET can be trusted. The dot says how far:\n"
         "Green: a fresh trade price.\n"
         "Amber: overdue for a re-check, from your last session, a poe.ninja "
         "estimate, or a price you pinned - check it before travelling.\n"
         "Red: no buyable listings found, so this reward cannot be priced.\n"
-        "↻ marks a reward being re-fetched right now. “recheck” re-prices that "
-        "reward now instead of waiting for its scheduled refresh.",
+        "Click ↻ to re-price a reward now instead of waiting for its scheduled "
+        "refresh; a ↻ before the price means it is being re-fetched right now.",
     ),
     "reward_value": (
         "Reward value",
@@ -327,17 +321,6 @@ def _money(amount: float, currency: str) -> str:
     """160d / 40c / 3 exalted: the compact form the feed already uses."""
     short = {"divine": "d", "chaos": "c"}.get(currency)
     return f"{amount:g}{short}" if short else f"{amount:g} {currency}"
-
-
-def _price_tag(entry, age_s: float | None) -> str:
-    """What sits next to a reward's name on the Watching line."""
-    if entry.amount is None:
-        return "(pricing…)"
-    money = _money(entry.amount, entry.currency)
-    if entry.override_div is not None:
-        return f"{money} (yours)"
-    ago = _ago(age_s)
-    return f"{money} ({ago})" if ago else money
 
 
 def _price_status(entry, state: str | None, age_s: float | None, refresh_s: float):
@@ -573,8 +556,8 @@ FONT_ROLES = {
     "icon": ("Segoe Fluent Icons", "Segoe MDL2 Assets"),
 }
 # Header glyphs: Segoe icon-font codepoints, or plain symbols without one.
-ICON_GLYPHS = {"settings": "", "volume": "", "mute": ""}
-PLAIN_GLYPHS = {"settings": "⚙", "volume": "🔊", "mute": "🔇"}
+ICON_GLYPHS = {"settings": "", "volume": "", "mute": "", "refresh": "", "search": ""}
+PLAIN_GLYPHS = {"settings": "⚙", "volume": "🔊", "mute": "🔇", "refresh": "↻", "search": "⌕"}
 
 
 # How long "Updated to vX" stays in the strip after a restart into it
@@ -753,6 +736,7 @@ class Overlay:
         self._raise_on_hotkey = config.hotkey.raise_overlay
         self._fail_token = 0  # cancels a pending hide of the failure bar
         self._tune_window: tk.Toplevel | None = None
+        self._settings_tab = ""  # the settings tab last open, this session
         self._tooltip: tk.Toplevel | None = None
         # hover help: the widget group whose help is showing or pending,
         # and the pending after() id (see _bind_help)
@@ -962,26 +946,15 @@ class Overlay:
         self._reload_hint.pack(fill="x", padx=12, pady=(0, 5))
         self._bind_help((self._reload_bar, self._reload_label, self._reload_hint), HELP["reload"])
 
-        # reward names being live-searched, on their own line (the strip is
-        # too crowded to hold them); hovering shows each reward's price
-        self._searches_label = tk.Label(
-            root,
-            text="",
-            bg=BG,
-            fg=FAINT,
-            font=self._font("ui", 9),
-            anchor="w",
-            justify="left",
-            wraplength=490,
-        )
-        self._searches_label.pack(fill="x", padx=12, pady=(6, 0))
+        # What is being watched - each searched reward with its price - is
+        # the idle card's Watching panel (_render_price_panel); an alert
+        # names its own reward's price. No separate line up here: it only
+        # repeated the panel and pushed the alert card down.
         self._reward_prices: tuple = ()
         # RewardPrice.age_s is as of the push; ages shown are counted on
         # from when it arrived so "4m ago" keeps ticking between pushes
         self._reward_prices_at = time.monotonic()
-        self._watch_names: list[str] = []  # reward names, from the tabs
         self._watch_extra: list[str] = []  # generic / unidentified tab notes
-        self._bind_help((self._searches_label,), self._watching_help)
 
         # ---- the alert card. Every block inside it is optional except the
         # title row; _show_alert_body packs the visible ones in _card_blocks
@@ -1484,7 +1457,6 @@ class Overlay:
                 # a tab whose 30s heartbeat is >75s old is silently dead
                 stale = sum(1 for t in ev.tabs if t.get("hello_age_s", 0) > 75)
                 self._open_rewards = {t["search_reward"] for t in ev.tabs if t.get("search_reward")}
-                rewards = sorted(_display_name(r) for r in self._open_rewards)
                 # A tab running an older userscript silently drops whatever
                 # the new version added - the fields just arrive missing,
                 # which looks like a broken feature rather than a stale
@@ -1527,11 +1499,14 @@ class Overlay:
                 )
                 extra = []
                 if generic:
-                    extra.append(f"⚡{generic} live search" + ("es" if generic > 1 else ""))
+                    plural = "es" if generic > 1 else ""
+                    extra.append(f"⚡ {generic} other live search{plural} (not Valdo maps)")
                 if unknown and n:  # tabs whose reward is not yet known
-                    extra.append(f"+{unknown} unidentified")
-                self._watch_names, self._watch_extra = rewards, extra
-                self._render_watching()
+                    tabs = "1 tab" if unknown == 1 else f"{unknown} tabs"
+                    whose = "its" if unknown == 1 else "their"
+                    extra.append(f"{tabs} still loading {whose} search…")
+                self._watch_extra = extra
+                self._refresh_price_panel()
             elif isinstance(ev, PriceStatus):
                 self._ninja_status = ev.status
                 if ev.league:
@@ -1583,7 +1558,6 @@ class Overlay:
                 self._reward_prices = ev.entries
                 self._reward_prices_at = time.monotonic()
                 self._refresh_price_editor()
-                self._render_watching()
                 self._refresh_reward_value()
                 self._refresh_price_panel()
             elif isinstance(ev, WarmupStatus):
@@ -1653,54 +1627,10 @@ class Overlay:
 
     # ------------------------------------------------------------- rendering
 
-    def _reward_price_rows(self):
-        """Searching-line tooltip. The price source is deliberately not
-        shown - the header's price pill already reports it - so these rows
-        carry no right-hand note. A hand-pinned price is the exception: it
-        did not come from any market source, so it says so.
-
-        A reward with no price yet still gets a row saying so: an empty
-        answer here is indistinguishable from a broken hover.
-        """
-        rows = []
-        for entry in self._reward_prices:
-            name = _display_name(entry.reward)
-            if entry.amount is None:
-                health = self._pricing_health
-                waiting = "rate limited" if health and health.backoff_s > 0 else "pricing…"
-                rows.append((f"{name}: {waiting}", "", "yellow"))
-                continue
-            note = _ago(self._live_age(entry))
-            if entry.override_div is not None:
-                note = "your price"
-            rows.append(
-                (
-                    f"{name}: {entry.amount:g} {entry.currency}"
-                    + (f"   ·   {note}" if note else ""),
-                    "",
-                    "yellow" if entry.override_div is not None else "none",
-                )
-            )
-        return tuple(rows)
-
     def _live_age(self, entry) -> float | None:
         if entry.age_s is None:
             return None
         return entry.age_s + (time.monotonic() - self._reward_prices_at)
-
-    def _render_watching(self) -> None:
-        """Watching line: each searched reward with its price and how long ago
-        that price was fetched, then any non-reward tabs."""
-        prices = {_display_name(e.reward): e for e in self._reward_prices}
-        names = []
-        for name in self._watch_names:
-            entry = prices.get(name)
-            item = f"{name} {_price_tag(entry, self._live_age(entry))}" if entry else name
-            # non-breaking spaces inside an item: the line wraps BETWEEN
-            # rewards, never between a name and its price or age
-            names.append(item.replace(" ", " "))
-        parts = ([",  ".join(names)] if names else []) + self._watch_extra
-        self._searches_label.config(text=f"Watching  {' · '.join(parts)}" if parts else "")
 
     def _reward_value_text(self, view: AlertView) -> str:
         """The line under a Valdo alert's name: what its reward is worth, when
@@ -1796,13 +1726,14 @@ class Overlay:
 
     def _price_rows(self) -> list[tuple[str, str, str, str, str, str | None]]:
         """(reward key, reward name, price, note, level, fetch state) for
-        every searched reward, from the latest RewardPrices merged with the
-        warm-up's fetch states."""
+        every searched reward: the latest RewardPrices merged with the
+        warm-up's fetch states, plus any reward whose tab just opened and
+        has no price push yet (it shows as "pricing…" straight away)."""
         states = {row[0]: row[1] for row in (self._warmup[3] if self._warmup else ())}
         prices = {e.reward: e for e in self._reward_prices}
         refresh_s = self._config.trade_pricing.refresh_minutes * 60
         rows = []
-        for reward in sorted(set(prices) | set(states), key=_display_name):
+        for reward in sorted(set(prices) | set(states) | self._open_rewards, key=_display_name):
             entry = prices.get(reward)
             age = self._live_age(entry) if entry is not None else None
             state = states.get(reward)
@@ -1811,89 +1742,123 @@ class Overlay:
         return rows
 
     def _render_price_panel(self) -> None:
-        """Each searched reward's price, its age and how far to trust it.
-        The ages tick on (see _refresh_feed_ages); a reward being re-fetched
-        keeps its old figure, marked ↻, because that is exactly when you are
-        looking at a stale number."""
+        """The idle card's Watching panel: one row per searched reward with
+        its price, how fresh it is and how far to trust it, then any tab
+        that is not a Valdo reward search.
+
+        Each row reads left to right as a sentence: a trust dot, the reward,
+        a note (age or why to double-check), the price, and ↻ to re-check it
+        now. The ages tick on (see _refresh_feed_ages); a reward being
+        re-fetched keeps its old figure, marked ↻, because that is exactly
+        when you are looking at a stale number."""
         rows = self._price_rows()
-        if not rows:
+        if not rows and not self._watch_extra:
             self._price_panel.pack_forget()
             return
         self._clear_frame(self._price_panel)
+        panel = self._price_panel
         minutes = self._config.trade_pricing.refresh_minutes
-        header = tk.Label(
-            self._price_panel,
-            text=f"REWARD PRICES  ·  RE-CHECKED EVERY {minutes:g} MIN",
+        head = tk.Frame(panel, bg=MODS_BG)
+        head.pack(fill="x", padx=10, pady=(2, 4))
+        tk.Label(
+            head,
+            text="WATCHING",
             bg=MODS_BG,
             fg=DIM,
             font=self._font("ui", 8, "bold"),
-            anchor="w",
-        )
-        header.pack(fill="x", padx=6, pady=(0, 3))
-        colour = {"good": GOOD, "warn": WARN, "bad": BAD, "dim": DIM}
-        can_recheck = self._on_price_recheck is not None and self._config.trade_pricing.enabled
-        for reward, name, price, note, level, state in rows:
-            line = tk.Frame(self._price_panel, bg=MODS_BG)
-            line.pack(fill="x", padx=6, pady=1)
-            if can_recheck:
-                self._recheck_button(line, reward, busy=state in ("working", "queued"))
+        ).pack(side="left")
+        if self._config.trade_pricing.enabled:
             tk.Label(
-                line,
-                text=f"{note:<20}",
+                head,
+                text=f"prices re-checked every {minutes:g} min",
                 bg=MODS_BG,
-                fg=colour[level] if level != "good" else DIM,
-                font=self._font("mono", 9),
-                anchor="w",
-            ).pack(side="right", padx=(10, 0))
-            tk.Label(
-                line,
-                text=price,
-                bg=MODS_BG,
-                fg=colour[level],
-                font=self._font("mono", 10, "bold"),
-                anchor="e",
+                fg=FAINT,
+                font=self._font("ui", 8),
             ).pack(side="right")
+        table = tk.Frame(panel, bg=MODS_BG)
+        table.pack(fill="x", padx=10)
+        table.columnconfigure(1, weight=1)
+        colour = {"good": GOOD, "warn": WARN, "bad": BAD, "dim": FAINT}
+        can_recheck = self._on_price_recheck is not None and self._config.trade_pricing.enabled
+        for r, (reward, name, price, note, level, state) in enumerate(rows):
+            tk.Label(table, text="●", bg=MODS_BG, fg=colour[level], font=self._font("ui", 7)).grid(
+                row=r, column=0, sticky="w", padx=(0, 8)
+            )
             tk.Label(
-                line,
+                table,
                 text=name,
                 bg=MODS_BG,
-                fg=FG if level != "dim" else DIM,
-                font=self._font("mono", 10),
+                fg=FAINT if level == "dim" else FG,
+                font=self._font("ui", 10),
                 anchor="w",
-            ).pack(side="left", fill="x", expand=True)
+            ).grid(row=r, column=1, sticky="w", pady=2)
+            tk.Label(
+                table,
+                text=note,
+                bg=MODS_BG,
+                fg=colour[level] if level in ("warn", "bad") else FAINT,
+                font=self._font("ui", 9),
+                anchor="e",
+            ).grid(row=r, column=2, sticky="e", padx=(8, 0))
+            tk.Label(
+                table,
+                text=price,
+                bg=MODS_BG,
+                fg={"good": FG}.get(level, colour[level]),
+                font=self._font("mono", 10, "bold"),
+                anchor="e",
+                width=8,
+            ).grid(row=r, column=3, sticky="e", padx=(10, 0))
+            if can_recheck:
+                self._recheck_button(table, reward, busy=state in ("working", "queued")).grid(
+                    row=r, column=4, sticky="e", padx=(6, 0)
+                )
+        for note in self._watch_extra:
+            tk.Label(
+                panel,
+                text=note,
+                bg=MODS_BG,
+                fg=FAINT,
+                font=self._font("ui", 9),
+                anchor="w",
+            ).pack(fill="x", padx=10, pady=(4 if note is self._watch_extra[0] else 0, 0))
         self._bind_help(
-            self._price_panel.winfo_children(),
+            panel.winfo_children(),
             HELP["price_panel"],
-            anchor=self._price_panel,  # below the table, not over its rows
+            anchor=panel,  # below the table, not over its rows
             descendants=True,
-            member_of=self._price_panel,
+            member_of=panel,
         )
-        self._price_panel.pack(fill="x", padx=12, pady=(6, 0), before=self._runners)
+        panel.pack(fill="x", padx=12, pady=(6, 0), before=self._runners)
 
-    def _recheck_button(self, parent: tk.Widget, reward: str, busy: bool) -> None:
-        """A row's "recheck" button: re-price this reward now. One click asks
-        for one fetch; while that fetch is queued or running the button is
-        greyed out and ignores clicks (the app ignores repeats too)."""
+    def _recheck_button(self, parent: tk.Widget, reward: str, busy: bool) -> tk.Label:
+        """A row's ↻: re-price this reward now. One click asks for one
+        fetch; while that fetch is queued or running the row already says
+        so, and the ↻ is blank and ignores clicks (the app ignores repeats
+        too). Quiet until hovered, so a column of them does not shout."""
         btn = tk.Label(
             parent,
-            text="recheck",
-            bg=MODS_BG if busy else BOX,
-            fg=FAINT if busy else FG,
-            font=self._font("ui", 8),
-            padx=5,
+            text="" if busy else self._glyph["refresh"],
+            bg=MODS_BG,
+            fg=FAINT,
+            font=self._font("icon", 9),
+            width=3,
             cursor="arrow" if busy else "hand2",
         )
-        btn.pack(side="right", padx=(8, 0))
         if busy:
-            return
+            return btn
 
         def click(_event=None) -> None:
-            btn.config(bg=MODS_BG, fg=FAINT, cursor="arrow")
-            btn.unbind("<Button-1>")
+            btn.config(text="", cursor="arrow")
+            for seq in ("<Button-1>", "<Enter>", "<Leave>"):
+                btn.unbind(seq)
             event("price_recheck_clicked", reward=reward)
             self._on_price_recheck(reward)
 
         btn.bind("<Button-1>", click)
+        btn.bind("<Enter>", lambda e: btn.config(fg=GOOD, bg=BOX), add="+")
+        btn.bind("<Leave>", lambda e: btn.config(fg=FAINT, bg=MODS_BG), add="+")
+        return btn
 
     def _refresh_price_panel(self) -> None:
         """Re-render the panel if it is the one on screen (idle card)."""
@@ -2252,7 +2217,7 @@ class Overlay:
             return
         order = [self._update_bar, self._fail_bar, self._reload_bar]
         after = order[order.index(bar) + 1 :]
-        nxt = next((b for b in after if b.winfo_manager()), self._searches_label)
+        nxt = next((b for b in after if b.winfo_manager()), self._card)
         bar.pack(fill="x", before=nxt)
 
     def _clear_installed_notice(self) -> None:
@@ -2656,7 +2621,6 @@ class Overlay:
         if self._feed_entries:
             self._render_feed()
         # the price ages next to each reward tick on too
-        self._render_watching()
         self._refresh_reward_value()
         self._refresh_price_panel()
         self._root.after(30_000, self._refresh_feed_ages)
@@ -2664,12 +2628,13 @@ class Overlay:
     # ---------------------------------------------------------- tuning panel
 
     def _entry(self, parent: tk.Widget, width: int) -> tk.Entry:
-        """Settings-panel input: flat, hairline border that turns green
-        while focused."""
+        """Settings-panel input: flat and inset (one step darker than the
+        card it sits on), with a hairline border that turns green while
+        focused."""
         return tk.Entry(
             parent,
             width=width,
-            bg=SURFACE,
+            bg=BG,
             fg=FG,
             insertbackground=FG,
             relief="flat",
@@ -2680,10 +2645,18 @@ class Overlay:
         )
 
     def _open_tuning(self) -> None:
-        """⚙ panel: edit the profit threshold, hotkey combo, base_default,
-        div_per_point, and every rule's min_base/multiplier. Apply swaps the
-        live engine (and rebinds the hotkey); Save also persists to
-        scoring_overrides.yaml (merged over config.yaml on next start)."""
+        """⚙ panel: every setting, in four tabs of titled cards.
+
+        Alerts       when to alert, jackpot bars
+        Map scoring  failure risks, deadly pairings, difficulty rules
+        Searches     live-search presets, reward price pins
+        General      hotkey & sound, files
+
+        The search box looks through every tab at once: matching rows show
+        in their cards, each card titled with the tab it lives on. Every
+        edit applies and saves by itself (see collect); there is no Apply
+        or Save button. The tab last looked at is remembered for the
+        session."""
         if self._tune_window is not None and self._tune_window.winfo_exists():
             self._tune_window.lift()
             return
@@ -2694,16 +2667,15 @@ class Overlay:
         win.attributes("-topmost", True)
         win.geometry("+460+40")
 
-        # ---- pinned header: search box + the save/error note. Both stay in
-        # view however far the list below is scrolled - the note used to sit
-        # at the very bottom, out of sight of the field being edited.
+        # ---- pinned header: search box, tab bar and the save/error note.
+        # All stay in view however far a long tab is scrolled.
         top = tk.Frame(win, bg=STRIP)
         top.pack(side="top", fill="x")
         search_row = tk.Frame(top, bg=STRIP)
-        search_row.pack(fill="x", padx=10, pady=(10, 4))
+        search_row.pack(fill="x", padx=12, pady=(10, 2))
         tk.Label(
             search_row,
-            text="" if self._glyph is ICON_GLYPHS else "⌕",
+            text=self._glyph["search"],
             bg=STRIP,
             fg=DIM,
             font=self._font("icon", 10),
@@ -2727,123 +2699,166 @@ class Overlay:
         )
         clear_btn.pack(side="left", padx=(6, 0))
         clear_btn.bind("<Button-1>", lambda e: (search_var.set(""), search_e.focus_set()))
-        note = tk.Label(top, text="", bg=STRIP, fg=DIM, font=self._font("ui", 9), anchor="w")
-        note.pack(fill="x", padx=10, pady=(0, 6))
+        tab_bar = tk.Frame(top, bg=STRIP)
+        tab_bar.pack(fill="x", padx=8, pady=(6, 0))
+        # the save / error note sits at the right end of the tab bar, in view
+        # of whatever is being edited and costing no row of its own
+        note = tk.Label(
+            tab_bar,
+            text="",
+            bg=STRIP,
+            fg=DIM,
+            font=self._font("ui", 9),
+            anchor="e",
+            justify="right",
+            wraplength=190,
+        )
+        note.pack(side="right", padx=(8, 4))
         tk.Frame(win, bg=HAIR, height=1).pack(side="top", fill="x")
 
-        # the rule list is long: everything else lives in a scrollable body
-        canvas = tk.Canvas(win, bg=BG, highlightthickness=0, width=400, height=640)
+        # ---- scrollable body: the cards of the tab on show. Only a long
+        # tab (Map scoring) needs the scrollbar, so it shows only then.
+        canvas = tk.Canvas(win, bg=BG, highlightthickness=0, width=440, height=560)
         scrollbar = tk.Scrollbar(win, orient="vertical", command=canvas.yview)
         body = tk.Frame(canvas, bg=BG)
-        body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=body, anchor="nw")
+        body_id = canvas.create_window((0, 0), window=body, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        win.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+
+        def fit_scrollbar(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            needed = body.winfo_reqheight() > canvas.winfo_height() > 1
+            if needed and not scrollbar.winfo_manager():
+                scrollbar.pack(side="right", fill="y", before=canvas)
+            elif not needed and scrollbar.winfo_manager():
+                scrollbar.pack_forget()
+                canvas.yview_moveto(0)
+
+        body.bind("<Configure>", fit_scrollbar)
+        canvas.bind(
+            "<Configure>",
+            lambda e: (canvas.itemconfigure(body_id, width=e.width), fit_scrollbar()),
+        )
+
+        def wheel(e) -> None:
+            if scrollbar.winfo_manager():
+                canvas.yview_scroll(int(-e.delta / 120), "units")
+
+        win.bind("<MouseWheel>", wheel)
 
         sc = self._scoring_config
         entries: dict[str, tk.Entry] = {}
 
-        row_cursor = [0]
-        # Every section registers its widgets here so the search box can
-        # show/hide them: {"title", "head": [...], "rows": [(text, [...])],
-        # "captions": [...]}. grid_remove() remembers each widget's grid
-        # options, so hidden rows come back exactly where they were.
+        # Every card registers itself here so tabs and search can show and
+        # hide it: {"name", "title" (casefolded), "tab", "card", "title_label",
+        # "head": [...], "rows": [(search text, [widgets])], "captions": [...],
+        # "next_row"}. grid_remove() remembers each widget's grid options,
+        # so hidden rows come back exactly where they were.
         sections: list[dict] = []
+        tab_cursor = [""]
+
+        def tab(name: str) -> None:
+            tab_cursor[0] = name
 
         def heading(title: str, column_title: str = "") -> None:
-            r = row_cursor[0]
-            head = [
-                tk.Label(body, text=title, bg=BG, fg=FG, font=self._font("semi", 10), anchor="w")
-            ]
-            head[0].grid(row=r, column=0, sticky="w", padx=(10, 6), pady=(12, 2))
-            if column_title:
-                col = tk.Label(body, text=column_title, bg=BG, fg=DIM, font=self._font("ui", 8))
-                col.grid(row=r, column=1, padx=(2, 10), pady=(12, 2), sticky="w")
-                head.append(col)
-            sections.append({"title": title.casefold(), "head": head, "rows": [], "captions": []})
-            row_cursor[0] += 1
-
-        def field(
-            label: str, value: str, width: int = 7, hint: str = "", search: str = ""
-        ) -> tk.Entry:
-            """One label + entry row in the body grid. `hint` becomes a hover
-            tooltip on the label (marked with a trailing ⓘ); it is searched
-            too, along with any extra `search` words."""
-            r = row_cursor[0]
+            card = tk.Frame(body, bg=SURFACE, highlightthickness=1, highlightbackground=HAIR)
+            card.columnconfigure(0, weight=1)
             name = tk.Label(
-                body,
-                text=f"{label} ⓘ" if hint else label,
-                bg=BG,
+                card, text=title, bg=SURFACE, fg=FG, font=self._font("semi", 10), anchor="w"
+            )
+            name.grid(row=0, column=0, sticky="w", padx=12, pady=(10, 6))
+            head = [name]
+            if column_title:
+                col = tk.Label(
+                    card, text=column_title, bg=SURFACE, fg=FAINT, font=self._font("ui", 8)
+                )
+                col.grid(row=0, column=1, columnspan=2, sticky="w", padx=(2, 12), pady=(10, 6))
+                head.append(col)
+            sections.append(
+                {
+                    "name": title,
+                    "title": title.casefold(),
+                    "tab": tab_cursor[0],
+                    "card": card,
+                    "title_label": name,
+                    "head": head,
+                    "rows": [],
+                    "captions": [],
+                    "next_row": 1,
+                }
+            )
+
+        def next_row() -> tuple[tk.Frame, int]:
+            section = sections[-1]
+            r = section["next_row"]
+            section["next_row"] += 1
+            return section["card"], r
+
+        def row_label(card: tk.Frame, r: int, text: str, hint: str = "") -> tk.Label:
+            """A row's name in column 0. `hint` becomes a hover tooltip on
+            it, marked with a trailing ⓘ."""
+            name = tk.Label(
+                card,
+                text=f"{text} ⓘ" if hint else text,
+                bg=SURFACE,
                 fg=DIM,
                 font=self._font("ui", 9),
                 anchor="w",
                 cursor="question_arrow" if hint else "",
             )
-            name.grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
+            name.grid(row=r, column=0, sticky="w", padx=(12, 6), pady=2)
             if hint:
                 self._bind_tooltip(name, ((hint, "", "none"),))
-            entry = self._entry(body, width)
+            return name
+
+        def field(
+            label: str, value: str, width: int = 7, hint: str = "", search: str = ""
+        ) -> tk.Entry:
+            """One label + entry row in the current card. The hint and any
+            extra `search` words are searched too."""
+            card, r = next_row()
+            name = row_label(card, r, label, hint)
+            entry = self._entry(card, width)
             entry.insert(0, value)
-            entry.grid(row=r, column=1, padx=(2, 10), sticky="w")
+            entry.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
             sections[-1]["rows"].append((f"{label} {hint} {search}".casefold(), [name, entry]))
-            row_cursor[0] += 1
             return entry
 
+        def button_row(label: str, text: str, hint: str, search: str, on_click) -> tk.Label:
+            """A label + flat button row (opens something, nothing to type)."""
+            card, r = next_row()
+            name = row_label(card, r, label, hint)
+            btn = tk.Label(
+                card, text=text, bg=BOX, fg=FG, font=self._font("ui", 9), padx=8, cursor="hand2"
+            )
+            btn.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
+            btn.bind("<Button-1>", lambda e: on_click())
+            sections[-1]["rows"].append((f"{label} {hint} {search}".casefold(), [name, btn]))
+            return btn
+
         def caption(text: str) -> None:
+            card, r = next_row()
             label = tk.Label(
-                body,
+                card,
                 text=text,
-                bg=BG,
+                bg=SURFACE,
                 fg=FAINT,
                 font=self._font("ui", 8),
                 anchor="w",
                 justify="left",
+                wraplength=390,
             )
-            label.grid(row=row_cursor[0], column=0, columnspan=2, sticky="w", padx=10, pady=(2, 0))
+            label.grid(row=r, column=0, columnspan=3, sticky="w", padx=12, pady=(4, 2))
             sections[-1]["captions"].append(label)
-            row_cursor[0] += 1
 
-        # ---- 0. Live searches: a preset's button opens its tabs right away
-        # (nothing to Apply or Save)
-        heading("Live searches")
-        for preset in presets.PRESETS:
-            r = row_cursor[0]
-            names = ", ".join(_display_name(x) for x in preset.rewards)
-            name = tk.Label(
-                body,
-                text=f"{preset.name} ⓘ",
-                bg=BG,
-                fg=DIM,
-                font=self._font("ui", 9),
-                anchor="w",
-                cursor="question_arrow",
-            )
-            name.grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
-            self._bind_tooltip(name, ((f"{preset.blurb}: {names}", "", "none"),))
-            btn = tk.Label(
-                body,
-                text=f"Open {len(preset.searches)} tabs",
-                bg=BOX,
-                fg=FG,
-                font=self._font("ui", 9),
-                padx=8,
-                cursor="hand2",
-            )
-            btn.grid(row=r, column=1, padx=(2, 10), pady=1, sticky="w")
-            btn.bind(
-                "<Button-1>",
-                lambda e, p=preset: note.config(text=self._open_preset(p), fg=GOOD),
-            )
-            sections[-1]["rows"].append(
-                (f"{preset.name} {names} preset live search tabs".casefold(), [name, btn])
-            )
-            row_cursor[0] += 1
-        caption("Opens them in Chrome. Searches already open are skipped.")
+        def end_card() -> None:
+            """Bottom padding: a card's last row should not touch its edge."""
+            card, r = next_row()
+            tk.Frame(card, bg=SURFACE, height=8).grid(row=r, column=0)
 
-        # ---- 1. Alerts: everything that decides WHETHER something alerts
-        heading("Alerts", "Value")
+        # ================================================== tab: Alerts
+        tab("Alerts")
+        heading("When to alert")
         min_net_e = field(
             "Alert at NET ≥",
             _fmt(self._current_min_net),
@@ -2867,167 +2882,85 @@ class Overlay:
             "accounts for loss on selling and the time spent running the map.\n"
             "Recommended value is 1.",
         )
-        jp_net_e = field(
-            "Jackpot at NET ≥",
-            _fmt(self._jackpot_net),
-            hint="A listing is a JACKPOT when its net AND its yield both\n"
+        end_card()
+
+        # Jackpots: a 2x2 grid (tier x bar) - the same two bars per tier,
+        # so they read as a table rather than four unrelated rows
+        heading("Jackpots")
+        card, r = next_row()
+        bars_head = []
+        for c, text in ((1, "NET ≥"), (2, "YIELD ≥")):
+            lbl = tk.Label(card, text=text, bg=SURFACE, fg=FAINT, font=self._font("ui", 8))
+            lbl.grid(row=r, column=c, sticky="w", padx=(2, 12 if c == 2 else 6))
+            bars_head.append(lbl)
+        sections[-1]["head"].extend(bars_head)
+
+        def tier_row(label: str, hint: str, net: float, yld: float, search: str):
+            card, r = next_row()
+            name = row_label(card, r, label, hint)
+            net_e = self._entry(card, 6)
+            net_e.insert(0, _fmt(net))
+            net_e.grid(row=r, column=1, padx=(2, 6), pady=2, sticky="w")
+            yld_e = self._entry(card, 6)
+            yld_e.insert(0, _fmt(yld))
+            yld_e.grid(row=r, column=2, padx=(0, 12), pady=2, sticky="w")
+            sections[-1]["rows"].append(
+                (f"{label} {hint} {search} net yield".casefold(), [name, net_e, yld_e])
+            )
+            return net_e, yld_e
+
+        jp_net_e, jp_yield_e = tier_row(
+            "Jackpot",
+            "A listing is a JACKPOT when its net AND its yield both\n"
             "clear these bars: it gets a magenta banner and frame and\n"
             "becomes the hotkey's top pick.",
+            self._jackpot_net,
+            self._jackpot_yield,
+            "jackpot",
         )
-        jp_yield_e = field("Jackpot at YIELD ≥", _fmt(self._jackpot_yield), search="jackpot")
-        sjp_net_e = field(
-            "Super jackpot at NET ≥",
-            _fmt(self._super_net),
-            hint="The tier above: a jackpot that ALSO clears these bars gets a\n"
+        sjp_net_e, sjp_yield_e = tier_row(
+            "Super jackpot",
+            "The tier above: a jackpot that ALSO clears these bars gets a\n"
             "gold banner and frame, its own alarm sound, and outranks a jackpot.",
-            search="super jackpot",
+            self._super_net,
+            self._super_yield,
+            "super jackpot",
         )
-        sjp_yield_e = field(
-            "Super jackpot at YIELD ≥", _fmt(self._super_yield), search="super jackpot"
-        )
-        caption("Each tier needs both (e.g. +80d net at yield 144).")
+        caption("Each tier needs both bars (e.g. +80d net at yield 144).")
+        end_card()
 
-        # ---- 2. Hotkey & sound
-        heading("Hotkey & sound", "Value")
-        combo_e = field("Hotkey combo", self._current_combo, width=16, search="key travel")
-        # a toggle, not a typed value: applies and saves on click
-        raise_state = [self._raise_on_hotkey]
-        r = row_cursor[0]
-        raise_name = tk.Label(
-            body,
-            text="Bring overlay to front on press ⓘ",
-            bg=BG,
-            fg=DIM,
-            font=self._font("ui", 9),
-            anchor="w",
-            cursor="question_arrow",
-        )
-        raise_name.grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
-        self._bind_tooltip(
-            raise_name,
-            (
-                (
-                    "Every hotkey press also brings this window to the front,\n"
-                    "restoring it if minimized. The game keeps the keyboard.",
-                    "",
-                    "none",
-                ),
-            ),
-        )
-        raise_btn = tk.Label(body, bg=BOX, font=self._font("ui", 9), padx=8, cursor="hand2")
-
-        def show_raise() -> None:
-            on = raise_state[0]
-            raise_btn.config(text="☑ On" if on else "☐ Off", fg=GOOD if on else DIM)
-
-        def toggle_raise(_event=None) -> None:
-            raise_state[0] = not raise_state[0]
-            show_raise()
-            collect(save=True)
-
-        show_raise()
-        raise_btn.bind("<Button-1>", toggle_raise)
-        raise_btn.grid(row=r, column=1, padx=(2, 10), pady=1, sticky="w")
-        self._raise_toggle = (raise_btn, toggle_raise)  # for tests
-        sections[-1]["rows"].append(
-            ("bring overlay to front on press raise window focus hotkey", [raise_name, raise_btn])
-        )
-        row_cursor[0] += 1
-        vol_e = field("Alert volume (0 - 1)", _fmt(self._volume), search="sound")
-
-        # ---- Files: settings, price cache and logs live in a per-user folder
-        # (%LOCALAPPDATA%/ValdoSniper for the exe), out of sight - so say where
-        heading("Files")
-        r = row_cursor[0]
-        folder = self._config.state_dir.resolve()
-        folder_name = tk.Label(
-            body,
-            text="Settings & logs folder ⓘ",
-            bg=BG,
-            fg=DIM,
-            font=self._font("ui", 9),
-            anchor="w",
-            cursor="question_arrow",
-        )
-        folder_name.grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
-        self._bind_tooltip(
-            folder_name,
-            ((f"{folder}\nYour config.yaml, saved settings, price cache and logs.", "", "none"),),
-        )
-        folder_btn = tk.Label(
-            body, text="Open", bg=BOX, fg=FG, font=self._font("ui", 9), padx=8, cursor="hand2"
-        )
-        folder_btn.grid(row=r, column=1, padx=(2, 10), pady=1, sticky="w")
-        folder_btn.bind("<Button-1>", lambda e: note.config(**self._open_state_folder()))
-        sections[-1]["rows"].append(
-            ("settings logs folder files config location appdata", [folder_name, folder_btn])
-        )
-        row_cursor[0] += 1
-
-        # ---- 3. Reward prices. A reference price is occasionally just wrong -
-        # a thin unid market, a reward whose listings the average lands badly
-        # on - and every figure downstream inherits the error, so the user can
-        # pin the price they know is right. Session-only on purpose: an old
-        # correction outliving the market that justified it would be worse
-        # than the original error.
-        self._price_entries = {}
-        self._price_labels = {}
-        heading("Reward prices", "Divine")
-        caption("Fix a wrong reference price. Blank = automatic.\nNot saved: cleared on restart.")
-
-        def price_row(entry) -> None:
-            r = row_cursor[0]
-            name = tk.Label(
-                body,
-                text=self._price_editor_text(entry),
-                bg=BG,
-                fg=DIM,
-                font=self._font("ui", 9),
-                anchor="w",
-            )
-            name.grid(row=r, column=0, sticky="w", padx=(10, 6), pady=1)
-            box = self._entry(body, 7)
-            box.insert(0, _fmt(self._price_overrides.get(entry.reward)))
-            box.grid(row=r, column=1, padx=(2, 10), sticky="w")
-            sections[-1]["rows"].append((_display_name(entry.reward).casefold(), [name, box]))
-            row_cursor[0] += 1
-            self._price_entries[entry.reward] = box
-            self._price_labels[entry.reward] = name
-
-        if self._reward_prices:
-            for entry in self._reward_prices:
-                price_row(entry)
-        else:
-            caption("No live searches connected yet.")
-
-        # ---- 4. Failure risks, in percent. A failed map loses what you paid,
-        # so these turn net into an expected value.
+        # ================================================== tab: Map scoring
+        tab("Map scoring")
+        # Failure risks, in percent. A failed map loses what you paid, so
+        # these turn net into an expected value.
         risk_entries: dict[str, tk.Entry] = {}
         if sc.risks:
             heading("Failure risks", "Fail %")
-            for risk in sc.risks:
-                risk_entries[risk.label] = field(
-                    risk.label, _fmt(round(risk.fail_chance * 100, 2)), hint=risk.note
-                )
             caption(
                 "Chance the map fails, losing what you paid for it:\n"
                 "net = (1 − fail) × market − price − running cost.\n"
                 "100 = never worth buying; 0 = ignore the risk."
             )
+            for risk in sc.risks:
+                risk_entries[risk.label] = field(
+                    risk.label, _fmt(round(risk.fail_chance * 100, 2)), hint=risk.note
+                )
+            end_card()
 
-        # ---- 5. Deadly pairings: separate dict from the rules, so a pairing
-        # named like a rule cannot clobber it
+        # Deadly pairings: separate dict from the rules, so a pairing named
+        # like a rule cannot clobber it
         pair_entries: dict[str, tk.Entry] = {}
         if sc.pairings:
             heading("Deadly pairings", "×")
+            caption("Mods that are far worse together than apart.")
             for pairing in sc.pairings:
                 pair_entries[pairing.label] = field(
                     pairing.label, _fmt(pairing.multiplier), hint=pairing.note
                 )
-            caption("Mods that are far worse together than apart.")
+            end_card()
 
-        # ---- 6/7. Difficulty. Rules split into two exclusive groups: a rule
-        # either raises the base difficulty (min_base) or multiplies the final
+        # Difficulty. Rules split into two exclusive groups: a rule either
+        # raises the base difficulty (min_base) or multiplies the final
         # score, never both. Warning-only rules have no number to tune and
         # are not listed. Alphabetical: there are dozens of them.
         def by_name(rule):
@@ -3043,46 +2976,213 @@ class Overlay:
         # base_default belongs here: it is the same kind of number as every
         # min_base, and they combine as max(base_default, matched min_bases).
         heading("Base difficulty", "Base")
+        caption("The highest base wins; multipliers then scale it.")
         base_e = field("Clean map (no mods)", _fmt(sc.base_default), search="base_default")
         rule_rows(base_rules, [_fmt(r.min_base) for r in base_rules])
-        caption("The highest base wins; multipliers then scale it.")
+        end_card()
 
         heading("Difficulty multipliers", "×")
         rule_rows(mult_rules, [_fmt(r.multiplier) for r in mult_rules])
+        end_card()
+
+        # ================================================== tab: Searches
+        tab("Searches")
+        # a preset's button opens its tabs right away (nothing to save)
+        heading("Live searches")
+        for preset in presets.PRESETS:
+            names = ", ".join(_display_name(x) for x in preset.rewards)
+            button_row(
+                preset.name,
+                f"Open {len(preset.searches)} tabs",
+                f"{preset.blurb}: {names}",
+                "preset live search tabs",
+                lambda p=preset: note.config(text=self._open_preset(p), fg=GOOD),
+            )
+        caption("Opens them in Chrome. Searches already open are skipped.")
+        end_card()
+
+        # Reward prices. A reference price is occasionally just wrong - a
+        # thin unid market, a reward whose listings the average lands badly
+        # on - and every figure downstream inherits the error, so the user
+        # can pin the price they know is right. Session-only on purpose: an
+        # old correction outliving the market that justified it would be
+        # worse than the original error.
+        self._price_entries = {}
+        self._price_labels = {}
+        heading("Reward prices", "Divine")
+        caption("Fix a wrong reference price. Blank = automatic.\nNot saved: cleared on restart.")
+
+        def price_row(entry) -> None:
+            card, r = next_row()
+            name = row_label(card, r, self._price_editor_text(entry))
+            box = self._entry(card, 7)
+            box.insert(0, _fmt(self._price_overrides.get(entry.reward)))
+            box.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
+            sections[-1]["rows"].append(
+                (f"{_display_name(entry.reward)} price pin".casefold(), [name, box])
+            )
+            self._price_entries[entry.reward] = box
+            self._price_labels[entry.reward] = name
+
+        if self._reward_prices:
+            for entry in self._reward_prices:
+                price_row(entry)
+        else:
+            caption("No live searches connected yet.")
+        end_card()
+
+        # ================================================== tab: General
+        tab("General")
+        heading("Hotkey & sound")
+        combo_e = field("Hotkey combo", self._current_combo, width=16, search="key travel")
+        # a toggle, not a typed value: applies and saves on click
+        raise_state = [self._raise_on_hotkey]
+        card, r = next_row()
+        raise_hint = (
+            "Every hotkey press also brings this window to the front,\n"
+            "restoring it if minimized. The game keeps the keyboard."
+        )
+        raise_name = row_label(card, r, "Bring overlay to front on press", raise_hint)
+        raise_btn = tk.Label(card, bg=BOX, font=self._font("ui", 9), padx=8, cursor="hand2")
+
+        def show_raise() -> None:
+            on = raise_state[0]
+            raise_btn.config(text="☑ On" if on else "☐ Off", fg=GOOD if on else DIM)
+
+        def toggle_raise(_event=None) -> None:
+            raise_state[0] = not raise_state[0]
+            show_raise()
+            collect(save=True)
+
+        show_raise()
+        raise_btn.bind("<Button-1>", toggle_raise)
+        raise_btn.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
+        self._raise_toggle = (raise_btn, toggle_raise)  # for tests
+        sections[-1]["rows"].append(
+            (
+                f"bring overlay to front on press {raise_hint} raise window focus".casefold(),
+                [raise_name, raise_btn],
+            )
+        )
+        vol_e = field("Alert volume (0 - 1)", _fmt(self._volume), search="sound")
+        end_card()
+
+        # Files: settings, price cache and logs live in a per-user folder
+        # (%LOCALAPPDATA%/ValdoSniper for the exe), out of sight - so say where
+        heading("Files")
+        folder = self._config.state_dir.resolve()
+        button_row(
+            "Settings & logs folder",
+            "Open",
+            f"{folder}\nYour config.yaml, saved settings, price cache and logs.",
+            "files config location appdata",
+            lambda: note.config(**self._open_state_folder()),
+        )
+        end_card()
 
         no_match = tk.Label(body, text="", bg=BG, fg=FAINT, font=self._font("ui", 9), anchor="w")
-        no_match.grid(row=row_cursor[0], column=0, columnspan=2, sticky="w", padx=10, pady=12)
-        no_match.grid_remove()
-        row_cursor[0] += 1
+        bottom_pad = tk.Frame(body, bg=BG, height=12)
 
-        def apply_search(*_args) -> None:
-            """Show only rows whose label (or hover hint) contains the query.
-            A query naming a section ("risk", "pairing") shows all of it.
-            Captions are help text, so they hide while searching."""
-            query = search_var.get().strip().casefold()
+        # ---- tabs and search
+        tab_names = list(dict.fromkeys(s["tab"] for s in sections))
+        if self._settings_tab not in tab_names:
+            self._settings_tab = tab_names[0]
+        tab_widgets: dict[str, tuple[tk.Label, tk.Frame]] = {}
+
+        def show_cards(query: str) -> None:
+            """No query: the selected tab's cards, in full. A query: every
+            card with a matching row (a query naming a card or tab shows
+            all of it), each titled with its tab. Captions are help text,
+            so they hide while searching."""
+            for section in sections:
+                section["card"].pack_forget()
+            no_match.pack_forget()
+            bottom_pad.pack_forget()
             shown = 0
             for section in sections:
-                whole = bool(query) and query in section["title"]
-                visible = 0
-                for text, widgets in section["rows"]:
-                    show = not query or whole or query in text
-                    for widget in widgets:
-                        widget.grid() if show else widget.grid_remove()
-                    visible += show
-                for widget in section["head"]:
-                    widget.grid() if (not query or visible) else widget.grid_remove()
-                for widget in section["captions"]:
-                    widget.grid() if not query else widget.grid_remove()
-                shown += visible
+                if query:
+                    whole = query in section["title"] or query in section["tab"].casefold()
+                    visible = 0
+                    for text, widgets in section["rows"]:
+                        show = whole or query in text
+                        for widget in widgets:
+                            widget.grid() if show else widget.grid_remove()
+                        visible += show
+                    for widget in section["captions"]:
+                        widget.grid_remove()
+                    if not visible:
+                        continue
+                    shown += visible
+                    section["title_label"].config(text=f"{section['name']}   ·   {section['tab']}")
+                else:
+                    if section["tab"] != self._settings_tab:
+                        continue
+                    for _text, widgets in section["rows"]:
+                        for widget in widgets:
+                            widget.grid()
+                    for widget in section["captions"]:
+                        widget.grid()
+                    section["title_label"].config(text=section["name"])
+                section["card"].pack(fill="x", padx=12, pady=(10, 0))
             if query and not shown:
                 no_match.config(text=f"No setting matches “{search_var.get().strip()}”.")
-                no_match.grid()
-            else:
-                no_match.grid_remove()
+                no_match.pack(fill="x", padx=14, pady=12)
+            bottom_pad.pack(fill="x")
+            for name, (label, underline) in tab_widgets.items():
+                on = not query and name == self._settings_tab
+                label.config(fg=FG if on else DIM)
+                underline.config(bg=GOOD if on else STRIP)
             canvas.yview_moveto(0)
+            win.after_idle(fit_scrollbar)
+
+        def select_tab(name: str) -> None:
+            self._settings_tab = name
+            if search_var.get():
+                search_var.set("")  # the trace re-renders on the cleared query
+            else:
+                show_cards("")
+
+        for name in tab_names:
+            cell = tk.Frame(tab_bar, bg=STRIP)
+            cell.pack(side="left")
+            label = tk.Label(
+                cell,
+                text=name,
+                bg=STRIP,
+                fg=DIM,
+                font=self._font("semi", 9),
+                padx=10,
+                pady=4,
+                cursor="hand2",
+            )
+            label.pack()
+            underline = tk.Frame(cell, bg=STRIP, height=2)
+            underline.pack(fill="x", padx=6)
+            for widget in (label, underline):
+                widget.bind("<Button-1>", lambda e, n=name: select_tab(n))
+            label.bind("<Enter>", lambda e, w=label: w.config(fg=FG), add="+")
+            label.bind(
+                "<Leave>",
+                lambda e, w=label, n=name: w.config(
+                    fg=FG if n == self._settings_tab and not search_var.get().strip() else DIM
+                ),
+                add="+",
+            )
+            tab_widgets[name] = (label, underline)
+        self._settings_select = select_tab  # for tests and screenshots
+        self._settings_sections = sections  # for tests
+
+        def apply_search(*_args) -> None:
+            show_cards(search_var.get().strip().casefold())
 
         search_var.trace_add("write", apply_search)
         search_e.bind("<Escape>", lambda e: search_var.set(""))
+        show_cards("")
+        # Freeze the window at its first size: a long tab's scrollbar then
+        # takes its width from the cards instead of widening the window, and
+        # switching tabs never makes it jump.
+        win.update_idletasks()
+        win.geometry(f"{win.winfo_reqwidth()}x{win.winfo_reqheight()}")
         search_e.focus_set()
 
         def collect(save: bool) -> None:
@@ -3241,6 +3341,8 @@ class Overlay:
             flat_e,
             jp_net_e,
             jp_yield_e,
+            sjp_net_e,
+            sjp_yield_e,
             combo_e,
             base_e,
             vol_e,
@@ -3570,13 +3672,6 @@ class Overlay:
         elif top is not None and key == "difficulty":
             live = _difficulty_breakdown(top, self._scoring_config.base_default)
         return (title, body, live)
-
-    def _watching_help(self):
-        if not self._watch_names:
-            return None
-        title, body = HELP["watching"]
-        rows = "\n".join(text for text, _note, _level in self._reward_price_rows())
-        return (title, body, rows)
 
     def _travel_help(self):
         return (
