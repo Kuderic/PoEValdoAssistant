@@ -363,12 +363,14 @@ median, which is inaccurate for foil Valdos), `CACHED PRICE` (last
 session's trade price, refresh pending), `YOUR PRICE` (a price you pinned in
 the ⚙ panel). The first two disappear once a fresh trade average lands.
 
-**The sounds are short on purpose.** Every alert sound is a built-in blip
-of 0.1–0.3 s that is at full volume within 2 ms, so nothing is still
-playing when you react: press on the sound, don't wait for it to end. Each
-is as loud as the Windows sound it replaced, so the volume slider means
-what it did. `alerts.short_sounds: false` brings back the longer Windows
-sounds (Exclamation 1.4 s, tada 1.6 s, alarms ~4 s); a `.wav` of your own in
+**The sounds are short on purpose.** Every alert sound is built in and
+at full volume within a few milliseconds, so nothing is still playing when
+you react: press on the sound, don't wait for it to end. Pick the style in
+**⚙ Settings → General → Alert sounds** (clicking one plays it):
+**Short** blips (0.1–0.3 s, the default), a **Soft jingle** (gentle chimes,
+0.35–0.5 s), or **Windows** for the longer Windows sounds (Exclamation
+1.4 s, tada 1.6 s, alarms ~4 s). Each is as loud as the Windows sound it
+replaced, so the volume slider means what it did. A `.wav` of your own in
 `alerts.sound` / `generic_sound` / `jackpot_sound` / `super_jackpot_sound`
 always wins.
 
@@ -390,7 +392,12 @@ own.
 **Shop marker:** once a travel lands, the item's cell is outlined over the
 game as the seller's hideout loads (green box, with the tab name and
 column/row above Faustus' Merchant window), so you can click it the moment
-the shop opens. It goes away when you leave the hideout or after 60s. It
+the shop opens. **The same seller's other alerts are marked too** (cyan,
+numbered, each with its tab, cell and price in the list above the shop):
+any of theirs that alerted in the last 3 minutes, plus any that alert while
+you're on the way or in the hideout, which are added to the marker as they
+arrive. It goes away when you leave the hideout or after 60s (an item added
+late stays up at least 20s). It
 only draws: clicks pass straight through to the game and it never takes the
 keyboard. It needs **windowed** or **borderless fullscreen** PoE (exclusive
 fullscreen hides every overlay). The timing comes from PoE's own log
@@ -560,7 +567,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `shop_overlay.grid` / `.client_log` | The Merchant grid measured at some resolution (default: 2560×1440) / PoE's log path when it isn't found automatically |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
-| `alerts.short_sounds` | `true` (default): built-in 0.1–0.3 s alert blips. `false`: the longer Windows sounds. Your own `.wav` settings win either way |
+| `alerts.sound_style` | `short` (default): built-in 0.1–0.3 s blips. `jingle`: soft 0.35–0.5 s chimes. `windows`: the longer Windows sounds. Also in ⚙ Settings → General. Your own `.wav` settings win either way |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (15 / 8), also in the ⚙ panel |
 | `alerts.jackpot_alarm` / `jackpot_sound` | Play an alarm on a jackpot (once; a super jackpot its own alarm, once) instead of the ordinary sound / its .wav |
 | `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 10), also in the ⚙ panel / its alarm .wav |

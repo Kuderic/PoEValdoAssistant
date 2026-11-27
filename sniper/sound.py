@@ -62,6 +62,26 @@ SHORT_NOTES: dict[str, tuple[tuple[float, float], ...]] = {
     "jackpot": ((1568, 0.07), (0, 0.025), (1568, 0.07), (0, 0.025), (2093, 0.12)),
     "super": ((1319, 0.06), (1568, 0.06), (2093, 0.06), (2637, 0.14)),
 }
+# The soft jingle (alerts.sound_style: jingle): the same four kinds as
+# overlapping bell notes - pure sines, a gentler attack, a long soft tail.
+# Still loud within ~6ms and over in under half a second, so it does not
+# bring back the wait-for-it problem; just less sharp than the blips.
+# (frequency Hz, start s, ring s) per note.
+JINGLE_NOTES: dict[str, tuple[tuple[float, float, float], ...]] = {
+    "valdo": ((784, 0.0, 0.30), (1175, 0.07, 0.28)),
+    "generic": ((1047, 0.0, 0.24), (1319, 0.06, 0.24), (1568, 0.12, 0.28)),
+    "jackpot": ((1047, 0.0, 0.22), (1319, 0.05, 0.22), (1568, 0.10, 0.22), (2093, 0.15, 0.30)),
+    "super": (
+        (784, 0.0, 0.20),
+        (1047, 0.045, 0.20),
+        (1319, 0.09, 0.20),
+        (1568, 0.135, 0.20),
+        (2093, 0.18, 0.30),
+    ),
+}
+JINGLE_ATTACK_S = 0.006
+# alerts.sound_style: what an empty sound setting plays
+SOUND_STYLES = ("short", "jingle", "windows")
 SYNTH_RATE = 44100
 SYNTH_ATTACK_S = 0.003  # fast, but not a click
 SYNTH_RELEASE_S = 0.006  # fade the tail to zero: no click at the cut
@@ -98,8 +118,36 @@ def synth_wav(notes, level: float = 0.06, rate: int = SYNTH_RATE) -> bytes:
             env = min(1.0, i / attack) * math.exp(-i / tau) * min(1.0, (n - i) / release)
             tone = math.sin(2 * math.pi * freq * t) + 0.3 * math.sin(4 * math.pi * freq * t)
             values.append(env * tone)
-    # scaled so its loudest 100ms has RMS `level` (see SHORT_LEVELS), and
-    # never past SYNTH_PEAK
+    return _render(values, level, rate)
+
+
+def synth_jingle(notes, level: float = 0.06, rate: int = SYNTH_RATE) -> bytes:
+    """A mono 16-bit PCM WAV of overlapping chime notes ((frequency, start
+    s, ring s), ...): near-pure sines with a soft attack and a long bell
+    decay, each still ringing as the next starts - a soft jingle rather
+    than a blip, but loud within JINGLE_ATTACK_S all the same."""
+    import math
+
+    length = max(int(rate * start) + max(1, int(rate * ring)) for _, start, ring in notes)
+    values = [0.0] * length
+    attack = max(1, int(rate * JINGLE_ATTACK_S))
+    release = max(1, int(rate * SYNTH_RELEASE_S))
+    for freq, start, ring in notes:
+        first, n = int(rate * start), max(1, int(rate * ring))
+        tau = n / 4  # a bell: bright strike, long soft tail
+        for i in range(n):
+            t = i / rate
+            env = min(1.0, i / attack) * math.exp(-i / tau) * min(1.0, (n - i) / release)
+            tone = math.sin(2 * math.pi * freq * t) + 0.08 * math.sin(4 * math.pi * freq * t)
+            values[first + i] += env * tone
+    return _render(values, level, rate)
+
+
+def _render(values: list[float], level: float, rate: int) -> bytes:
+    """`values` as a mono 16-bit WAV, scaled so its loudest 100ms has RMS
+    `level` (see SHORT_LEVELS) and never past SYNTH_PEAK."""
+    import math
+
     win = max(1, int(rate * LEVEL_WINDOW_S))
     loudest = max(
         (
@@ -122,27 +170,42 @@ def synth_wav(notes, level: float = 0.06, rate: int = SYNTH_RATE) -> bytes:
     return out.getvalue()
 
 
-def short_wav(kind: str) -> Path | None:
-    """The built-in short sound for an alert kind, as a file (PlaySound
-    plays files asynchronously, not memory). Written once to the temp
-    folder under a name hashed from its notes, so changing them makes a new
-    file (or recipe). None when it cannot be written - the caller falls back to the
-    Windows sound."""
-    notes = SHORT_NOTES.get(kind)
+def builtin_wav(kind: str, style: str = "short") -> Path | None:
+    """The built-in sound for an alert kind in a style ("short" blips or the
+    soft "jingle"), as a file (PlaySound plays files asynchronously, not
+    memory). Written once to the temp folder under a name hashed from its
+    recipe, so changing the recipe makes a new file. None for the "windows"
+    style, an unknown kind, or when it cannot be written - the caller then
+    falls back to the Windows sound."""
+    if style == "jingle":
+        notes = JINGLE_NOTES.get(kind)
+        make = synth_jingle
+        shape = (JINGLE_ATTACK_S,)
+    elif style == "short":
+        notes = SHORT_NOTES.get(kind)
+        make = synth_wav
+        shape = (SYNTH_ATTACK_S,)
+    else:
+        return None
     if notes is None:
         return None
     level = SHORT_LEVELS.get(kind, 0.06)
-    recipe = (notes, level, SYNTH_RATE, SYNTH_ATTACK_S, SYNTH_RELEASE_S, SYNTH_PEAK, SYNTH_VERSION)
+    recipe = (style, notes, level, SYNTH_RATE, *shape, SYNTH_RELEASE_S, SYNTH_PEAK, SYNTH_VERSION)
     digest = hashlib.sha1(repr(recipe).encode(), usedforsecurity=False).hexdigest()
-    path = Path(tempfile.gettempdir()) / f"valdo-short-{kind}-{digest[:12]}.wav"
+    path = Path(tempfile.gettempdir()) / f"valdo-{style}-{kind}-{digest[:12]}.wav"
     try:
         if not path.is_file():
             partial = path.with_suffix(".part")
-            partial.write_bytes(synth_wav(notes, level))
+            partial.write_bytes(make(notes, level))
             partial.replace(path)
     except OSError:
         return None
     return path
+
+
+def short_wav(kind: str) -> Path | None:
+    """The built-in short blip for an alert kind (builtin_wav)."""
+    return builtin_wav(kind, "short")
 
 
 @dataclass(frozen=True)

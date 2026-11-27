@@ -35,6 +35,13 @@ MIN_GRID_PX = 120
 # After a successful travel click, the next area load within this long is
 # the seller's hideout. Teleports start within a second or two of the click.
 ARM_S = 20.0
+# An item of the marked seller's that alerts while the marker is up keeps
+# it up at least this much longer
+ADDED_MIN_S = 20.0
+# Same-seller alerts seen this recently are marked along with the item
+# traveled to (they may have expired off the overlay, but most will still
+# be in the shop; the shop shows what is actually there)
+SAME_SELLER_S = 180.0
 
 
 @dataclass(frozen=True)
@@ -160,66 +167,121 @@ def save(path: Path, enabled: bool, grid: ShopGrid | None) -> None:
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 
+@dataclass(frozen=True)
+class ShopSpot:
+    """One item to mark: its listing, the seller's tab and its 0-based cell,
+    and a short caption for the legend ("Mageblood 80 divine")."""
+
+    listing_id: str
+    tab: str
+    x: int
+    y: int
+    caption: str = ""
+
+
 class ShopMarker:
-    """When the marker is up. Pure state; the overlay feeds it events and
-    acts on the answers.
+    """When the marker is up and which items it marks. Pure state; the
+    overlay feeds it events and acts on the answers.
+
+    The marker belongs to one SELLER: their hideout is where the travel
+    goes, so every alerted item of theirs is in the shop the player is about
+    to open. spots[0] is the item traveled to.
 
     - travel_ok: a travel click landed. The next area load (within ARM_S)
       is the seller's hideout, so the marker goes up then - or right away
       when PoE's log cannot be read, so the feature still works without it.
+    - add: another of that seller's items alerted meanwhile (armed or up);
+      it joins the marker. While up, it keeps the marker up a little longer
+      so a late arrival is not gone the moment it is drawn.
     - area_entered: a load started. Shows an armed marker; any other load
       (the user left the hideout) takes the marker down.
     - tick: the marker comes down `show_s` after it went up.
     """
 
-    def __init__(self, show_s: float, arm_s: float = ARM_S):
+    def __init__(self, show_s: float, arm_s: float = ARM_S, max_spots: int = 8):
         self.show_s = show_s
         self.arm_s = arm_s
-        self._armed: tuple[tuple, float] | None = None  # (stash, deadline)
-        self.shown: tuple | None = None  # the stash on screen
+        self.max_spots = max_spots
+        self.seller = ""
+        self._spots: tuple[ShopSpot, ...] = ()
+        self._deadline: float | None = None  # armed until this; None = not armed
+        self.shown: tuple[ShopSpot, ...] | None = None  # the spots on screen
         self._until = 0.0
 
-    def travel_ok(self, stash: tuple, now: float, log_live: bool) -> tuple | None:
-        """The stash to show now, or None (armed for the next load)."""
+    def travel_ok(
+        self, spots: tuple[ShopSpot, ...], seller: str, now: float, log_live: bool
+    ) -> tuple[ShopSpot, ...] | None:
+        """The spots to show now, or None (armed for the next load)."""
+        self.seller = seller
+        self._spots = tuple(spots[: self.max_spots])
         if not log_live:
-            self._armed = None
-            return self._show(stash, now)
-        self._armed = (stash, now + self.arm_s)
+            self._deadline = None
+            return self._show(now)
+        self._deadline = now + self.arm_s
         return None
 
-    def area_entered(self, now: float) -> tuple[str, tuple | None]:
-        """("show", stash) | ("hide", None) | ("", None)."""
-        armed, self._armed = self._armed, None
-        if armed is not None and now <= armed[1]:
-            return "show", self._show(armed[0], now)
+    def add(self, spot: ShopSpot, seller: str, now: float) -> str:
+        """Another item of the marked seller's: "shown" when it joined the
+        marker on screen (redraw it), "armed" when it joined one still
+        waiting for the hideout, "" when it did not join."""
+        active = self.shown is not None or (self._deadline is not None and now <= self._deadline)
+        if not active or not seller or seller != self.seller:
+            return ""
+        if any(s.listing_id == spot.listing_id for s in self._spots):
+            return ""
+        if len(self._spots) >= self.max_spots:
+            return ""
+        self._spots += (spot,)
+        if self.shown is None:
+            return "armed"
+        self.shown = self._spots
+        self._until = max(self._until, now + ADDED_MIN_S)
+        return "shown"
+
+    def area_entered(self, now: float) -> tuple[str, tuple[ShopSpot, ...] | None]:
+        """("show", spots) | ("hide", None) | ("", None)."""
+        deadline, self._deadline = self._deadline, None
+        if deadline is not None and now <= deadline and self._spots:
+            return "show", self._show(now)
         if self.shown is not None:
-            self.shown = None
+            self._clear()
             return "hide", None
         return "", None
 
     def tick(self, now: float) -> bool:
         """True when the marker must come down now."""
-        if self._armed is not None and now > self._armed[1]:
-            self._armed = None
+        if self._deadline is not None and now > self._deadline:
+            self._deadline = None
+            if self.shown is None:
+                self._clear()
         if self.shown is not None and now >= self._until:
-            self.shown = None
+            self._clear()
             return True
         return False
 
-    def show_now(self, stash: tuple, now: float, seconds: float) -> tuple:
-        """Up right away for `seconds` (the settings panel's Test)."""
-        self._armed = None
-        self.shown = stash
+    def show_now(self, spots: tuple[ShopSpot, ...], now: float, seconds: float):
+        """Up right away for `seconds` (the settings panel's Test). Not tied
+        to a seller, so nothing joins it."""
+        self._deadline = None
+        self.seller = ""
+        self._spots = tuple(spots)
+        self.shown = self._spots
         self._until = now + seconds
-        return stash
+        return self.shown
 
     def cancel(self) -> bool:
         """Drop everything (feature switched off). True if it was up."""
-        self._armed = None
-        was, self.shown = self.shown, None
-        return was is not None
+        was = self.shown is not None
+        self._deadline = None
+        self._clear()
+        return was
 
-    def _show(self, stash: tuple, now: float) -> tuple:
-        self.shown = stash
+    def _show(self, now: float) -> tuple[ShopSpot, ...]:
+        self.shown = self._spots
         self._until = now + self.show_s
-        return stash
+        return self.shown
+
+    def _clear(self) -> None:
+        self.shown = None
+        self._spots = ()
+        self.seller = ""

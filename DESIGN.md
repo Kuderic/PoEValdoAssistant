@@ -343,11 +343,17 @@ batch's one sound: super, then jackpot, then generic, then Valdo). The
 play count (`sound.JACKPOT_PLAYS` / `SUPER_JACKPOT_PLAYS`, both 1) is baked
 into the WAV (`sound.repeat_wav`, cached per volume), so
 it is still one async PlaySound that a mute can cut off.
-With `alerts.short_sounds` (default) an empty sound setting plays a built-in
-blip instead of the Windows file (`sound.short_wav`: synthesised once into
-the temp folder from `SHORT_NOTES`, 0.11-0.32s, full level within 2ms,
-loudest 100ms RMS matched to the Windows sound it replaces via
-`SHORT_LEVELS`). Long sounds made the user wait for them to finish before
+`alerts.sound_style` picks what an empty sound setting plays
+(`sound.builtin_wav(kind, style)`, synthesised once into the temp folder,
+named by a hash of its recipe). `short` (default) is the `SHORT_NOTES`
+blips: 0.11-0.32s, full level within 2ms. `jingle` is the `JINGLE_NOTES`
+chimes: overlapping near-pure sines with a 6ms attack and a bell decay,
+0.35-0.48s, half level within 5ms. `windows` is the Windows files. Both
+built-in styles match their loudest 100ms RMS to the Windows sound they
+replace (`SHORT_LEVELS`). The ⚙ panel's Alert sounds row switches it live,
+saves it as `sound_style` in scoring_overrides.yaml (wins over config.yaml)
+and plays the pick. 1.3.11's `short_sounds: false` still maps to `windows`
+unless `sound_style` is set. Long sounds made the user wait for them to finish before
 pressing; PlaySound itself returns in under 1ms here, idle or interrupting. Until the alarm has
 finished (its WAV's length), a routine alert sound is skipped so it cannot
 cut it off. A travel that fails because the listing is gone
@@ -725,8 +731,18 @@ clicked in Faustus' Merchant window at once. Draw-only: the marker never
 clicks, sends input or reads the game's memory, so the one-press-one-action
 rule is untouched.
 
+- **Which items**: the marker belongs to one seller, since their hideout
+  is where the travel goes. `spots[0]` (green) is the item traveled to; the
+  others (cyan, numbered, legend lines with tab/cell/price) are that
+  seller's other alerts. The overlay remembers every alert it sees
+  (`AlertsChanged`, first-seen time). At travel time it adds the seller's
+  alerts seen within `SAME_SELLER_S` (180s) with a known cell and not found
+  gone by a failed travel. An alert of theirs arriving later, while the
+  marker is armed or up, joins it (`ShopMarker.add`). On screen it is drawn
+  at once and the marker stays up at least `ADDED_MIN_S` (20s) more. At most
+  8 spots. Matching is on the account name (`listing.account.name`).
 - **When** (`shopgrid.ShopMarker`, fed by the overlay): the `Traveled` view
-  supplies the stash spot and an ok `ClickOutcome` for the same listing arms
+  supplies the item and an ok `ClickOutcome` for the same listing arms
   it. The first area load within `ARM_S` (20s) after that is the seller's
   hideout: the marker goes up. Any later load (leaving) takes it down, as
   does `shop_overlay.seconds` (60). With no client log the marker goes up as
@@ -766,8 +782,9 @@ rule is untouched.
   saves. Settings live in `shop_overlay.yaml` in the state folder (toggle +
   grid), separate from `scoring_overrides.yaml` so neither save can clobber
   the other. They win over `config.yaml`'s `shop_overlay`.
-- Logged: `client_log`, `shop_marker_armed`, `shop_marker_shown` (stash, game
-  size, calibrated or not), `shop_marker_hidden` (reason),
+- Logged: `client_log`, `shop_marker_armed` (seller, spots),
+  `shop_marker_added` (a later same-seller alert, on screen or not),
+  `shop_marker_shown` (spots, game size, calibrated or not), `shop_marker_hidden` (reason),
   `shop_marker_skipped`, `shop_calibration_started/done`.
 
 ## Packaging and self-update

@@ -10,6 +10,7 @@ import yaml
 from dotenv import load_dotenv
 
 from sniper.shopgrid import SHOP_OVERLAY_NAME, ShopGrid, grid_from_mapping, load_saved
+from sniper.sound import SOUND_STYLES
 
 
 class ConfigError(Exception):
@@ -79,6 +80,7 @@ def save_scoring_overrides(
     super_jackpot_min_net: float | None = None,
     super_jackpot_min_yield: float | None = None,
     raise_overlay: bool | None = None,
+    sound_style: str | None = None,
 ) -> None:
     """Persist tuning-panel values (numbers, hotkey combo, alert volume;
     match patterns stay in config.yaml)."""
@@ -113,6 +115,8 @@ def save_scoring_overrides(
         data["super_jackpot_min_yield"] = super_jackpot_min_yield
     if raise_overlay is not None:
         data["raise_overlay"] = raise_overlay
+    if sound_style is not None:
+        data["sound_style"] = sound_style
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
@@ -129,6 +133,7 @@ def load_extra_overrides(path: Path) -> dict:
         "alert_volume",
         "running_cost",
         "raise_overlay",
+        "sound_style",
         *JACKPOT_KEYS,
     )
     return {k: raw[k] for k in keys if raw.get(k) is not None}
@@ -165,8 +170,12 @@ class AlertsConfig:
     # distinguishable without looking; empty falls back to sound.GENERIC_WAV.
     generic_sound: str = ""
     volume: float = 0.5  # 0.0-1.0; scales both alert WAVs (see sniper/sound.py)
-    # Empty sound settings play built-in 0.1-0.3s blips (sound.SHORT_NOTES);
-    # false = the longer Windows sounds (Exclamation, tada, Alarm02/03).
+    # What an empty sound setting plays (sound.SOUND_STYLES): "short" built-in
+    # 0.1-0.3s blips, "jingle" a soft 0.35-0.5s chime, "windows" the longer
+    # Windows sounds (Exclamation, tada, Alarm02/03). Also in the panel.
+    sound_style: str = "short"
+    # 1.3.11's switch: false still means the Windows sounds when sound_style
+    # is left at its default
     short_sounds: bool = True
     traveled_display_seconds: float = 10.0  # keep the traveled map's mods readable
     feed_rows: int = 40  # live-feed history rows (the area scrolls)
@@ -471,6 +480,12 @@ def load_config(
         raise ConfigError("alerts.max_display must be >= 1")
     if not 0.0 <= alerts.volume <= 1.0:
         raise ConfigError(f"alerts.volume must be between 0 and 1, got {alerts.volume}")
+    if alerts.sound_style not in SOUND_STYLES:
+        raise ConfigError(
+            f"alerts.sound_style must be one of {list(SOUND_STYLES)}, got {alerts.sound_style!r}"
+        )
+    if not alerts.short_sounds and "sound_style" not in section("alerts"):
+        alerts = replace(alerts, sound_style="windows")
     if alerts.jackpot_min_net < 0 or alerts.jackpot_min_yield < 0:
         raise ConfigError("alerts.jackpot_min_net / jackpot_min_yield must be >= 0")
     if alerts.super_jackpot_min_net < 0 or alerts.super_jackpot_min_yield < 0:
@@ -673,6 +688,8 @@ def load_config(
     if "alert_volume" in extra:
         volume = min(1.0, max(0.0, float(extra["alert_volume"])))
         alerts = replace(alerts, volume=volume)
+    if extra.get("sound_style") in SOUND_STYLES:
+        alerts = replace(alerts, sound_style=extra["sound_style"])
     for key in JACKPOT_KEYS:
         if key in extra:
             alerts = replace(alerts, **{key: max(0.0, float(extra[key]))})

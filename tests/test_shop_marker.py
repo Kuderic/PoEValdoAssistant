@@ -18,7 +18,7 @@ import pytest
 from conftest import make_config
 
 from sniper import clientlog, shopgrid
-from sniper.bus import AreaEntered, Bus, ClickOutcome, ClientLogStatus, Traveled
+from sniper.bus import AlertsChanged, AreaEntered, Bus, ClickOutcome, ClientLogStatus, Traveled
 from sniper.clientlog import ClientLogWatcher, logs_in, parse_area
 from sniper.config import ConfigError, load_config
 from sniper.gamewindow import GameRect
@@ -26,6 +26,7 @@ from sniper.shopgrid import (
     DEFAULT_GRID,
     ShopGrid,
     ShopMarker,
+    ShopSpot,
     cell_box,
     from_corners,
     grid_from_mapping,
@@ -123,13 +124,16 @@ def test_saved_settings_round_trip_and_a_broken_file_is_ignored(tmp_path):
 
 
 STASH = ("7", 8, 9)
+A = ShopSpot("L1", "7", 8, 9, "Mageblood 80 divine")
+B = ShopSpot("L2", "7", 0, 0, "Nimis 40 divine")
+C = ShopSpot("L3", "8", 3, 3, "Headhunter 30 divine")
 
 
 def test_the_marker_waits_for_the_next_area_load_after_the_travel():
     m = ShopMarker(show_s=60)
-    assert m.travel_ok(STASH, now=0.0, log_live=True) is None
+    assert m.travel_ok((A,), "Bob", now=0.0, log_live=True) is None
     assert m.shown is None
-    assert m.area_entered(now=1.5) == ("show", STASH)
+    assert m.area_entered(now=1.5) == ("show", (A,))
     # leaving the seller's hideout takes it down
     assert m.area_entered(now=30.0) == ("hide", None)
     assert m.area_entered(now=40.0) == ("", None)
@@ -137,13 +141,13 @@ def test_the_marker_waits_for_the_next_area_load_after_the_travel():
 
 def test_a_load_long_after_the_travel_is_not_the_sellers_hideout():
     m = ShopMarker(show_s=60)
-    m.travel_ok(STASH, now=0.0, log_live=True)
+    m.travel_ok((A,), "Bob", now=0.0, log_live=True)
     assert m.area_entered(now=shopgrid.ARM_S + 1) == ("", None)
 
 
 def test_the_marker_times_out():
     m = ShopMarker(show_s=60)
-    m.travel_ok(STASH, now=0.0, log_live=True)
+    m.travel_ok((A,), "Bob", now=0.0, log_live=True)
     m.area_entered(now=1.0)
     assert m.tick(now=60.0) is False
     assert m.tick(now=61.0) is True
@@ -153,25 +157,82 @@ def test_the_marker_times_out():
 
 def test_without_the_log_it_shows_as_soon_as_the_travel_lands():
     m = ShopMarker(show_s=60)
-    assert m.travel_ok(STASH, now=0.0, log_live=False) == STASH
-    assert m.shown == STASH
+    assert m.travel_ok((A, B), "Bob", now=0.0, log_live=False) == (A, B)
+    assert m.shown == (A, B)
 
 
 def test_a_new_travel_while_marked_replaces_it_on_the_next_load():
     m = ShopMarker(show_s=60)
-    m.travel_ok(STASH, now=0.0, log_live=True)
+    m.travel_ok((A,), "Bob", now=0.0, log_live=True)
     m.area_entered(now=1.0)
-    m.travel_ok(("8", 0, 0), now=10.0, log_live=True)
-    assert m.area_entered(now=11.0) == ("show", ("8", 0, 0))
+    m.travel_ok((C,), "Eve", now=10.0, log_live=True)
+    assert m.area_entered(now=11.0) == ("show", (C,))
+    assert m.seller == "Eve"
 
 
 def test_cancel_drops_an_armed_and_a_shown_marker():
     m = ShopMarker(show_s=60)
-    m.travel_ok(STASH, now=0.0, log_live=True)
+    m.travel_ok((A,), "Bob", now=0.0, log_live=True)
     assert m.cancel() is False
     assert m.area_entered(now=1.0) == ("", None)
-    m.show_now(STASH, now=0.0, seconds=10)
+    m.show_now((A,), now=0.0, seconds=10)
     assert m.cancel() is True
+
+
+def test_the_sellers_next_item_joins_a_marker_still_waiting_for_the_hideout():
+    m = ShopMarker(show_s=60)
+    m.travel_ok((A,), "Bob", now=0.0, log_live=True)
+    assert m.add(B, "Bob", now=1.0) == "armed"
+    assert m.area_entered(now=2.0) == ("show", (A, B))
+
+
+def test_the_sellers_next_item_joins_a_marker_on_screen_and_keeps_it_up():
+    m = ShopMarker(show_s=60)
+    m.travel_ok((A,), "Bob", now=0.0, log_live=True)
+    m.area_entered(now=1.0)
+    assert m.add(B, "Bob", now=55.0) == "shown"
+    assert m.shown == (A, B)
+    assert m.tick(now=70.0) is False  # a late arrival gets ADDED_MIN_S on screen
+    assert m.tick(now=55.0 + shopgrid.ADDED_MIN_S) is True
+
+
+@pytest.mark.parametrize(
+    ("seller", "spot", "when"),
+    [
+        ("Eve", B, 1.0),  # someone else's item
+        ("", B, 1.0),  # seller unknown
+        ("Bob", A, 1.0),  # already marked
+        ("Bob", B, 100.0),  # the marker is long gone
+    ],
+)
+def test_other_items_do_not_join(seller, spot, when):
+    m = ShopMarker(show_s=60)
+    m.travel_ok((A,), "Bob", now=0.0, log_live=True)
+    m.area_entered(now=0.5)
+    if when > 60:
+        m.tick(now=when)
+    assert m.add(spot, seller, now=when) == ""
+
+
+def test_nothing_joins_when_no_marker_is_pending():
+    m = ShopMarker(show_s=60)
+    assert m.add(B, "Bob", now=0.0) == ""
+    m.travel_ok((A,), "Bob", now=0.0, log_live=True)
+    m.tick(now=shopgrid.ARM_S + 1)  # the travel never loaded anywhere
+    assert m.add(B, "Bob", now=shopgrid.ARM_S + 2) == ""
+    assert m.seller == ""
+
+
+def test_the_marker_holds_at_most_max_spots():
+    m = ShopMarker(show_s=60, max_spots=2)
+    m.travel_ok((A, B), "Bob", now=0.0, log_live=False)
+    assert m.add(C, "Bob", now=1.0) == ""
+
+
+def test_the_test_view_is_not_any_sellers():
+    m = ShopMarker(show_s=60)
+    m.show_now((A,), now=0.0, seconds=10)
+    assert m.add(B, "", now=1.0) == ""
 
 
 # ---------------------------------------------------------------- client log
@@ -310,9 +371,14 @@ class FakeWindow:
         self.visible = False
         self.shown: list[tuple] = []
 
-    def show(self, rect, grid, stash, test=False):
+    def show(self, rect, grid, spots, test=False):
         self.visible = True
-        self.shown.append((rect, grid, stash, test))
+        self.shown.append((rect, grid, spots, test))
+
+    @property
+    def last_cells(self):
+        """[(listing id, tab, x, y)] of the latest drawing."""
+        return [(s.listing_id, s.tab, s.x, s.y) for s in self.shown[-1][2]]
 
     def hide(self):
         self.visible = False
@@ -336,10 +402,19 @@ def overlay(monkeypatch, tmp_path):
     root.destroy()
 
 
-def traveled(lid="L1", stash=STASH):
+def alert(lid="L1", stash=STASH, seller="Bob"):
     from test_jackpot_sound import view
 
-    return Traveled(replace(view(lid), stash=stash))
+    return replace(view(lid), stash=stash, seller=seller)
+
+
+def traveled(lid="L1", stash=STASH, seller="Bob"):
+    return Traveled(alert(lid, stash, seller))
+
+
+def arrived(v, others=()):
+    """The bus event for a newly arrived alert `v`."""
+    return AlertsChanged((v, *others), new_alert=True, new_view=v)
 
 
 def test_a_landed_travel_marks_the_item_when_the_hideout_loads(overlay):
@@ -351,8 +426,10 @@ def test_a_landed_travel_marks_the_item_when_the_hideout_loads(overlay):
     assert ov._shop_window.shown == []  # still in the old area
     bus.put(AreaEntered("HideoutTemplarLab"))
     ov._drain_once()
-    ((rect, grid, stash, test),) = ov._shop_window.shown
-    assert (rect, grid, stash, test) == (RECT, DEFAULT_GRID, STASH, False)
+    ((rect, grid, spots, test),) = ov._shop_window.shown
+    assert (rect, grid, test) == (RECT, DEFAULT_GRID, False)
+    assert ov._shop_window.last_cells == [("L1", "7", 8, 9)]
+    assert spots[0].caption == "Nimis 80 divine"
     bus.put(AreaEntered("MapWorldsStrand"))  # off to run the map
     ov._drain_once()
     assert ov._shop_window.visible is False
@@ -363,7 +440,7 @@ def test_without_the_log_the_mark_goes_up_when_the_travel_lands(overlay):
     bus.put(traveled())
     bus.put(ClickOutcome("L1", True, ""))
     ov._drain_once()
-    assert [s[2] for s in ov._shop_window.shown] == [STASH]
+    assert ov._shop_window.last_cells == [("L1", "7", 8, 9)]
 
 
 @pytest.mark.parametrize(
@@ -381,6 +458,64 @@ def test_nothing_is_marked_without_a_landed_travel_and_a_position(overlay, event
         bus.put(ev)
     ov._drain_once()
     assert ov._shop_window.shown == []
+
+
+def test_the_sellers_other_alerts_are_marked_with_the_one_traveled_to(overlay):
+    ov, bus = overlay
+    bus.put(arrived(alert("L2", ("7", 0, 0))))
+    bus.put(arrived(alert("L3", ("8", 3, 3), seller="Eve")))  # someone else
+    bus.put(arrived(alert("L4", None)))  # the same seller, but no known cell
+    bus.put(arrived(alert("L1")))
+    bus.put(traveled("L1"))
+    bus.put(ClickOutcome("L1", True, ""))
+    ov._drain_once()
+    assert ov._shop_window.last_cells == [("L1", "7", 8, 9), ("L2", "7", 0, 0)]
+
+
+def test_a_same_seller_alert_known_sold_or_long_ago_is_left_out(overlay, monkeypatch):
+    from sniper import overlay as overlay_mod
+
+    ov, bus = overlay
+    bus.put(arrived(alert("L2", ("7", 0, 0))))
+    bus.put(traveled("L2"))
+    bus.put(ClickOutcome("L2", False, "item_no_longer_available"))
+    ov._drain_once()
+    real = time.monotonic
+    monkeypatch.setattr(overlay_mod.time, "monotonic", lambda: real() - shopgrid.SAME_SELLER_S - 5)
+    bus.put(arrived(alert("L3", ("7", 1, 1))))  # seen "long ago"
+    ov._drain_once()
+    monkeypatch.setattr(overlay_mod.time, "monotonic", real)
+    bus.put(traveled("L1"))
+    bus.put(ClickOutcome("L1", True, ""))
+    ov._drain_once()
+    assert ov._shop_window.last_cells == [("L1", "7", 8, 9)]
+
+
+def test_a_sellers_alert_arriving_before_the_hideout_loads_is_marked(overlay):
+    ov, bus = overlay
+    bus.put(ClientLogStatus("C:/PoE/logs/LatestClient.txt"))
+    bus.put(traveled("L1"))
+    bus.put(ClickOutcome("L1", True, ""))
+    bus.put(arrived(alert("L2", ("7", 0, 0))))
+    bus.put(AreaEntered("HideoutTemplarLab"))
+    ov._drain_once()
+    assert ov._shop_window.last_cells == [("L1", "7", 8, 9), ("L2", "7", 0, 0)]
+
+
+def test_a_sellers_alert_arriving_in_the_hideout_is_drawn_at_once(overlay):
+    ov, bus = overlay
+    bus.put(ClientLogStatus("C:/PoE/logs/LatestClient.txt"))
+    bus.put(traveled("L1"))
+    bus.put(ClickOutcome("L1", True, ""))
+    bus.put(AreaEntered("HideoutTemplarLab"))
+    ov._drain_once()
+    assert len(ov._shop_window.shown) == 1
+    bus.put(arrived(alert("L3", ("8", 3, 3), seller="Eve")))  # not this shop
+    ov._drain_once()
+    assert len(ov._shop_window.shown) == 1
+    bus.put(arrived(alert("L2", ("7", 0, 0))))
+    ov._drain_once()
+    assert ov._shop_window.last_cells == [("L1", "7", 8, 9), ("L2", "7", 0, 0)]
 
 
 def test_switched_off_nothing_is_marked_and_the_choice_is_saved(overlay, tmp_path):

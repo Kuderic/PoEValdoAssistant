@@ -47,9 +47,11 @@ from sniper.margin import net_yield
 from sniper.server import EXPECTED_USERSCRIPT_VERSION, INSTALL_PATH
 from sniper.shopgrid import (
     DEFAULT_GRID,
+    SAME_SELLER_S,
     SHOP_OVERLAY_NAME,
     ShopGrid,
     ShopMarker,
+    ShopSpot,
 )
 from sniper.shopgrid import save as save_shop_settings
 from sniper.shopoverlay import Calibrator, ShopMarkerWindow
@@ -62,7 +64,7 @@ from sniper.sound import (
     SoundCommand,
     SoundWorker,
     alert_wav_path,
-    short_wav,
+    builtin_wav,
     wav_seconds,
 )
 
@@ -312,6 +314,15 @@ def _stash_spot(x: int, y: int) -> tuple[int, str]:
 def _display_name(key: str) -> str:
     """Reward keys keep their 'Foil ' prefix internally; the UI drops it."""
     return key.removeprefix("Foil ")
+
+
+def _shop_spot(view: AlertView) -> ShopSpot | None:
+    """The shop marker's spot for an alert, None when its cell is unknown."""
+    if view.stash is None:
+        return None
+    tab, x, y = view.stash
+    caption = f"{_display_name(view.key or view.item_name)} {view.amount:g} {view.currency}"
+    return ShopSpot(view.listing_id, tab, x, y, caption.strip())
 
 
 def _tab_names(picked, total: int) -> str:
@@ -574,6 +585,8 @@ JACKPOT_SOUND_S = 4.0
 # A failed travel shows in a red bar at the top for this long (or until the
 # next press / a travel that works), then clears.
 TRAVEL_FAIL_S = 10.0
+# the settings panel's alert sound choices (sound.SOUND_STYLES), in order
+SOUND_STYLE_LABELS = {"short": "Short", "jingle": "Soft jingle", "windows": "Windows"}
 # the settings panel's Test button shows the shop grid over the game this long
 SHOP_TEST_S = 10.0
 # plain words for the userscript's click_result reasons
@@ -788,8 +801,12 @@ class Overlay:
         self._shop_grid: ShopGrid | None = config.shop_overlay.grid  # None = default
         self._shop_marker = ShopMarker(config.shop_overlay.seconds)
         self._shop_window: ShopMarkerWindow | None = None  # built on first use
-        # listing id -> stash spot, for travels still waiting on their result
-        self._shop_pending: dict[str, tuple[str, int, int]] = {}
+        # listing id -> the traveled alert, until the click's result arrives
+        self._shop_pending: dict[str, AlertView] = {}
+        # every alert seen lately (listing id -> (view, first seen)): the
+        # traveled seller's other items are marked too
+        self._shop_seen: dict[str, tuple[AlertView, float]] = {}
+        self._shop_gone: set[str] = set()  # travels found these sold/delisted
         self._client_log: str | None = None  # the PoE log followed, if any
         self._shop_tick_id: str | None = None
         self._calibrating = False
@@ -807,6 +824,7 @@ class Overlay:
         self._alerts: tuple[AlertView, ...] = ()
         self._muted = False
         self._volume = config.alerts.volume
+        self._sound_style = config.alerts.sound_style  # sound.SOUND_STYLES
         # A jackpot's alarm plays to the end (SOUND_PLAYS times): until then
         # a routine alert sound must not cut it off (monotonic finish time)
         self._jp_sound_until = 0.0
@@ -1538,6 +1556,7 @@ class Overlay:
             if isinstance(ev, AlertsChanged):
                 self._alerts = ev.alerts
                 alerts_dirty = True
+                self._shop_alerts(ev)
                 if ev.new_alert:
                     new_alert = True
                     # ev.new_view carries the arriving alert even when it
@@ -1628,6 +1647,7 @@ class Overlay:
                     text = f"TRAVEL FAILED: {reason}"
                     self._show_fail(text)
                     if ev.reason in GONE_REASONS:
+                        self._shop_gone.add(ev.listing_id)
                         self._listing_gone(ev.listing_id)
                     # a failed travel (item sold, row gone...) must not keep
                     # the ➜ pin up as if the teleport were in progress
@@ -2272,32 +2292,85 @@ class Overlay:
     # ------------------------------------------------------ in-game shop marker
 
     def _shop_traveled(self, view: AlertView) -> None:
-        """A travel click went out: remember where its item sits until the
-        click's result says whether it landed."""
-        if view.stash is None:
-            return
-        self._shop_pending[view.listing_id] = view.stash
+        """A travel click went out: remember the alert until the click's
+        result says whether it landed."""
+        self._shop_pending[view.listing_id] = view
         while len(self._shop_pending) > 20:
             self._shop_pending.pop(next(iter(self._shop_pending)))
 
+    def _shop_alerts(self, ev: AlertsChanged) -> None:
+        """Remember every alert seen (for the same-seller lookup at travel
+        time), and add a newly arrived one to the marker when it is the
+        marked seller's - while the marker waits for the hideout or is up."""
+        now = time.monotonic()
+        views = list(ev.alerts)
+        if ev.new_view is not None:
+            views.append(ev.new_view)
+        for v in views:
+            if v.listing_id not in self._shop_seen:
+                self._shop_seen[v.listing_id] = (v, now)
+        while len(self._shop_seen) > 300:
+            self._shop_seen.pop(next(iter(self._shop_seen)))
+        new = ev.new_view if ev.new_alert else None
+        if new is None or not self._shop_enabled:
+            return
+        spot = _shop_spot(new)
+        joined = "" if spot is None else self._shop_marker.add(spot, new.seller, now)
+        if not joined:
+            return
+        event(
+            "shop_marker_added",
+            listing_id=new.listing_id,
+            stash=[spot.tab, spot.x, spot.y],
+            on_screen=joined == "shown",
+        )
+        if joined == "shown":
+            self._shop_show(self._shop_marker.shown, reason="same_seller_arrived")
+
+    def _shop_same_seller(self, view: AlertView) -> list[AlertView]:
+        """The traveled seller's other alerts seen in the last SAME_SELLER_S
+        with a known cell and not found gone: they are in the same shop."""
+        if not view.seller:
+            return []
+        cutoff = time.monotonic() - SAME_SELLER_S
+        return [
+            v
+            for v, seen in self._shop_seen.values()
+            if v.seller == view.seller
+            and v.listing_id != view.listing_id
+            and v.listing_id not in self._shop_gone
+            and v.stash is not None
+            and seen >= cutoff
+        ]
+
     def _shop_travel_ok(self, listing_id: str) -> None:
-        stash = self._shop_pending.pop(listing_id, None)
-        if stash is None or not self._shop_enabled:
+        view = self._shop_pending.pop(listing_id, None)
+        if view is None or not self._shop_enabled:
+            return
+        others = self._shop_same_seller(view)
+        spots = tuple(s for s in (_shop_spot(v) for v in (view, *others)) if s is not None)
+        if not spots:
             return
         log_live = self._client_log is not None
-        event("shop_marker_armed", listing_id=listing_id, stash=list(stash), log=log_live)
-        shown = self._shop_marker.travel_ok(stash, time.monotonic(), log_live)
+        event(
+            "shop_marker_armed",
+            listing_id=listing_id,
+            seller=view.seller,
+            spots=[[s.tab, s.x, s.y] for s in spots],
+            log=log_live,
+        )
+        shown = self._shop_marker.travel_ok(spots, view.seller, time.monotonic(), log_live)
         if shown is not None:  # no log to wait on: mark it right away
             self._shop_show(shown, reason="travel_ok_no_log")
 
     def _shop_area(self, area: str) -> None:
-        action, stash = self._shop_marker.area_entered(time.monotonic())
-        if action == "show" and stash is not None:
-            self._shop_show(stash, reason="area", area=area)
+        action, spots = self._shop_marker.area_entered(time.monotonic())
+        if action == "show" and spots:
+            self._shop_show(spots, reason="area", area=area)
         elif action == "hide":
             self._shop_hide("left_area", area=area)
 
-    def _shop_show(self, stash, reason: str, test: bool = False, **fields) -> None:
+    def _shop_show(self, spots, reason: str, test: bool = False, **fields) -> None:
         rect = game_client_rect(self._config.game.window_title)
         if rect is None:
             self._shop_marker.cancel()
@@ -2306,11 +2379,11 @@ class Overlay:
         if self._shop_window is None:
             self._shop_window = ShopMarkerWindow(self._root, self._families.get("ui", "Segoe UI"))
         grid = self._shop_grid or DEFAULT_GRID
-        self._shop_window.show(rect, grid, stash, test=test)
+        self._shop_window.show(rect, grid, spots, test=test)
         event(
             "shop_marker_shown",
             reason=reason,
-            stash=list(stash),
+            spots=[[s.listing_id, s.tab, s.x, s.y] for s in spots],
             test=test,
             game=[rect.pw, rect.ph],
             calibrated=self._shop_grid is not None,
@@ -2336,8 +2409,10 @@ class Overlay:
         seconds, so the user can check it against an open Merchant window."""
         if game_client_rect(self._config.game.window_title) is None:
             return {"text": "PoE window not found - start the game first", "fg": BAD}
-        stash = self._shop_marker.show_now(("", 0, 0), time.monotonic(), SHOP_TEST_S)
-        self._shop_show(stash, reason="test", test=True)
+        spots = self._shop_marker.show_now(
+            (ShopSpot("test", "", 0, 0),), time.monotonic(), SHOP_TEST_S
+        )
+        self._shop_show(spots, reason="test", test=True)
         return {"text": f"Showing the grid over the game for {SHOP_TEST_S:.0f}s", "fg": GOOD}
 
     def _shop_calibrate(self) -> dict:
@@ -3358,6 +3433,49 @@ class Overlay:
             )
         )
         vol_e = field("Alert volume (0 - 1)", _fmt(self._volume), search="sound")
+        # three choices, picked by click: applies + saves at once and plays
+        # the pick so it can be heard (a click on the current one replays it)
+        card, r = next_row()
+        style_hint = (
+            "What every alert plays (unless you set a .wav of your own):\n"
+            "Short - crisp 0.1-0.3s blips.\n"
+            "Soft jingle - gentle 0.35-0.5s chimes.\n"
+            "Windows - the longer Windows sounds (1.4-4s).\n"
+            "Each kind (Valdo, other search, jackpot, super) still sounds\n"
+            "different. Click one to hear it."
+        )
+        style_name = row_label(card, r, "Alert sounds", style_hint)
+        style_box = tk.Frame(card, bg=SURFACE)
+        style_box.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
+        style_btns: dict[str, tk.Label] = {}
+
+        def show_style() -> None:
+            for style, btn in style_btns.items():
+                on = style == self._sound_style
+                btn.config(bg=GOOD if on else BOX, fg=BG if on else DIM)
+
+        def pick_style(style: str) -> None:
+            changed = style != self._sound_style
+            self._sound_style = style
+            show_style()
+            if changed:
+                event("sound_style_changed", style=style)
+                collect(save=True)
+            self._play_sound("valdo")  # hear it
+
+        for style, text in SOUND_STYLE_LABELS.items():
+            btn = tk.Label(style_box, text=text, font=self._font("ui", 9), padx=8, cursor="hand2")
+            btn.pack(side="left", padx=(0, 4))
+            btn.bind("<Button-1>", lambda e, s=style: pick_style(s))
+            style_btns[style] = btn
+        show_style()
+        self._style_pick = pick_style  # for tests
+        sections[-1]["rows"].append(
+            (
+                f"alert sounds {style_hint} jingle chime blip sound style".casefold(),
+                [style_name, style_box],
+            )
+        )
         end_card()
 
         # In-game shop marker: its own file (shop_overlay.yaml) and its own
@@ -3712,6 +3830,7 @@ class Overlay:
                     super_jackpot_min_net=new_sjp_net,
                     super_jackpot_min_yield=new_sjp_yield,
                     raise_overlay=raise_state[0],
+                    sound_style=self._sound_style,
                 )
             # never claim a pinned price was saved: it lives for this session
             # only, and "Saved" would read as a promise the app does not keep
@@ -4145,17 +4264,18 @@ class Overlay:
             "jackpot": (alerts.jackpot_sound, JACKPOT_WAV),
             "super": (alerts.super_jackpot_sound, SUPER_JACKPOT_WAV),
         }.get(kind, (alerts.sound, None))
-        # an empty setting plays the built-in short sound unless the user
-        # chose the (long) Windows sounds; a .wav of their own always wins
-        if alerts.short_sounds:
-            default = short_wav(kind) or default
+        # an empty setting plays the chosen built-in style (short blips or
+        # the soft jingle) unless that is the Windows sounds; a .wav of the
+        # user's own always wins
+        style = self._sound_style
+        default = builtin_wav(kind, style) or default
         plays = SOUND_PLAYS.get(kind, 1)
         volume = self._volume
         # `kind` belongs in the key even though `configured` usually
         # differs: with the settings left empty the paths are the SAME
         # empty string, and keying on it alone made the generic alert replay
         # the Valdo sound - the one thing a separate sound exists to prevent.
-        key = (kind, configured, round(volume, 3))
+        key = (kind, configured, round(volume, 3), style)
         if key not in self._wav_cache:
             self._wav_cache[key] = alert_wav_path(configured, volume, default, repeat=plays)
         return self._wav_cache[key]

@@ -20,7 +20,7 @@ from collections.abc import Callable
 
 from sniper.gamewindow import GameRect
 from sniper.logging_setup import event
-from sniper.shopgrid import ShopGrid, cell_box, from_corners, grid_side, place
+from sniper.shopgrid import ShopGrid, ShopSpot, cell_box, from_corners, grid_side, place
 
 try:
     import win32con
@@ -30,11 +30,20 @@ except ImportError:  # non-Windows dev machine: the marker is a no-op
     win32con = None
 
 KEY = "#010203"  # the colour key: pixels this colour are see-through
-MARK = "#39ff88"  # the target cell
+MARK = "#39ff88"  # the item traveled to
+OTHER = "#4dd8ff"  # the same seller's other alerted items
 MARK_EDGE = "#000000"  # a dark halo so the box reads on any item art
 GRID = "#ffd34d"  # the grid's outline (and every cell, in the test view)
 LABEL_BG = "#0b0e11"
 LABEL_FG = "#f2f4f5"
+
+
+def _legend(n: int, spot: ShopSpot, numbered: bool) -> str:
+    """'1 ★ tab "7" · col 9, row 10 · Mageblood 80 divine'."""
+    head = (f"{n} " if numbered else "") + ("★ " if n == 1 else "")
+    tab = f'tab "{spot.tab}" · ' if spot.tab else ""
+    tail = f" · {spot.caption}" if spot.caption and numbered else ""
+    return f"{head}{tab}col {spot.x + 1}, row {spot.y + 1}{tail}"
 
 
 def _px(h: int, at_1440: float) -> int:
@@ -75,15 +84,16 @@ class ShopMarkerWindow:
         self.visible = False
 
     def show(
-        self, rect: GameRect, grid: ShopGrid, stash: tuple[str, int, int], test: bool = False
+        self, rect: GameRect, grid: ShopGrid, spots: tuple[ShopSpot, ...], test: bool = False
     ) -> None:
-        """Draw cell `stash` = (tab name, x, y) over the game. `test` also
-        draws every cell line, to check the calibration against the game."""
-        if not self._hwnd:
+        """Outline each spot's cell over the game: spots[0] (the item
+        traveled to) in green, the seller's other alerted items in cyan,
+        numbered when there are several, with a legend above the shop.
+        `test` also draws every cell line, to check the calibration."""
+        if not self._hwnd or not spots:
             return
         c = self._canvas
         c.delete("all")
-        name, x, y = stash
         pw, ph = rect.pw, rect.ph
 
         def tk_xy(px: float, py: float) -> tuple[float, float]:
@@ -95,38 +105,60 @@ class ShopMarkerWindow:
         thin = _px(rect.h, 2)
         c.create_rectangle(gx0, gy0, gx1, gy1, outline=GRID, width=thin)
         if test:
-            side = grid_side(x, y)
+            first = spots[0]
+            side = grid_side(first.x, first.y)
             for i in range(1, side):
                 lx, _ = tk_xy(left + size * i / side, 0)
                 _, ly = tk_xy(0, top + size * i / side)
                 c.create_line(lx, gy0, lx, gy1, fill=GRID, width=1)
                 c.create_line(gx0, ly, gx1, ly, fill=GRID, width=1)
-        x0, y0, x1, y1 = cell_box(grid, pw, ph, x, y)
-        bx0, by0 = tk_xy(x0, y0)
-        bx1, by1 = tk_xy(x1, y1)
+        many = len(spots) > 1
         thick = _px(rect.h, 5)
         pad = thick / 2
-        c.create_rectangle(
-            bx0 - pad, by0 - pad, bx1 + pad, by1 + pad, outline=MARK_EDGE, width=thick + 2
-        )
-        c.create_rectangle(bx0 - pad, by0 - pad, bx1 + pad, by1 + pad, outline=MARK, width=thick)
-        # the label sits just above the grid, where the tab buttons are not
-        tab = f'tab "{name}" · ' if name else ""
-        text = (
-            "Test: the yellow lines should sit on the shop's grid"
-            if test
-            else f"★ {tab}col {x + 1}, row {y + 1}"
-        )
+        badge_font = (self._family, -_px(rect.h, 18), "bold")
+        # the traveled item last, so it sits on top where cells coincide
+        # (two items at the same cell in different tabs)
+        for n, spot in reversed(list(enumerate(spots, 1))):
+            colour = MARK if n == 1 else OTHER
+            x0, y0, x1, y1 = cell_box(grid, pw, ph, spot.x, spot.y)
+            bx0, by0 = tk_xy(x0, y0)
+            bx1, by1 = tk_xy(x1, y1)
+            box = (bx0 - pad, by0 - pad, bx1 + pad, by1 + pad)
+            c.create_rectangle(*box, outline=MARK_EDGE, width=thick + 2)
+            c.create_rectangle(*box, outline=colour, width=thick)
+            if many:
+                r = _px(rect.h, 13)
+                cx, cy = box[0] + r, box[1] + r
+                c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=colour, outline=MARK_EDGE)
+                c.create_text(cx, cy, text=str(n), fill=MARK_EDGE, font=badge_font)
+        # the legend stacks upward from just above the grid, clear of the
+        # shop's tab buttons
+        if test:
+            lines = [("Test: the yellow lines should sit on the shop's grid", MARK)]
+        else:
+            lines = [
+                (_legend(n, spot, many), MARK if n == 1 else OTHER)
+                for n, spot in enumerate(spots, 1)
+            ]
         font = (self._family, -_px(rect.h, 22), "bold")
-        ty = max(gy0 - _px(rect.h, 70), 0)
-        tid = c.create_text((gx0 + gx1) / 2, ty, text=text, fill=LABEL_FG, font=font, anchor="s")
-        bx = c.bbox(tid)
-        if bx:
-            m = _px(rect.h, 6)
-            box = c.create_rectangle(
-                bx[0] - m, bx[1] - m // 2, bx[2] + m, bx[3] + m // 2, fill=LABEL_BG, outline=MARK
+        step = _px(rect.h, 34)
+        bottom = max(gy0 - _px(rect.h, 70), step * len(lines))
+        m = _px(rect.h, 6)
+        for i, (text, colour) in enumerate(reversed(lines)):
+            tid = c.create_text(
+                (gx0 + gx1) / 2, bottom - i * step, text=text, fill=LABEL_FG, font=font, anchor="s"
             )
-            c.tag_lower(box, tid)
+            bx = c.bbox(tid)
+            if bx:
+                back = c.create_rectangle(
+                    bx[0] - m,
+                    bx[1] - m // 2,
+                    bx[2] + m,
+                    bx[3] + m // 2,
+                    fill=LABEL_BG,
+                    outline=colour,
+                )
+                c.tag_lower(back, tid)
         self._win.geometry(f"{rect.w}x{rect.h}+{rect.x}+{rect.y}")
         try:
             win32gui.ShowWindow(self._hwnd, win32con.SW_SHOWNOACTIVATE)

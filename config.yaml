@@ -38,11 +38,13 @@ alerts:
   # seconds and the next one cancels this one.
   generic_sound: ""
   volume: 0.5                  # 0.0-1.0, also editable in the ⚙ panel
-  # true: built-in short blips (0.1-0.3s, full volume at once) for every
-  # alert whose sound below is empty, so nothing is still playing when you
-  # react. false: the longer Windows sounds (Exclamation 1.4s, tada 1.6s,
-  # Alarm02 3.75s, Alarm03 4s) named in the comments here.
-  short_sounds: true
+  # What every alert whose sound below is empty plays. Also in the gear
+  # panel (General tab), where clicking one plays it:
+  #   short    built-in blips, 0.1-0.3s, full volume at once
+  #   jingle   soft built-in chimes, 0.35-0.5s, just as quick to start
+  #   windows  the longer Windows sounds (Exclamation 1.4s, tada 1.6s,
+  #            Alarm02 3.75s, Alarm03 4s) named in the comments here
+  sound_style: short
   traveled_display_seconds: 10 # traveled map's mods stay readable this long
   feed_rows: 40                # live-feed history rows (the area scrolls)
   # JACKPOT: a listing whose EV and SCORE BOTH clear these bars (e.g. a
