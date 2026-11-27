@@ -1,10 +1,12 @@
-"""Built-in alert sounds (alerts.sound_style: short blips / soft jingle).
+"""Built-in alert sounds (alerts.sound_style: short blips / soft jingle,
+and a jackpot fanfare in either).
 
 The Windows sounds they replace run 1.4-4s; a sound still playing invites
-waiting for it to end before pressing the hotkey. These are over in at most
-half a second and loud within a few milliseconds, at the same
-loudness as the sound each replaces (those Windows files are mastered
-quiet, so full-scale blips would be ~18dB louder at the same volume).
+waiting for it to end before pressing the hotkey. Routine alerts are over in
+under half a second; the jackpot fanfares last about a second but are just
+as loud just as fast, and are never a repeated beep. All match the loudness
+of the sound each replaces (those Windows files are mastered quiet, so
+full-scale blips would be ~18dB louder at the same volume).
 """
 
 from __future__ import annotations
@@ -27,12 +29,26 @@ from sniper.config import (
     load_extra_overrides,
     save_scoring_overrides,
 )
-from sniper.sound import SHORT_LEVELS, SHORT_NOTES, builtin_wav, short_wav, synth_wav
+from sniper.sound import SHORT_LEVELS, builtin_wav, short_wav, synth_wav
 
 KINDS = ("valdo", "generic", "jackpot", "super")
+ROUTINE = ("valdo", "generic")
+JACKPOTS = ("jackpot", "super")
 STYLES = ("short", "jingle")
-# the longest each style may run: short enough not to wait for
-MAX_S = {"short": 0.35, "jingle": 0.5}
+# the longest each may run: routine alerts short enough not to wait for
+MAX_S = {"short": 0.35, "jingle": 0.5, "fanfare": 1.3}
+
+
+def longest(kind: str, style: str) -> float:
+    return MAX_S["fanfare" if kind in JACKPOTS else style]
+
+
+def loudest_rms(a, rate) -> float:
+    win = int(rate * sound.LEVEL_WINDOW_S)
+    return max(
+        math.sqrt(sum(x * x for x in a[i : i + win]) / win)
+        for i in range(0, len(a) - win + 1, win // 4)
+    )
 
 
 def samples(path) -> tuple[array.array, int]:
@@ -47,10 +63,11 @@ def samples(path) -> tuple[array.array, int]:
 @pytest.mark.parametrize("kind", KINDS)
 def test_every_alert_sound_is_short_and_loud_at_once(kind, style):
     a, rate = samples(builtin_wav(kind, style))
-    assert len(a) / rate <= MAX_S[style]
-    peak = max(abs(x) for x in a)
-    first_half = next(i for i, x in enumerate(a) if abs(x) >= peak / 2)
-    assert first_half / rate < 0.006  # no fade-in to wait through
+    assert len(a) / rate <= longest(kind, style)
+    # no fade-in to wait through: it reaches its loudest-100ms level at once
+    level = loudest_rms(a, rate)
+    first_loud = next(i for i, x in enumerate(a) if abs(x) >= level)
+    assert first_loud / rate < 0.006
     assert abs(a[0]) < 200 and abs(a[-1]) < 200  # starts and ends silent: no click
 
 
@@ -68,10 +85,34 @@ def test_each_is_as_loud_as_the_sound_it_replaces(kind, style):
 
 
 def test_the_kinds_still_sound_different():
-    assert len({SHORT_NOTES[k] for k in KINDS}) == len(KINDS)
-    assert len({sound.JINGLE_NOTES[k] for k in KINDS}) == len(KINDS)
-    files = {builtin_wav(k, st).read_bytes() for k in KINDS for st in STYLES}
-    assert len(files) == len(KINDS) * len(STYLES)
+    files = {(k, st): builtin_wav(k, st).read_bytes() for k in KINDS for st in STYLES}
+    # every routine sound is its own; each jackpot fanfare is one sound
+    # shared by both styles, unlike anything routine
+    assert len({files[k, st] for k in ROUTINE for st in STYLES}) == 4
+    for k in JACKPOTS:
+        assert files[k, "short"] == files[k, "jingle"]
+    assert len(set(files.values())) == 4 + 2
+
+
+@pytest.mark.parametrize("kind", JACKPOTS)
+def test_a_jackpot_plays_a_fanfare_not_a_repeated_beep(kind):
+    """Overlapping notes that rise and ring together: the sound never
+    falls back to silence between notes, as a repeated beep does."""
+    notes = sound.FANFARE_NOTES[kind]
+    freqs = [f for f, *_ in notes]
+    assert freqs == sorted(freqs) and len(set(freqs)) == len(freqs)
+    a, rate = samples(builtin_wav(kind, "short"))
+    win = int(rate * 0.01)
+    body = a[: int(rate * 0.5)]  # the run and the start of the chord
+    quietest = min(max(abs(x) for x in body[i : i + win]) for i in range(0, len(body) - win, win))
+    assert quietest > 0.2 * max(abs(x) for x in a)
+    assert len(a) / rate >= 0.8  # rings out, unlike the routine blips
+
+
+def test_the_routine_sounds_play_once():
+    for kind in ROUTINE:
+        a, rate = samples(builtin_wav(kind, "short"))
+        assert len(a) / rate < 0.2
 
 
 def test_the_windows_style_has_no_built_in_sound():
@@ -156,68 +197,14 @@ def make_overlay():
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_the_overlay_plays_the_short_sound_three_times_by_default(make_overlay, kind):
-    assert make_overlay()._alert_wav(kind) == str(builtin_wav(kind, "short", 3))
+def test_the_overlay_plays_the_short_sound_by_default(make_overlay, kind):
+    assert make_overlay()._alert_wav(kind) == str(short_wav(kind))
 
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_the_jingle_style_plays_the_jingle(make_overlay, kind):
-    ov = make_overlay(sound_style="jingle", sound_plays=1)
+    ov = make_overlay(sound_style="jingle")
     assert ov._alert_wav(kind) == str(builtin_wav(kind, "jingle"))
-
-
-# ------------------------------------------------------------------ repeats
-
-
-@pytest.mark.parametrize("style", STYLES)
-@pytest.mark.parametrize("kind", KINDS)
-def test_more_plays_repeat_the_pattern_and_still_start_at_once(kind, style):
-    once, rate = samples(builtin_wav(kind, style, 1))
-    thrice, _ = samples(builtin_wav(kind, style, 3))
-    gap = int(rate * sound.REPEAT_GAP_S)
-    assert len(thrice) == 3 * len(once) + 2 * gap
-    assert thrice[: len(once)] == once  # the first play is the same sound
-    assert thrice[len(once) + gap : 2 * len(once) + gap] == once
-    assert set(thrice[len(once) : len(once) + gap]) == {0}  # a clean gap
-
-
-def test_plays_are_clamped():
-    assert builtin_wav("valdo", "short", 0) == builtin_wav("valdo", "short", 1)
-    top = sound.MAX_SOUND_PLAYS
-    assert builtin_wav("valdo", "short", top + 3) == builtin_wav("valdo", "short", top)
-
-
-def test_three_plays_is_the_default(tmp_path):
-    assert load_config("config.yaml").alerts.sound_plays == 3
-
-
-@pytest.mark.parametrize("value", ["0", "5", "'2'", "true", "1.5"])
-def test_bad_plays_are_a_config_error(tmp_path, value):
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text(f"alerts:\n  sound_plays: {value}\n", encoding="utf-8")
-    with pytest.raises(ConfigError, match="sound_plays"):
-        load_config(cfg)
-
-
-def test_the_windows_style_ignores_plays(make_overlay):
-    ov = make_overlay(sound_style="windows", sound_plays=4)
-    expected = sound.source_path("", sound.GENERIC_WAV)
-    assert ov._alert_wav("generic") == (None if expected is None else str(expected))
-
-
-def test_picking_plays_in_the_panel_switches_saves_and_plays_it(make_overlay, tmp_path):
-    ov = make_overlay()
-    ov._overrides_path = tmp_path / SCORING_OVERRIDES_NAME
-    played: list[str] = []
-    ov._play_sound = lambda kind="valdo": played.append(kind)
-    ov._open_tuning()
-    ov._plays_pick(1)
-    assert ov._alert_wav("valdo") == str(short_wav("valdo"))
-    assert played == ["valdo"]
-    assert load_extra_overrides(tmp_path / SCORING_OVERRIDES_NAME)["sound_plays"] == 1
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text("", encoding="utf-8")
-    assert load_config(cfg).alerts.sound_plays == 1
 
 
 def test_the_windows_style_plays_the_windows_sounds(make_overlay):
@@ -234,11 +221,40 @@ def test_picking_a_style_in_the_panel_switches_saves_and_plays_it(make_overlay, 
     ov._play_sound = lambda kind="valdo": played.append(kind)
     ov._open_tuning()
     ov._style_pick("jingle")
-    assert ov._alert_wav("valdo") == str(builtin_wav("valdo", "jingle", 3))
+    assert ov._alert_wav("valdo") == str(builtin_wav("valdo", "jingle"))
     assert played == ["valdo"]  # heard at once
     assert load_extra_overrides(tmp_path / SCORING_OVERRIDES_NAME)["sound_style"] == "jingle"
     ov._style_pick("jingle")  # the current one again: replayed, nothing to save
     assert played == ["valdo", "valdo"]
+
+
+def test_an_old_sound_plays_key_is_ignored(tmp_path):
+    """1.3.13's repeat setting was withdrawn; a config naming it still loads."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("alerts:\n  sound_plays: 3\n", encoding="utf-8")
+    assert not hasattr(load_config(cfg).alerts, "sound_plays")
+
+
+def test_the_panel_previews_both_fanfares(make_overlay):
+    ov = make_overlay()
+    played: list[str] = []
+    ov._play_sound = lambda kind="valdo": played.append(kind)
+    ov._open_tuning()
+    ov._settings_select("General")  # clicks on a hidden tab are dropped
+    ov._tune_window.update()
+    buttons = [
+        w for w in _walk(ov._tune_window) if isinstance(w, tk.Label) and w.cget("text") == "▶ Play"
+    ]
+    for b in buttons:
+        b.event_generate("<Button-1>")
+    ov._tune_window.update()
+    assert sorted(played) == ["jackpot", "super"]
+
+
+def _walk(widget):
+    yield widget
+    for child in widget.winfo_children():
+        yield from _walk(child)
 
 
 def test_a_sound_file_of_your_own_still_wins(make_overlay, tmp_path):

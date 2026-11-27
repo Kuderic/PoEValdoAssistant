@@ -346,14 +346,18 @@ it is still one async PlaySound that a mute can cut off.
 `alerts.sound_style` picks what an empty sound setting plays
 (`sound.builtin_wav(kind, style)`, synthesised once into the temp folder,
 named by a hash of its recipe). `short` (default) is the `SHORT_NOTES`
-blips: 0.11-0.32s, full level within 2ms. `jingle` is the `JINGLE_NOTES`
-chimes: overlapping near-pure sines with a 6ms attack and a bell decay,
-0.35-0.48s, half level within 5ms. `windows` is the Windows files. Both
-built-in styles match their loudest 100ms RMS to the Windows sound they
-replace (`SHORT_LEVELS`). `alerts.sound_plays` (1-4, default 3) repeats a
-built-in pattern with a 60ms gap (`repeat_wav(..., gap_s)`, baked into the
-cached file), so the alert is longer but its first note is unchanged. The
-⚙ panel's Alert sounds row switches it live,
+blips for the routine kinds: 0.11-0.17s, full level within 2ms. `jingle`
+is the `JINGLE_NOTES` chimes: overlapping near-pure sines with a 6ms
+attack and a bell decay, 0.35-0.40s, half level within 5ms. Jackpot and
+super jackpot get a `FANFARE_NOTES` fanfare in both styles
+(`synth_fanfare`): a rising run whose overlapping notes ring into a chord,
+with octave, a detuned shimmer and vibrato easing in. 0.98s / 1.15s, at
+their loudest-100ms level within ~2ms. Played once: 1.3.13 repeated the
+pattern (`sound_plays`), which was grating on jackpots and unwanted on
+routine alerts, so it was withdrawn (an old key is ignored). `windows` is
+the Windows files. All built-in sounds match their loudest 100ms RMS to
+the Windows sound they replace (`SHORT_LEVELS`). The ⚙ panel's Alert
+sounds row (with ▶ Play previews of both fanfares) switches it live,
 saves it as `sound_style` in scoring_overrides.yaml (wins over config.yaml)
 and plays the pick. 1.3.11's `short_sounds: false` still maps to `windows`
 unless `sound_style` is set. Long sounds made the user wait for them to finish before

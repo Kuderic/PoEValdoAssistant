@@ -370,9 +370,11 @@ you react: press on the sound, don't wait for it to end. Pick the style in
 **⚙ Settings → General → Alert sounds** (clicking one plays it):
 **Short** blips (the default), a **Soft jingle** (gentle chimes), or
 **Windows** for the longer Windows sounds (Exclamation 1.4 s, tada 1.6 s,
-alarms ~4 s). **Sound plays** (1×–4×, default 3×) repeats the Short or
-jingle pattern back to back: a Valdo alert at 3× is three blips over
-0.45 s, and the first one still lands at once. Each is as loud as the Windows sound it
+alarms ~4 s). Every alert plays once. Jackpots and super jackpots play
+their own fanfare in either built-in style: a fast rising run that rings
+out into a chord, about a second long, starting just as fast as the blips
+but impossible to mistake for an ordinary alert (the **▶ Play** buttons under Alert
+sounds play them). Each is as loud as the Windows sound it
 replaced, so the volume slider means what it did. A `.wav` of your own in
 `alerts.sound` / `generic_sound` / `jackpot_sound` / `super_jackpot_sound`
 always wins.
@@ -481,8 +483,8 @@ A Valdo listing that is **both** big money and cheap to run (EV ≥ 15d
 - it stays magenta with `★ JACKPOT` in the live feed, so one you missed is
   obvious later.
 
-It also **plays an alarm once** (two quick beeps and a higher one, a third
-of a second, at the volume slider) instead of the usual alert sound. An ordinary alert
+It also **plays a fanfare once** (a rising run into a ringing chord, about
+a second, at the volume slider) instead of the usual alert sound. An ordinary alert
 arriving while it plays stays quiet rather than cut it off. If you travel
 to the jackpot and it turns out to be sold already, the alarm stops. The
 speaker icon mutes everything. The overlay is never pulled to the front. Set
@@ -503,8 +505,8 @@ score ≥ 10 by default) is a super jackpot:
 <img src="docs/overlay-super-jackpot.png" alt="A super jackpot alert: Nimis at 80 divine, +80 EV, score +144, with a gold SUPER JACKPOT banner, gold frame and gold TELEPORT button; a magenta jackpot runner-up sits below it" width="420">
 
 - a gold **★★ SUPER JACKPOT** banner, frame and TELEPORT button;
-- its own alarm (a fast four-note run upward, a third of a second), so
-  you can tell the tiers apart by ear;
+- its own, bigger fanfare (a two-octave run into a higher chord, just over
+  a second), so you can tell the tiers apart by ear;
 - it outranks a jackpot for the hotkey;
 - `★★ SUPER` in gold in the live feed.
 
@@ -571,8 +573,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `shop_overlay.grid` / `.client_log` | The Merchant grid measured at some resolution (default: 2560×1440) / PoE's log path when it isn't found automatically |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
-| `alerts.sound_plays` | How many times the Short/jingle pattern plays, back to back (1–4, default 3). Also in ⚙ Settings → General |
-| `alerts.sound_style` | `short` (default): built-in 0.1–0.3 s blips. `jingle`: soft 0.35–0.5 s chimes. `windows`: the longer Windows sounds. Also in ⚙ Settings → General. Your own `.wav` settings win either way |
+| `alerts.sound_style` | `short` (default): built-in 0.1–0.2 s blips. `jingle`: soft 0.35–0.4 s chimes. Jackpots get a ~1 s fanfare in either. `windows`: the longer Windows sounds. Also in ⚙ Settings → General. Your own `.wav` settings win either way |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (15 / 8), also in the ⚙ panel |
 | `alerts.jackpot_alarm` / `jackpot_sound` | Play an alarm on a jackpot (once; a super jackpot its own alarm, once) instead of the ordinary sound / its .wav |
 | `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 10), also in the ⚙ panel / its alarm .wav |

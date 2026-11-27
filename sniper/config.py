@@ -10,7 +10,7 @@ import yaml
 from dotenv import load_dotenv
 
 from sniper.shopgrid import SHOP_OVERLAY_NAME, ShopGrid, grid_from_mapping, load_saved
-from sniper.sound import MAX_SOUND_PLAYS, SOUND_STYLES
+from sniper.sound import SOUND_STYLES
 
 
 class ConfigError(Exception):
@@ -81,7 +81,6 @@ def save_scoring_overrides(
     super_jackpot_min_yield: float | None = None,
     raise_overlay: bool | None = None,
     sound_style: str | None = None,
-    sound_plays: int | None = None,
     void_min_net: float | None = None,
 ) -> None:
     """Persist tuning-panel values (numbers, hotkey combo, alert volume;
@@ -119,8 +118,6 @@ def save_scoring_overrides(
         data["raise_overlay"] = raise_overlay
     if sound_style is not None:
         data["sound_style"] = sound_style
-    if sound_plays is not None:
-        data["sound_plays"] = sound_plays
     if void_min_net is not None:
         data["void_min_net"] = void_min_net
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -140,7 +137,6 @@ def load_extra_overrides(path: Path) -> dict:
         "running_cost",
         "raise_overlay",
         "sound_style",
-        "sound_plays",
         "void_min_net",
         *JACKPOT_KEYS,
     )
@@ -186,9 +182,6 @@ class AlertsConfig:
     # 0.1-0.3s blips, "jingle" a soft 0.35-0.5s chime, "windows" the longer
     # Windows sounds (Exclamation, tada, Alarm02/03). Also in the panel.
     sound_style: str = "short"
-    # how many times a built-in sound plays its pattern (1-4), back to back:
-    # longer, but it still starts at once. Also in the panel.
-    sound_plays: int = 3
     # 1.3.11's switch: false still means the Windows sounds when sound_style
     # is left at its default
     short_sounds: bool = True
@@ -488,6 +481,10 @@ def load_config(
     if not 1 <= int(server.port) <= 65535:
         raise ConfigError(f"server.port must be 1-65535, got {server.port}")
 
+    # 1.3.13's sound_plays (repeat the alert sound) was withdrawn in 1.3.14:
+    # a config still naming it is not an error, the key is just ignored
+    if isinstance(raw.get("alerts"), dict) and "sound_plays" in raw["alerts"]:
+        raw["alerts"] = {k: v for k, v in raw["alerts"].items() if k != "sound_plays"}
     alerts = build(AlertsConfig, "alerts")
     if alerts.expiry_seconds <= 0:
         raise ConfigError("alerts.expiry_seconds must be > 0")
@@ -498,15 +495,6 @@ def load_config(
     if alerts.sound_style not in SOUND_STYLES:
         raise ConfigError(
             f"alerts.sound_style must be one of {list(SOUND_STYLES)}, got {alerts.sound_style!r}"
-        )
-    if (
-        not isinstance(alerts.sound_plays, int)
-        or isinstance(alerts.sound_plays, bool)
-        or not 1 <= alerts.sound_plays <= MAX_SOUND_PLAYS
-    ):
-        raise ConfigError(
-            f"alerts.sound_plays must be a whole number 1-{MAX_SOUND_PLAYS}, "
-            f"got {alerts.sound_plays!r}"
         )
     if not alerts.short_sounds and "sound_style" not in section("alerts"):
         alerts = replace(alerts, sound_style="windows")
@@ -719,9 +707,6 @@ def load_config(
         alerts = replace(alerts, volume=volume)
     if extra.get("sound_style") in SOUND_STYLES:
         alerts = replace(alerts, sound_style=extra["sound_style"])
-    plays = extra.get("sound_plays")
-    if isinstance(plays, int) and not isinstance(plays, bool) and 1 <= plays <= MAX_SOUND_PLAYS:
-        alerts = replace(alerts, sound_plays=plays)
     for key in JACKPOT_KEYS:
         if key in extra:
             alerts = replace(alerts, **{key: max(0.0, float(extra[key]))})

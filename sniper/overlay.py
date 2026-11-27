@@ -59,7 +59,6 @@ from sniper.sound import (
     GENERIC_WAV,
     JACKPOT_PLAYS,
     JACKPOT_WAV,
-    MAX_SOUND_PLAYS,
     SUPER_JACKPOT_PLAYS,
     SUPER_JACKPOT_WAV,
     SoundCommand,
@@ -827,7 +826,6 @@ class Overlay:
         self._muted = False
         self._volume = config.alerts.volume
         self._sound_style = config.alerts.sound_style  # sound.SOUND_STYLES
-        self._sound_plays = config.alerts.sound_plays  # built-in pattern repeats
         # A jackpot's alarm plays to the end (SOUND_PLAYS times): until then
         # a routine alert sound must not cut it off (monotonic finish time)
         self._jp_sound_until = 0.0
@@ -3449,8 +3447,9 @@ class Overlay:
         card, r = next_row()
         style_hint = (
             "What every alert plays (unless you set a .wav of your own):\n"
-            "Short - crisp 0.1-0.3s blips.\n"
-            "Soft jingle - gentle 0.35-0.5s chimes.\n"
+            "Short - crisp 0.1-0.2s blips.\n"
+            "Soft jingle - gentle 0.35-0.4s chimes.\n"
+            "Jackpots play their own ~1s fanfare in either.\n"
             "Windows - the longer Windows sounds (1.4-4s).\n"
             "Each kind (Valdo, other search, jackpot, super) still sounds\n"
             "different. Click one to hear it."
@@ -3481,44 +3480,20 @@ class Overlay:
             style_btns[style] = btn
         show_style()
         self._style_pick = pick_style  # for tests
-        # how many times the built-in sound plays its pattern
-        card, r = next_row()
-        plays_hint = (
-            "How many times the Short or Soft jingle sound plays its\n"
-            "pattern, back to back. More is longer and easier to notice;\n"
-            "the first note still lands at once, so press on it. Does\n"
-            "nothing for the Windows sounds. Click one to hear it."
+        # the jackpot fanfares are otherwise only heard when one hits
+        button_row(
+            "Jackpot sound",
+            "▶ Play",
+            "Plays the jackpot fanfare (the same in Short and Soft\njingle) at your volume.",
+            "jackpot fanfare sound preview",
+            lambda: self._play_sound("jackpot"),
         )
-        plays_name = row_label(card, r, "Sound plays", plays_hint)
-        plays_box = tk.Frame(card, bg=SURFACE)
-        plays_box.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
-        plays_btns: dict[int, tk.Label] = {}
-
-        def show_plays() -> None:
-            for n, btn in plays_btns.items():
-                on = n == self._sound_plays
-                btn.config(bg=GOOD if on else BOX, fg=BG if on else DIM)
-
-        def pick_plays(n: int) -> None:
-            changed = n != self._sound_plays
-            self._sound_plays = n
-            show_plays()
-            if changed:
-                event("sound_plays_changed", plays=n)
-                collect(save=True)
-            self._play_sound("valdo")
-
-        for n in range(1, MAX_SOUND_PLAYS + 1):
-            btn = tk.Label(
-                plays_box, text=f"{n}×", font=self._font("ui", 9), padx=8, cursor="hand2"
-            )
-            btn.pack(side="left", padx=(0, 4))
-            btn.bind("<Button-1>", lambda e, n=n: pick_plays(n))
-            plays_btns[n] = btn
-        show_plays()
-        self._plays_pick = pick_plays  # for tests
-        sections[-1]["rows"].append(
-            (f"sound plays repeat {plays_hint} longer".casefold(), [plays_name, plays_box])
+        button_row(
+            "Super jackpot sound",
+            "▶ Play",
+            "Plays the super jackpot fanfare at your volume.",
+            "super jackpot fanfare sound preview",
+            lambda: self._play_sound("super"),
         )
         sections[-1]["rows"].append(
             (
@@ -3886,7 +3861,6 @@ class Overlay:
                     super_jackpot_min_yield=new_sjp_yield,
                     raise_overlay=raise_state[0],
                     sound_style=self._sound_style,
-                    sound_plays=self._sound_plays,
                     void_min_net=new_void_min_net,
                 )
             # never claim a pinned price was saved: it lives for this session
@@ -4328,14 +4302,14 @@ class Overlay:
         # the soft jingle) unless that is the Windows sounds; a .wav of the
         # user's own always wins
         style = self._sound_style
-        default = builtin_wav(kind, style, self._sound_plays) or default
+        default = builtin_wav(kind, style) or default
         plays = SOUND_PLAYS.get(kind, 1)
         volume = self._volume
         # `kind` belongs in the key even though `configured` usually
         # differs: with the settings left empty the paths are the SAME
         # empty string, and keying on it alone made the generic alert replay
         # the Valdo sound - the one thing a separate sound exists to prevent.
-        key = (kind, configured, round(volume, 3), style, self._sound_plays)
+        key = (kind, configured, round(volume, 3), style)
         if key not in self._wav_cache:
             self._wav_cache[key] = alert_wav_path(configured, volume, default, repeat=plays)
         return self._wav_cache[key]

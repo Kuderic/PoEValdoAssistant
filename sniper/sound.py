@@ -59,10 +59,8 @@ SUPER_JACKPOT_PLAYS = 1
 SHORT_NOTES: dict[str, tuple[tuple[float, float], ...]] = {
     "valdo": ((1760, 0.11),),
     "generic": ((1175, 0.07), (1760, 0.10)),
-    "jackpot": ((1568, 0.07), (0, 0.025), (1568, 0.07), (0, 0.025), (2093, 0.12)),
-    "super": ((1319, 0.06), (1568, 0.06), (2093, 0.06), (2637, 0.14)),
 }
-# The soft jingle (alerts.sound_style: jingle): the same four kinds as
+# The soft jingle (alerts.sound_style: jingle): the routine kinds as
 # overlapping bell notes - pure sines, a gentler attack, a long soft tail.
 # Still loud within ~6ms and over in under half a second, so it does not
 # bring back the wait-for-it problem; just less sharp than the blips.
@@ -70,23 +68,34 @@ SHORT_NOTES: dict[str, tuple[tuple[float, float], ...]] = {
 JINGLE_NOTES: dict[str, tuple[tuple[float, float, float], ...]] = {
     "valdo": ((784, 0.0, 0.30), (1175, 0.07, 0.28)),
     "generic": ((1047, 0.0, 0.24), (1319, 0.06, 0.24), (1568, 0.12, 0.28)),
-    "jackpot": ((1047, 0.0, 0.22), (1319, 0.05, 0.22), (1568, 0.10, 0.22), (2093, 0.15, 0.30)),
-    "super": (
-        (784, 0.0, 0.20),
-        (1047, 0.045, 0.20),
-        (1319, 0.09, 0.20),
-        (1568, 0.135, 0.20),
-        (2093, 0.18, 0.30),
-    ),
 }
 JINGLE_ATTACK_S = 0.006
+# Jackpot and super jackpot FANFARES, the same in both built-in styles: one
+# play, never a repeated beep. A fast rising run that rings out into a
+# chord, with a touch of vibrato and a detuned shimmer the routine sounds
+# do not have, so it cannot be mistaken for an ordinary alert. The first
+# note is the loudest at its start: full level within ~2ms.
+# (frequency Hz, start s, ring s, amplitude) per note.
+FANFARE_NOTES: dict[str, tuple[tuple[float, float, float, float], ...]] = {
+    "jackpot": (
+        (1047, 0.00, 0.45, 1.0),
+        (1319, 0.06, 0.45, 0.7),
+        (1568, 0.12, 0.55, 0.7),
+        (2093, 0.18, 0.80, 0.8),
+    ),
+    "super": (
+        (784, 0.00, 0.40, 1.0),
+        (1047, 0.05, 0.40, 0.65),
+        (1319, 0.10, 0.45, 0.65),
+        (1568, 0.15, 0.55, 0.65),
+        (2093, 0.20, 0.90, 0.75),
+        (2637, 0.20, 0.95, 0.45),
+    ),
+}
+FANFARE_ATTACK_S = 0.004
+FANFARE_RELEASE_S = 0.03
 # alerts.sound_style: what an empty sound setting plays
 SOUND_STYLES = ("short", "jingle", "windows")
-# alerts.sound_plays: how many times a built-in sound plays its pattern, back
-# to back with REPEAT_GAP_S between - a longer alert whose first note still
-# lands within a few ms (the Windows style is long already and never repeats)
-MAX_SOUND_PLAYS = 4
-REPEAT_GAP_S = 0.06
 SYNTH_RATE = 44100
 SYNTH_ATTACK_S = 0.003  # fast, but not a click
 SYNTH_RELEASE_S = 0.006  # fade the tail to zero: no click at the cut
@@ -148,6 +157,33 @@ def synth_jingle(notes, level: float = 0.06, rate: int = SYNTH_RATE) -> bytes:
     return _render(values, level, rate)
 
 
+def synth_fanfare(notes, level: float = 0.13, rate: int = SYNTH_RATE) -> bytes:
+    """A mono 16-bit PCM WAV of a jackpot fanfare ((frequency, start s,
+    ring s, amplitude), ...): bright tones (a touch of octave, a detuned
+    shimmer, vibrato easing in) that overlap into a ringing chord."""
+    import math
+
+    length = max(int(rate * start) + max(1, int(rate * ring)) for _, start, ring, _a in notes)
+    values = [0.0] * length
+    attack = max(1, int(rate * FANFARE_ATTACK_S))
+    release = max(1, int(rate * FANFARE_RELEASE_S))
+    for freq, start, ring, amp in notes:
+        first, n = int(rate * start), max(1, int(rate * ring))
+        tau = n / 3
+        for i in range(n):
+            t = i / rate
+            env = min(1.0, i / attack) * math.exp(-i / tau) * min(1.0, (n - i) / release)
+            vibrato = 1 + 0.004 * math.sin(2 * math.pi * 5.5 * t) * min(1.0, t / 0.15)
+            phase = 2 * math.pi * freq * vibrato * t
+            tone = (
+                math.sin(phase)
+                + 0.25 * math.sin(2 * phase)
+                + 0.5 * math.sin(2 * math.pi * freq * 1.004 * t)
+            )
+            values[first + i] += amp * env * tone
+    return _render(values, level, rate)
+
+
 def _render(values: list[float], level: float, rate: int) -> bytes:
     """`values` as a mono 16-bit WAV, scaled so its loudest 100ms has RMS
     `level` (see SHORT_LEVELS) and never past SYNTH_PEAK."""
@@ -175,17 +211,22 @@ def _render(values: list[float], level: float, rate: int) -> bytes:
     return out.getvalue()
 
 
-def builtin_wav(kind: str, style: str = "short", plays: int = 1) -> Path | None:
+def builtin_wav(kind: str, style: str = "short") -> Path | None:
     """The built-in sound for an alert kind in a style ("short" blips or the
-    soft "jingle"), as a file (PlaySound plays files asynchronously, not
-    memory). Written once to the temp folder under a name hashed from its
-    recipe, so changing the recipe makes a new file. None for the "windows"
-    style, an unknown kind, or when it cannot be written - the caller then
-    falls back to the Windows sound. `plays` repeats the pattern with a
-    short gap (alerts.sound_plays): longer, but the first note still lands
-    at once."""
-    plays = max(1, min(MAX_SOUND_PLAYS, int(plays)))
-    if style == "jingle":
+    soft "jingle"; jackpots get their fanfare in either), as a file
+    (PlaySound plays files asynchronously, not memory). Written once to the
+    temp folder under a name hashed from its recipe, so changing the recipe
+    makes a new file. None for the "windows" style, an unknown kind, or when
+    it cannot be written - the caller then falls back to the Windows
+    sound."""
+    if style not in ("short", "jingle"):
+        return None
+    if kind in FANFARE_NOTES:
+        style = "fanfare"  # one file for both styles
+        notes = FANFARE_NOTES[kind]
+        make = synth_fanfare
+        shape = (FANFARE_ATTACK_S, FANFARE_RELEASE_S)
+    elif style == "jingle":
         notes = JINGLE_NOTES.get(kind)
         make = synth_jingle
         shape = (JINGLE_ATTACK_S,)
@@ -193,8 +234,6 @@ def builtin_wav(kind: str, style: str = "short", plays: int = 1) -> Path | None:
         notes = SHORT_NOTES.get(kind)
         make = synth_wav
         shape = (SYNTH_ATTACK_S,)
-    else:
-        return None
     if notes is None:
         return None
     level = SHORT_LEVELS.get(kind, 0.06)
@@ -202,8 +241,6 @@ def builtin_wav(kind: str, style: str = "short", plays: int = 1) -> Path | None:
         style,
         notes,
         level,
-        plays,
-        REPEAT_GAP_S,
         SYNTH_RATE,
         *shape,
         SYNTH_RELEASE_S,
@@ -211,12 +248,11 @@ def builtin_wav(kind: str, style: str = "short", plays: int = 1) -> Path | None:
         SYNTH_VERSION,
     )
     digest = hashlib.sha1(repr(recipe).encode(), usedforsecurity=False).hexdigest()
-    name = f"valdo-{style}-{kind}" + (f"-x{plays}" if plays > 1 else "")
-    path = Path(tempfile.gettempdir()) / f"{name}-{digest[:12]}.wav"
+    path = Path(tempfile.gettempdir()) / f"valdo-{style}-{kind}-{digest[:12]}.wav"
     try:
         if not path.is_file():
             partial = path.with_suffix(".part")
-            partial.write_bytes(repeat_wav(make(notes, level), plays, REPEAT_GAP_S))
+            partial.write_bytes(make(notes, level))
             partial.replace(path)
     except OSError:
         return None
@@ -349,7 +385,7 @@ def load_wav(path: str = "", default: Path | None = None) -> bytes | None:
         return None
 
 
-def repeat_wav(data: bytes, times: int, gap_s: float = 0.0) -> bytes:
+def repeat_wav(data: bytes, times: int) -> bytes:
     """`data` with its audio played `times` times back to back, as one WAV.
     One async PlaySound of it then plays N times and can still be cut off
     by the next command, which a play-N-times loop could not. Returns
@@ -363,8 +399,7 @@ def repeat_wav(data: bytes, times: int, gap_s: float = 0.0) -> bytes:
         out = io.BytesIO()
         with wave.open(out, "wb") as dst:
             dst.setparams(params)
-            gap = b"\0" * (int(params.framerate * gap_s) * params.sampwidth * params.nchannels)
-            dst.writeframes((frames + gap) * (times - 1) + frames)
+            dst.writeframes(frames * times)
         return out.getvalue()
     except (wave.Error, ValueError, EOFError, MemoryError):
         return data  # plays once rather than not at all
