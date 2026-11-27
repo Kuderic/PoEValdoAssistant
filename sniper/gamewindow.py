@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import psutil
 
@@ -81,6 +82,80 @@ def stop_taskbar_flash(hwnd: int) -> None:
         win32gui.FlashWindowEx(hwnd, win32con.FLASHW_STOP, 0, 0)
 
 
+def find_window(title: str) -> int:
+    """The first visible top-level window titled exactly `title`, or 0."""
+    if win32gui is None:
+        return 0
+    matches: list[int] = []
+
+    def enum_cb(hwnd: int, _param: object) -> None:
+        if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) == title:
+            matches.append(hwnd)
+
+    win32gui.EnumWindows(enum_cb, None)
+    return matches[0] if matches else 0
+
+
+@dataclass(frozen=True)
+class GameRect:
+    """The game window's client area, twice over: `x, y, w, h` in this
+    process's own (Tk) coordinates, and `pw, ph` its size in physical
+    pixels. The app is DPI-unaware, so on a scaled display Windows hands it
+    virtualised coordinates; PoE lays its UI out in physical pixels."""
+
+    x: int
+    y: int
+    w: int
+    h: int
+    pw: int
+    ph: int
+
+    def to_tk(self, px: float, py: float) -> tuple[float, float]:
+        """A physical client point -> Tk screen coordinates."""
+        return self.x + px * self.w / self.pw, self.y + py * self.h / self.ph
+
+    def to_physical(self, tx: float, ty: float) -> tuple[float, float]:
+        """Tk coordinates relative to the client's top left -> physical."""
+        return tx * self.pw / self.w, ty * self.ph / self.h
+
+
+def _client_rect(hwnd: int) -> tuple[int, int, int, int]:
+    import ctypes.wintypes
+
+    user32 = ctypes.windll.user32
+    rect = ctypes.wintypes.RECT()
+    user32.GetClientRect(hwnd, ctypes.byref(rect))
+    origin = ctypes.wintypes.POINT(0, 0)
+    user32.ClientToScreen(hwnd, ctypes.byref(origin))
+    return origin.x, origin.y, rect.right, rect.bottom
+
+
+def game_client_rect(title: str) -> GameRect | None:
+    """The PoE window's client area, or None (not found, minimized, or no
+    win32). Quick user32 calls; fine on the Tk thread."""
+    hwnd = find_window(title)
+    if not hwnd or win32gui.IsIconic(hwnd):
+        return None
+    import ctypes
+
+    try:
+        x, y, w, h = _client_rect(hwnd)
+        # the same rect in PHYSICAL pixels: this thread is per-monitor DPI
+        # aware just for the call (as tools/screenshots.py does)
+        user32 = ctypes.windll.user32
+        previous = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+        try:
+            _px, _py, pw, ph = _client_rect(hwnd)
+        finally:
+            user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(previous))
+    except (OSError, AttributeError) as e:
+        event("game_rect_failed", reason=repr(e))
+        return None
+    if min(w, h, pw, ph) <= 0:
+        return None
+    return GameRect(x, y, w, h, pw, ph)
+
+
 def focus_poe_window(title: str) -> bool:
     """Bring the PoE window to the foreground. Blocking win32 calls - run in
     the executor. Windows refuses SetForegroundWindow from background
@@ -90,17 +165,10 @@ def focus_poe_window(title: str) -> bool:
     if win32gui is None:
         return False
 
-    matches: list[int] = []
-
-    def enum_cb(hwnd: int, _param: object) -> None:
-        if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) == title:
-            matches.append(hwnd)
-
-    win32gui.EnumWindows(enum_cb, None)
-    if not matches:
+    hwnd = find_window(title)
+    if not hwnd:
         event("focus_failed", reason="window_not_found", title=title)
         return False
-    hwnd = matches[0]
     if win32gui.GetForegroundWindow() == hwnd:
         # the usual case (the hotkey was pressed in game): nothing to do, and
         # no ALT tap or foreground request that could flash the taskbar

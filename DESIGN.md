@@ -342,7 +342,13 @@ jackpot its own alarm, once; `alerts.alert_sound` picks a
 batch's one sound: super, then jackpot, then generic, then Valdo). The
 play count (`sound.JACKPOT_PLAYS` / `SUPER_JACKPOT_PLAYS`, both 1) is baked
 into the WAV (`sound.repeat_wav`, cached per volume), so
-it is still one async PlaySound that a mute can cut off. Until the alarm has
+it is still one async PlaySound that a mute can cut off.
+With `alerts.short_sounds` (default) an empty sound setting plays a built-in
+blip instead of the Windows file (`sound.short_wav`: synthesised once into
+the temp folder from `SHORT_NOTES`, 0.11-0.32s, full level within 2ms,
+loudest 100ms RMS matched to the Windows sound it replaces via
+`SHORT_LEVELS`). Long sounds made the user wait for them to finish before
+pressing; PlaySound itself returns in under 1ms here, idle or interrupting. Until the alarm has
 finished (its WAV's length), a routine alert sound is skipped so it cannot
 cut it off. A travel that fails because the listing is gone
 (`click_result` reason `row_gone` or `item_no_longer_available`) stops the
@@ -710,6 +716,59 @@ listing can still be judged after its alert has gone.
   keeps the keyboard. The press publishes `HotkeyPressed` on the bus first.
 - Hotkey is inert (no-op with a soft warning) if the PoE process is not
   detected.
+
+## Shop marker
+
+After a travel lands, the item's cell (`listing.stash {name, x, y}`) is
+outlined over the game while the seller's hideout loads, so it can be
+clicked in Faustus' Merchant window at once. Draw-only: the marker never
+clicks, sends input or reads the game's memory, so the one-press-one-action
+rule is untouched.
+
+- **When** (`shopgrid.ShopMarker`, fed by the overlay): the `Traveled` view
+  supplies the stash spot and an ok `ClickOutcome` for the same listing arms
+  it. The first area load within `ARM_S` (20s) after that is the seller's
+  hideout: the marker goes up. Any later load (leaving) takes it down, as
+  does `shop_overlay.seconds` (60). With no client log the marker goes up as
+  soon as the travel lands. Failed travels and listings without a stash
+  spot never arm it.
+- **Area loads** (`clientlog.ClientLogWatcher`, own daemon thread): tails
+  `<game dir>/logs/LatestClient.txt` (else `Client.txt`; the game dir comes
+  from the running process's exe, `shop_overlay.client_log` overrides) and
+  publishes `AreaEntered` for each line matching
+  `] Generating level N area "<id>"`. That line is written as the load
+  starts, about 1s before the localised "You have entered ...". Verified
+  against a real 3.30 log: `Generating level 60 area "HideoutTemplarLab"`,
+  then "You have entered Cartographer's Hideout", with a 1.08s loading
+  screen. `ClientLogStatus` says which file is followed (or none).
+- **Where** (`shopgrid.place` / `cell_box`): PoE scales its UI with client
+  height, the inventory panel is pinned right, and the Merchant window is
+  centred in the space left of it. So one measurement (`ShopGrid`: grid
+  left/top/size at width x height, physical pixels) gives size and top in
+  proportion to height, and the grid centre a height-proportional distance
+  left of the client centre. Default measured from a 2560x1440 capture: the
+  blue border spans x 412-1261, y 345-1195 (12 cells of 70.8px). It was
+  checked on that capture and, scaled down, over a 1280x720 window.
+  A cell past 11 means a quad tab (24 cells per side), as on the alert card.
+- **Drawing** (`shopoverlay.ShopMarkerWindow`): a borderless Tk Toplevel
+  over the game's client rect with a `-transparentcolor` key background and
+  `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`.
+  Clicks fall through, and focus stays with the game: Tk never maps it, so
+  it is shown with `SW_SHOWNOACTIVATE` + `SetWindowPos(SWP_NOACTIVATE)` and
+  hidden with `SW_HIDE`. The app is DPI-unaware, so
+  `gamewindow.game_client_rect` reads the client rect twice: in Tk's
+  virtualised coordinates (where to draw) and, under a temporary
+  per-monitor-aware thread context, in physical pixels (what PoE lays out
+  in).
+- **Calibration** (`shopoverlay.Calibrator`, ⚙ General): a dimmed layer
+  over the game takes two clicks on the grid's corners (`from_corners`
+  refuses tiny or far-from-square boxes), previews 12x12 lines, and Enter
+  saves. Settings live in `shop_overlay.yaml` in the state folder (toggle +
+  grid), separate from `scoring_overrides.yaml` so neither save can clobber
+  the other. They win over `config.yaml`'s `shop_overlay`.
+- Logged: `client_log`, `shop_marker_armed`, `shop_marker_shown` (stash, game
+  size, calibrated or not), `shop_marker_hidden` (reason),
+  `shop_marker_skipped`, `shop_calibration_started/done`.
 
 ## Packaging and self-update
 

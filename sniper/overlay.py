@@ -25,8 +25,10 @@ from sniper import icon as app_icon
 from sniper.alerts import AlertView, alert_sound
 from sniper.bus import (
     AlertsChanged,
+    AreaEntered,
     Bus,
     ClickOutcome,
+    ClientLogStatus,
     GameStatus,
     HotkeyPressed,
     ListingSeen,
@@ -39,10 +41,18 @@ from sniper.bus import (
     WarmupStatus,
 )
 from sniper.config import Config
-from sniper.gamewindow import raise_without_focus
+from sniper.gamewindow import game_client_rect, raise_without_focus
 from sniper.logging_setup import event
 from sniper.margin import net_yield
 from sniper.server import EXPECTED_USERSCRIPT_VERSION, INSTALL_PATH
+from sniper.shopgrid import (
+    DEFAULT_GRID,
+    SHOP_OVERLAY_NAME,
+    ShopGrid,
+    ShopMarker,
+)
+from sniper.shopgrid import save as save_shop_settings
+from sniper.shopoverlay import Calibrator, ShopMarkerWindow
 from sniper.sound import (
     GENERIC_WAV,
     JACKPOT_PLAYS,
@@ -52,6 +62,7 @@ from sniper.sound import (
     SoundCommand,
     SoundWorker,
     alert_wav_path,
+    short_wav,
     wav_seconds,
 )
 
@@ -563,6 +574,8 @@ JACKPOT_SOUND_S = 4.0
 # A failed travel shows in a red bar at the top for this long (or until the
 # next press / a travel that works), then clears.
 TRAVEL_FAIL_S = 10.0
+# the settings panel's Test button shows the shop grid over the game this long
+SHOP_TEST_S = 10.0
 # plain words for the userscript's click_result reasons
 FAIL_TEXT = {
     "row_gone": "listing is gone from the trade page",
@@ -768,6 +781,21 @@ class Overlay:
         self._current_running_cost = config.thresholds.running_cost
         self._current_combo = config.hotkey.combo
         self._raise_on_hotkey = config.hotkey.raise_overlay
+        # In-game shop marker (sniper.shopgrid / sniper.shopoverlay): after a
+        # travel click lands, the seller's item cell is outlined over the
+        # game once the hideout starts loading
+        self._shop_enabled = config.shop_overlay.enabled
+        self._shop_grid: ShopGrid | None = config.shop_overlay.grid  # None = default
+        self._shop_marker = ShopMarker(config.shop_overlay.seconds)
+        self._shop_window: ShopMarkerWindow | None = None  # built on first use
+        # listing id -> stash spot, for travels still waiting on their result
+        self._shop_pending: dict[str, tuple[str, int, int]] = {}
+        self._client_log: str | None = None  # the PoE log followed, if any
+        self._shop_tick_id: str | None = None
+        self._calibrating = False
+        self._calibrator: Calibrator | None = None
+        self._shop_fields: dict[str, tk.Entry] = {}  # the open settings panel's
+        self._shop_note: tk.Label | None = None
         self._fail_token = 0  # cancels a pending hide of the failure bar
         self._tune_window: tk.Toplevel | None = None
         self._settings_tab = ""  # the settings tab last open, this session
@@ -1594,6 +1622,7 @@ class Overlay:
                 if ev.ok:
                     text = "Travel sent" + (f" ({ev.reason})" if ev.reason else "")
                     self._hide_fail()
+                    self._shop_travel_ok(ev.listing_id)
                 else:
                     reason = FAIL_TEXT.get(ev.reason, ev.reason.replace("_", " "))
                     text = f"TRAVEL FAILED: {reason}"
@@ -1624,6 +1653,12 @@ class Overlay:
                 # inline) so it's readable during the loading screen
                 self._pin_top(ev.view)
                 alerts_dirty = True
+                self._shop_traveled(ev.view)
+            elif isinstance(ev, AreaEntered):
+                self._shop_area(ev.area)
+            elif isinstance(ev, ClientLogStatus):
+                self._client_log = ev.path
+                self._show_shop_status()
             elif isinstance(ev, ListingSeen):
                 self._feed_entries.appendleft(ev.entry)
                 feed_dirty = True
@@ -2233,6 +2268,164 @@ class Overlay:
             root.lift()
             root.attributes("-topmost", True)
         event("overlay_raised")
+
+    # ------------------------------------------------------ in-game shop marker
+
+    def _shop_traveled(self, view: AlertView) -> None:
+        """A travel click went out: remember where its item sits until the
+        click's result says whether it landed."""
+        if view.stash is None:
+            return
+        self._shop_pending[view.listing_id] = view.stash
+        while len(self._shop_pending) > 20:
+            self._shop_pending.pop(next(iter(self._shop_pending)))
+
+    def _shop_travel_ok(self, listing_id: str) -> None:
+        stash = self._shop_pending.pop(listing_id, None)
+        if stash is None or not self._shop_enabled:
+            return
+        log_live = self._client_log is not None
+        event("shop_marker_armed", listing_id=listing_id, stash=list(stash), log=log_live)
+        shown = self._shop_marker.travel_ok(stash, time.monotonic(), log_live)
+        if shown is not None:  # no log to wait on: mark it right away
+            self._shop_show(shown, reason="travel_ok_no_log")
+
+    def _shop_area(self, area: str) -> None:
+        action, stash = self._shop_marker.area_entered(time.monotonic())
+        if action == "show" and stash is not None:
+            self._shop_show(stash, reason="area", area=area)
+        elif action == "hide":
+            self._shop_hide("left_area", area=area)
+
+    def _shop_show(self, stash, reason: str, test: bool = False, **fields) -> None:
+        rect = game_client_rect(self._config.game.window_title)
+        if rect is None:
+            self._shop_marker.cancel()
+            event("shop_marker_skipped", reason="game_window_not_found")
+            return
+        if self._shop_window is None:
+            self._shop_window = ShopMarkerWindow(self._root, self._families.get("ui", "Segoe UI"))
+        grid = self._shop_grid or DEFAULT_GRID
+        self._shop_window.show(rect, grid, stash, test=test)
+        event(
+            "shop_marker_shown",
+            reason=reason,
+            stash=list(stash),
+            test=test,
+            game=[rect.pw, rect.ph],
+            calibrated=self._shop_grid is not None,
+            **fields,
+        )
+        if self._shop_tick_id is None:
+            self._shop_tick_id = self._root.after(250, self._shop_tick)
+
+    def _shop_tick(self) -> None:
+        self._shop_tick_id = None
+        if self._shop_marker.tick(time.monotonic()):
+            self._shop_hide("timeout")
+        elif self._shop_marker.shown is not None:
+            self._shop_tick_id = self._root.after(250, self._shop_tick)
+
+    def _shop_hide(self, reason: str, **fields) -> None:
+        if self._shop_window is not None and self._shop_window.visible:
+            self._shop_window.hide()
+            event("shop_marker_hidden", reason=reason, **fields)
+
+    def _shop_test(self) -> dict:
+        """Settings panel: show the grid and a corner cell for a few
+        seconds, so the user can check it against an open Merchant window."""
+        if game_client_rect(self._config.game.window_title) is None:
+            return {"text": "PoE window not found - start the game first", "fg": BAD}
+        stash = self._shop_marker.show_now(("", 0, 0), time.monotonic(), SHOP_TEST_S)
+        self._shop_show(stash, reason="test", test=True)
+        return {"text": f"Showing the grid over the game for {SHOP_TEST_S:.0f}s", "fg": GOOD}
+
+    def _shop_calibrate(self) -> dict:
+        """Settings panel: two clicks on the grid's corners, over the game."""
+        if self._calibrating:
+            return {"text": "Calibration already open", "fg": WARN}
+        rect = game_client_rect(self._config.game.window_title)
+        if rect is None:
+            return {"text": "PoE window not found - start the game first", "fg": BAD}
+        self._shop_marker.cancel()
+        self._shop_hide("calibrating")
+        self._calibrating = True
+        event("shop_calibration_started", game=[rect.pw, rect.ph])
+
+        def done(grid: ShopGrid | None) -> None:
+            self._calibrating = False
+            event("shop_calibration_done", grid=None if grid is None else dict(vars(grid)))
+            if grid is None:
+                self._shop_say("Calibration cancelled", DIM)
+                return
+            self._shop_grid = grid
+            self._save_shop()
+            self._fill_shop_fields()
+            self._shop_say("Calibrated ✓ - saved", GOOD)
+
+        self._calibrator = Calibrator(self._root, rect, done, self._families.get("ui", "Segoe UI"))
+        return {"text": "Click the grid's corners over the game (Esc cancels)", "fg": DIM}
+
+    def _set_shop_enabled(self, on: bool) -> None:
+        self._shop_enabled = on
+        if not on and self._shop_marker.cancel():
+            self._shop_hide("disabled")
+        self._save_shop()
+
+    def _save_shop(self) -> None:
+        try:
+            save_shop_settings(
+                self._config.state_dir / SHOP_OVERLAY_NAME, self._shop_enabled, self._shop_grid
+            )
+        except OSError as e:
+            event("shop_settings_save_failed", error=repr(e))
+
+    def _shop_say(self, text: str, fg: str) -> None:
+        note = self._shop_note
+        if note is not None and note.winfo_exists():
+            note.config(text=text, fg=fg)
+
+    def _fill_shop_fields(self) -> None:
+        """Put the grid in force into the open settings panel's boxes."""
+        g = self._shop_grid or DEFAULT_GRID
+        values = {
+            "left": _fmt(g.left),
+            "top": _fmt(g.top),
+            "size": _fmt(g.size),
+            "at": f"{g.width}x{g.height}",
+        }
+        for key, box in self._shop_fields.items():
+            if box.winfo_exists():
+                box.delete(0, "end")
+                box.insert(0, values[key])
+
+    def _shop_fields_changed(self) -> None:
+        """Typed grid numbers: apply + save when they make a valid grid."""
+        boxes = self._shop_fields
+        try:
+            w, _, h = boxes["at"].get().lower().replace("×", "x").partition("x")
+            grid = ShopGrid(
+                left=float(boxes["left"].get()),
+                top=float(boxes["top"].get()),
+                size=float(boxes["size"].get()),
+                width=int(w),
+                height=int(h),
+            )
+        except (ValueError, KeyError) as e:
+            self._shop_say(f"Shop grid not saved: {e}", BAD)
+            return
+        self._shop_grid = None if grid == DEFAULT_GRID else grid
+        self._save_shop()
+        self._shop_say("Shop grid saved ✓", GOOD)
+
+    def _show_shop_status(self) -> None:
+        """The panel's line on whether PoE's log is being followed."""
+        self._shop_say(self._shop_status_text(), DIM)
+
+    def _shop_status_text(self) -> str:
+        if self._client_log:
+            return f"Following {os.path.basename(self._client_log)}: marks on hideout load."
+        return "PoE's log not found (is the game running?): marks as soon as travel lands."
 
     def _show_dead(self, tabs) -> None:
         """The red LIVE SEARCH STOPPED bar while any tab's live search is
@@ -3167,6 +3360,107 @@ class Overlay:
         vol_e = field("Alert volume (0 - 1)", _fmt(self._volume), search="sound")
         end_card()
 
+        # In-game shop marker: its own file (shop_overlay.yaml) and its own
+        # saves, so a calibration never waits on the rest of the panel
+        heading("Shop marker (in game)")
+        card, r = next_row()
+        shop_hint = (
+            "After a travel lands, outline the item's cell over the game\n"
+            "as the seller's hideout loads, so you can click it in Faustus'\n"
+            "Merchant window at once. Draw-only: it never clicks for you.\n"
+            "Needs windowed or borderless fullscreen PoE."
+        )
+        shop_name = row_label(card, r, "Mark the item in Faustus' shop", shop_hint)
+        shop_btn = tk.Label(card, bg=BOX, font=self._font("ui", 9), padx=8, cursor="hand2")
+
+        def show_shop_toggle() -> None:
+            on = self._shop_enabled
+            shop_btn.config(text="☑ On" if on else "☐ Off", fg=GOOD if on else DIM)
+
+        def toggle_shop(_event=None) -> None:
+            self._set_shop_enabled(not self._shop_enabled)
+            show_shop_toggle()
+
+        show_shop_toggle()
+        shop_btn.bind("<Button-1>", toggle_shop)
+        shop_btn.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
+        self._shop_toggle = (shop_btn, toggle_shop)  # for tests
+        sections[-1]["rows"].append(
+            (
+                f"mark the item in faustus' shop {shop_hint} merchant overlay".casefold(),
+                [shop_name, shop_btn],
+            )
+        )
+        button_row(
+            "Line it up with your game",
+            "Calibrate…",
+            "Open a Merchant window in game first (Faustus in any\n"
+            "seller's hideout), then click its grid's top-left and\n"
+            "bottom-right corners. Enter saves.",
+            "calibrate shop grid corners resolution",
+            lambda: self._shop_say(**self._shop_calibrate()),
+        )
+        button_row(
+            "Check it",
+            f"Show grid {SHOP_TEST_S:.0f}s",
+            "Draws the grid over the game; with a Merchant window open\n"
+            "its lines should sit on the shop's cell lines.",
+            "test shop grid",
+            lambda: self._shop_say(**self._shop_test()),
+        )
+        g = self._shop_grid or DEFAULT_GRID
+        grid_hint = (
+            "The Merchant grid's outer edge in game pixels, measured\n"
+            "at the resolution below; other resolutions scale from it.\n"
+            "Calibrate fills these in."
+        )
+        self._shop_fields = {
+            "left": field("Grid left (px)", _fmt(g.left), hint=grid_hint, search="shop"),
+            "top": field("Grid top (px)", _fmt(g.top), search="shop grid"),
+            "size": field("Grid size (px)", _fmt(g.size), search="shop grid width"),
+            "at": field(
+                "Measured at (W x H)",
+                f"{g.width}x{g.height}",
+                width=10,
+                search="shop grid resolution",
+            ),
+        }
+
+        def reset_shop() -> None:
+            self._shop_grid = None
+            self._save_shop()
+            self._fill_shop_fields()
+            self._shop_say("Back to the default grid ✓", GOOD)
+
+        button_row(
+            "Default grid", "Reset", "Forget the calibration.", "shop reset default", reset_shop
+        )
+        card, r = next_row()
+        self._shop_note = tk.Label(
+            card,
+            text=self._shop_status_text(),
+            bg=SURFACE,
+            fg=DIM,
+            font=self._font("ui", 8),
+            anchor="w",
+            justify="left",
+            wraplength=390,
+        )
+        self._shop_note.grid(row=r, column=0, columnspan=3, sticky="w", padx=12, pady=(4, 2))
+        sections[-1]["rows"].append(("shop marker log status", [self._shop_note]))
+        shop_pending: list[str] = []
+
+        def schedule_shop_save(_event=None) -> None:
+            if shop_pending:
+                win.after_cancel(shop_pending.pop())
+            shop_pending.append(
+                win.after(600, lambda: win.winfo_exists() and self._shop_fields_changed())
+            )
+
+        for box in self._shop_fields.values():
+            box.bind("<KeyRelease>", schedule_shop_save)
+        end_card()
+
         # Files: settings, price cache and logs live in a per-user folder
         # (%LOCALAPPDATA%/ValdoSniper for the exe), out of sight - so say where
         heading("Files")
@@ -3458,6 +3752,8 @@ class Overlay:
             # panel closes has nothing dead to write into
             self._price_entries = {}
             self._price_labels = {}
+            self._shop_fields = {}
+            self._shop_note = None
             win.destroy()
 
         win.protocol("WM_DELETE_WINDOW", on_close)
@@ -3849,6 +4145,10 @@ class Overlay:
             "jackpot": (alerts.jackpot_sound, JACKPOT_WAV),
             "super": (alerts.super_jackpot_sound, SUPER_JACKPOT_WAV),
         }.get(kind, (alerts.sound, None))
+        # an empty setting plays the built-in short sound unless the user
+        # chose the (long) Windows sounds; a .wav of their own always wins
+        if alerts.short_sounds:
+            default = short_wav(kind) or default
         plays = SOUND_PLAYS.get(kind, 1)
         volume = self._volume
         # `kind` belongs in the key even though `configured` usually
@@ -3885,9 +4185,10 @@ class Overlay:
 
     def _sound_backend(self, command: SoundCommand) -> None:
         """Runs on the SoundWorker thread. PlaySound loads the audio
-        synchronously even with SND_ASYNC (~100-500ms when interrupting a
-        playing sound), so it must never run on the UI thread - burst alerts
-        would delay rendering."""
+        synchronously even with SND_ASYNC, so it stays off the UI thread.
+        Measured on a Windows 11 PC (2026-11): the call returns in under
+        1ms, idle or cutting off a playing sound - the start delay you hear
+        is the sound itself, which is why the built-in sounds are short."""
         if winsound is None:
             return
         if command.kind == "stop":

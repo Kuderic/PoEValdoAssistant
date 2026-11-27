@@ -9,6 +9,8 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from sniper.shopgrid import SHOP_OVERLAY_NAME, ShopGrid, grid_from_mapping, load_saved
+
 
 class ConfigError(Exception):
     pass
@@ -163,6 +165,9 @@ class AlertsConfig:
     # distinguishable without looking; empty falls back to sound.GENERIC_WAV.
     generic_sound: str = ""
     volume: float = 0.5  # 0.0-1.0; scales both alert WAVs (see sniper/sound.py)
+    # Empty sound settings play built-in 0.1-0.3s blips (sound.SHORT_NOTES);
+    # false = the longer Windows sounds (Exclamation, tada, Alarm02/03).
+    short_sounds: bool = True
     traveled_display_seconds: float = 10.0  # keep the traveled map's mods readable
     feed_rows: int = 40  # live-feed history rows (the area scrolls)
     # Jackpot: net AND yield both at or above these (see margin.is_jackpot).
@@ -325,6 +330,19 @@ class GameConfig:
 
 
 @dataclass(frozen=True)
+class ShopOverlayConfig:
+    """The in-game shop marker (sniper.shopgrid / sniper.shopoverlay)."""
+
+    enabled: bool = True
+    # how long the marker stays up after the seller's hideout starts loading
+    seconds: float = 60.0
+    # PoE's Client.txt / LatestClient.txt; empty = found from the game process
+    client_log: str = ""
+    # the Merchant window's grid at some resolution; None = DEFAULT_GRID
+    grid: ShopGrid | None = None
+
+
+@dataclass(frozen=True)
 class LoggingConfig:
     level: str = "INFO"
     dir: str = "logs"
@@ -364,6 +382,7 @@ class Config:
     game: GameConfig
     logging: LoggingConfig
     updates: UpdatesConfig = field(default_factory=UpdatesConfig)
+    shop_overlay: ShopOverlayConfig = field(default_factory=ShopOverlayConfig)
     # folder for per-user state: scoring_overrides.yaml, price_cache.json
     state_dir: Path = field(default_factory=Path)
 
@@ -664,6 +683,8 @@ def load_config(
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", updates.repo):
         raise ConfigError(f"updates.repo must look like owner/name, got {updates.repo!r}")
 
+    shop = _shop_overlay(section("shop_overlay"), state / SHOP_OVERLAY_NAME)
+
     game_raw = section("game")
     return Config(
         league=str(raw.get("league", "")),
@@ -683,5 +704,40 @@ def load_config(
         ),
         logging=build(LoggingConfig, "logging"),
         updates=updates,
+        shop_overlay=shop,
         state_dir=state,
+    )
+
+
+def _shop_overlay(raw: dict, saved_path: Path) -> ShopOverlayConfig:
+    """config.yaml's shop_overlay, with the settings panel's saved toggle
+    and calibrated grid (shop_overlay.yaml) over it."""
+    allowed = {f.name for f in fields(ShopOverlayConfig)}
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ConfigError(
+            f"config section 'shop_overlay' has unknown key(s) {sorted(unknown)}; "
+            f"allowed: {sorted(allowed)}"
+        )
+    grid = None
+    if raw.get("grid") is not None:
+        try:
+            grid = grid_from_mapping(raw["grid"])
+        except ValueError as e:
+            raise ConfigError(f"shop_overlay.{e}") from None
+    try:
+        seconds = float(raw.get("seconds", ShopOverlayConfig.seconds))
+    except (TypeError, ValueError):
+        raise ConfigError("shop_overlay.seconds must be a number") from None
+    if seconds <= 0:
+        raise ConfigError("shop_overlay.seconds must be > 0")
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError("shop_overlay.enabled must be true or false")
+    saved = load_saved(saved_path)
+    return ShopOverlayConfig(
+        enabled=saved.get("enabled", enabled),
+        seconds=seconds,
+        client_log=str(raw.get("client_log") or ""),
+        grid=saved.get("grid", grid),
     )

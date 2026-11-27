@@ -46,6 +46,105 @@ SUPER_JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm03.wav")
 SUPER_JACKPOT_PLAYS = 1
 
 
+# Built-in SHORT alert sounds (alerts.short_sounds, on by default): synthesised
+# blips that hit full volume within a few ms and are over in 0.1-0.3s. The
+# Windows sounds above run 1.4-4s, and a sound still playing quietly invites
+# waiting for it to finish before pressing the hotkey. Each kind keeps its
+# own shape so they are still told apart by ear:
+#   valdo    one blip
+#   generic  two rising notes
+#   jackpot  two quick beeps and a higher one
+#   super    a fast four-note run upward
+# (frequency Hz, seconds) per note; 0 Hz is a silent gap.
+SHORT_NOTES: dict[str, tuple[tuple[float, float], ...]] = {
+    "valdo": ((1760, 0.11),),
+    "generic": ((1175, 0.07), (1760, 0.10)),
+    "jackpot": ((1568, 0.07), (0, 0.025), (1568, 0.07), (0, 0.025), (2093, 0.12)),
+    "super": ((1319, 0.06), (1568, 0.06), (2093, 0.06), (2637, 0.14)),
+}
+SYNTH_RATE = 44100
+SYNTH_ATTACK_S = 0.003  # fast, but not a click
+SYNTH_RELEASE_S = 0.006  # fade the tail to zero: no click at the cut
+SYNTH_PEAK = 0.95  # never louder than this, of full scale
+# How loud each one is: RMS of its loudest 100ms, matched to the Windows
+# sound it replaces (Exclamation 0.043, tada 0.036, Alarm02 0.130, Alarm03
+# 0.090 - those files are mastered QUIET) and ~3dB over the routine ones,
+# since a 0.1s sound reads quieter than a long one at the same level. So the
+# volume setting means what it meant before; normalising to full scale
+# instead made them ~18dB louder.
+SHORT_LEVELS = {"valdo": 0.06, "generic": 0.06, "jackpot": 0.13, "super": 0.13}
+LEVEL_WINDOW_S = 0.1
+# bump when synth_wav itself changes, so cached files are rebuilt
+SYNTH_VERSION = 3
+
+
+def synth_wav(notes, level: float = 0.06, rate: int = SYNTH_RATE) -> bytes:
+    """A mono 16-bit PCM WAV of `notes` ((frequency, seconds), ...): each a
+    tone with a touch of its octave for brightness, a near-instant attack
+    and a decay, so it reads as a crisp blip rather than a beep."""
+    import math
+
+    values: list[float] = []
+    for freq, seconds in notes:
+        n = max(1, int(rate * seconds))
+        if freq <= 0:
+            values.extend([0.0] * n)
+            continue
+        attack = max(1, int(rate * SYNTH_ATTACK_S))
+        release = max(1, int(rate * SYNTH_RELEASE_S))
+        tau = n / 2  # still well up at the end: a short sound needs its energy
+        for i in range(n):
+            t = i / rate
+            env = min(1.0, i / attack) * math.exp(-i / tau) * min(1.0, (n - i) / release)
+            tone = math.sin(2 * math.pi * freq * t) + 0.3 * math.sin(4 * math.pi * freq * t)
+            values.append(env * tone)
+    # scaled so its loudest 100ms has RMS `level` (see SHORT_LEVELS), and
+    # never past SYNTH_PEAK
+    win = max(1, int(rate * LEVEL_WINDOW_S))
+    loudest = max(
+        (
+            math.sqrt(sum(v * v for v in values[i : i + win]) / win)
+            for i in range(0, max(1, len(values) - win + 1), max(1, win // 4))
+        ),
+        default=0.0,
+    )
+    top = max((abs(v) for v in values), default=0.0)
+    gain = min(level / loudest, SYNTH_PEAK / top) if loudest and top else 0.0
+    samples = array.array("h", (int(v * gain * 32767) for v in values))
+    if sys.byteorder == "big":
+        samples.byteswap()
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(samples.tobytes())
+    return out.getvalue()
+
+
+def short_wav(kind: str) -> Path | None:
+    """The built-in short sound for an alert kind, as a file (PlaySound
+    plays files asynchronously, not memory). Written once to the temp
+    folder under a name hashed from its notes, so changing them makes a new
+    file (or recipe). None when it cannot be written - the caller falls back to the
+    Windows sound."""
+    notes = SHORT_NOTES.get(kind)
+    if notes is None:
+        return None
+    level = SHORT_LEVELS.get(kind, 0.06)
+    recipe = (notes, level, SYNTH_RATE, SYNTH_ATTACK_S, SYNTH_RELEASE_S, SYNTH_PEAK, SYNTH_VERSION)
+    digest = hashlib.sha1(repr(recipe).encode(), usedforsecurity=False).hexdigest()
+    path = Path(tempfile.gettempdir()) / f"valdo-short-{kind}-{digest[:12]}.wav"
+    try:
+        if not path.is_file():
+            partial = path.with_suffix(".part")
+            partial.write_bytes(synth_wav(notes, level))
+            partial.replace(path)
+    except OSError:
+        return None
+    return path
+
+
 @dataclass(frozen=True)
 class SoundCommand:
     """kind: "valdo" | "generic" | "jackpot" | "super" plays that alert's WAV; "stop"

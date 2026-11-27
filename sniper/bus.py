@@ -50,6 +50,20 @@ class HotkeyPressed:
 
 
 @dataclass(frozen=True)
+class AreaEntered:
+    """PoE's client log says an area load started (sniper.clientlog)."""
+
+    area: str
+
+
+@dataclass(frozen=True)
+class ClientLogStatus:
+    """The client log being followed, or None when none was found."""
+
+    path: str | None
+
+
+@dataclass(frozen=True)
 class Traveled:
     """A travel click just went out for this listing; the overlay pins its
     mods for a few seconds so they're readable during the loading screen."""
@@ -167,6 +181,8 @@ UiEvent = (
     | RewardPrices
     | WarmupStatus
     | PricingHealth
+    | AreaEntered
+    | ClientLogStatus
 )
 
 

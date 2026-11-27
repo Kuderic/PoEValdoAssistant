@@ -24,8 +24,10 @@ from sniper import __version__, logging_setup, paths, pricecache
 from sniper.alerts import AlertStore
 from sniper.bus import (
     AlertsChanged,
+    AreaEntered,
     Bus,
     ClickOutcome,
+    ClientLogStatus,
     FeedEntry,
     GameStatus,
     HotkeyPressed,
@@ -786,6 +788,18 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
     thread = threading.Thread(target=asyncio_thread, name="asyncio-loop", daemon=True)
     thread.start()
 
+    # PoE's client log tells the shop marker when the seller's hideout loads;
+    # its own thread, off the detection path entirely
+    from sniper.clientlog import ClientLogWatcher
+
+    client_log = ClientLogWatcher(
+        config.game.process_names,
+        on_area=lambda area: bus.put(AreaEntered(area)),
+        on_status=lambda path: bus.put(ClientLogStatus(path)),
+        override=config.shop_overlay.client_log,
+    )
+    client_log.start()
+
     try:
         hotkey = Hotkey(config.hotkey.combo, loop, app.hotkey_pressed, app.watcher.running)
     except HotkeyError as e:
@@ -855,6 +869,7 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
         root.mainloop()
     finally:
         hotkey.unregister()
+        client_log.stop()
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
     return restart["requested"]

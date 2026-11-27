@@ -48,7 +48,7 @@ def test_settings_open_on_the_alerts_tab_and_switch(root):
     # (the test config has no risks or pairings, so just the difficulty cards)
     assert shown(ov) == ["Base difficulty", "Difficulty multipliers"]
     ov._settings_select("General")
-    assert shown(ov) == ["Hotkey & sound", "Files"]
+    assert shown(ov) == ["Hotkey & sound", "Shop marker (in game)", "Files"]
 
 
 def test_the_last_tab_is_remembered_when_reopened(root):

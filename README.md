@@ -363,6 +363,15 @@ median, which is inaccurate for foil Valdos), `CACHED PRICE` (last
 session's trade price, refresh pending), `YOUR PRICE` (a price you pinned in
 the ⚙ panel). The first two disappear once a fresh trade average lands.
 
+**The sounds are short on purpose.** Every alert sound is a built-in blip
+of 0.1–0.3 s that is at full volume within 2 ms, so nothing is still
+playing when you react: press on the sound, don't wait for it to end. Each
+is as loud as the Windows sound it replaced, so the volume slider means
+what it did. `alerts.short_sounds: false` brings back the longer Windows
+sounds (Exclamation 1.4 s, tada 1.6 s, alarms ~4 s); a `.wav` of your own in
+`alerts.sound` / `generic_sound` / `jackpot_sound` / `super_jackpot_sound`
+always wins.
+
 **Acting on it:** press the hotkey (default `` ` ``) to travel to the best
 alert by score, click the **TELEPORT** button, or click any row — including
 a grayed-out one in the history — to travel to that specific listing. All
@@ -377,6 +386,23 @@ press.
 tab refreshes that listing — the site locks a used Travel button until then
 — and clicks Travel once. Each click is one travel; nothing repeats on its
 own.
+
+**Shop marker:** once a travel lands, the item's cell is outlined over the
+game as the seller's hideout loads (green box, with the tab name and
+column/row above Faustus' Merchant window), so you can click it the moment
+the shop opens. It goes away when you leave the hideout or after 60s. It
+only draws: clicks pass straight through to the game and it never takes the
+keyboard. It needs **windowed** or **borderless fullscreen** PoE (exclusive
+fullscreen hides every overlay). The timing comes from PoE's own log
+(`logs/LatestClient.txt` in the game folder, found automatically); without
+it the marker goes up as soon as the travel lands.
+
+The grid position was measured at 2560×1440 and scales to other
+resolutions. If the box is off on yours: open any Merchant window in game,
+then **⚙ Settings → General → Shop marker → Calibrate…** and click the
+item grid's top-left and bottom-right corners (Enter saves). **Show grid**
+draws the grid over the game to check it, and the four numbers there can be
+typed in by hand.
 
 ---
 
@@ -419,8 +445,8 @@ Two things worth knowing:
   among themselves by score below it, so a session with no generic tabs
   open behaves exactly as before.
 
-**These get their own sound.** A non-Valdo hit plays `tada.wav` instead of
-the usual Windows Exclamation woop, so you can tell one apart from routine
+**These get their own sound.** A non-Valdo hit plays two rising notes
+instead of the usual single blip, so you can tell one apart from routine
 Valdo traffic without looking at the screen. The one exception is a
 jackpot alarm still playing: a hit arriving during it stays quiet rather
 than cut it off, and waits just below the jackpot. Point
@@ -445,8 +471,8 @@ A Valdo listing that is **both** big money and cheap to run (EV ≥ 15d
 - it stays magenta with `★ JACKPOT` in the live feed, so one you missed is
   obvious later.
 
-It also **plays an alarm once** (`Alarm02.wav`, about 4 seconds,
-at the volume slider) instead of the usual alert sound. An ordinary alert
+It also **plays an alarm once** (two quick beeps and a higher one, a third
+of a second, at the volume slider) instead of the usual alert sound. An ordinary alert
 arriving while it plays stays quiet rather than cut it off. If you travel
 to the jackpot and it turns out to be sold already, the alarm stops. The
 speaker icon mutes everything. The overlay is never pulled to the front. Set
@@ -467,7 +493,7 @@ score ≥ 10 by default) is a super jackpot:
 <img src="docs/overlay-super-jackpot.png" alt="A super jackpot alert: Nimis at 80 divine, +80 EV, score +144, with a gold SUPER JACKPOT banner, gold frame and gold TELEPORT button; a magenta jackpot runner-up sits below it" width="420">
 
 - a gold **★★ SUPER JACKPOT** banner, frame and TELEPORT button;
-- its own alarm (`Alarm03.wav`), played once (about 4 seconds), so
+- its own alarm (a fast four-note run upward, a third of a second), so
   you can tell the tiers apart by ear;
 - it outranks a jackpot for the hotkey;
 - `★★ SUPER` in gold in the live feed.
@@ -530,8 +556,11 @@ them when you know better than the market average, e.g. right after a patch.
 | `mod_warnings` | `block` rules — logged, never alerted, at any price |
 | `hotkey.combo` / `.consume` | Travel key; `all` clears every alert per press, `top` keeps runners-up (a *failed* travel gives them back either way) |
 | `hotkey.raise_overlay` | `true` (default): every press also brings the overlay to the front (restoring it if minimized) without taking focus from the game. `false` leaves it where it is. Also a toggle in ⚙ Settings |
+| `shop_overlay.enabled` / `.seconds` | Outline the item in Faustus' shop after a travel (on) / for how long (60s). Toggle and calibration also in ⚙ Settings → General |
+| `shop_overlay.grid` / `.client_log` | The Merchant grid measured at some resolution (default: 2560×1440) / PoE's log path when it isn't found automatically |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
+| `alerts.short_sounds` | `true` (default): built-in 0.1–0.3 s alert blips. `false`: the longer Windows sounds. Your own `.wav` settings win either way |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (15 / 8), also in the ⚙ panel |
 | `alerts.jackpot_alarm` / `jackpot_sound` | Play an alarm on a jackpot (once; a super jackpot its own alarm, once) instead of the ordinary sound / its .wav |
 | `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 10), also in the ⚙ panel / its alarm .wav |
@@ -633,6 +662,8 @@ searches you aren't actually racing for.
 | Amber bar says `⟳ RELOAD <reward> (+2.7s lag)` | That tab's listings now arrive seconds later than when it was freshly loaded; the bracket is how much later (the median of its recent listings). A busy live search slows down as its results pile up over hours; reload the tab (F5) and it is fast again, and the bar clears |
 | Red bar says `⛔ LIVE SEARCH STOPPED <reward>` (with an error sound) | The trade site ended that tab's live search: it showed "Live Search retry limit exceeded" (it lost the connection and gave up reconnecting) or "Rate-limiting is active for your account". The tab stays open but no listings arrive from it. Press F5 in that tab (after a minute, if rate-limited); the bar clears once it is live again |
 | Alert shows no latency | The DOM path captured it, or the tab is on an old userscript. `python tools/capture_report.py` says which |
+| Shop marker never shows | Run PoE windowed or borderless fullscreen; check it's on in ⚙ Settings → General. The note under it says whether PoE's log was found; the marker needs the listing's stash position, which listings caught from the page (not the network) don't have |
+| Shop marker is beside the item | ⚙ Settings → General → **Calibrate…** with a Merchant window open, or **Show grid** to see how far off it is |
 | Alerts but hotkey does nothing | `PoE not running` in the status strip — the hotkey is deliberately inert without the game |
 | Travel says `item no longer available` | Someone beat you to it — the runner-up is promoted to the top slot, press again to take it. Check the latency figure on the alerts you're losing |
 | Config error on startup naming a rule | Two `mod_scoring` rules share a label; labels must be unique (the ⚙ panel keys on them) |
