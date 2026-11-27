@@ -60,13 +60,19 @@ def test_min_net_is_a_floor_on_top_of_the_yield_bar():
     assert decide(lst, exactly).verdict == "alert"  # at the floor counts
 
 
-def test_chaos_listing_normalized_and_mismatch_flagged():
-    # 9000 chaos = 50 div -> 150 div profit, and currency differs from ref
+def test_chaos_listing_normalized_and_not_a_mismatch():
+    # 9000 chaos = 50 div -> 150 div profit; chaos is the normalization unit,
+    # so pricing in it is no reason for the scam guard to fire
     d = decide(listing(price={"amount": 9000, "currency": "chaos"}))
     assert d.verdict == "alert"
     assert d.listing_chaos == 9000
     assert d.net_div == (36000 - 9000) / 180
-    assert d.currency_mismatch  # chaos listing vs divine reference
+    assert not d.currency_mismatch
+
+
+def test_other_currencies_against_a_divine_reference_still_flag():
+    d = decide(listing(price={"amount": 20, "currency": "exalted"}))
+    assert d.currency_mismatch
 
 
 def test_blocked_by_mod_even_with_huge_margin():

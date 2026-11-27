@@ -409,3 +409,17 @@ def test_ruinous_ghosts_score_on_their_own_not_as_apparitions():
         "Players are assaulted by many dangerous Apparitions",
     ):
         assert sc.evaluate([line]).matched == ("Apparitions",)
+
+
+def test_shipped_essence_rares_multiply_by_1_3(tmp_path):
+    """Wording from logs/ (1,200+ listings)."""
+    from pathlib import Path
+
+    from sniper.config import load_config
+
+    root = Path(__file__).resolve().parent.parent
+    shipped = ModScoring(load_config(root / "config.yaml", state_dir=tmp_path).mod_scoring)
+    clean = shipped.evaluate(["Monsters fire 2 additional Projectiles"]).score
+    r = shipped.evaluate(["Rare Monsters have Essence effects"])
+    assert "Rares have Essence effects" in r.matched
+    assert r.score == pytest.approx(clean * 1.3)

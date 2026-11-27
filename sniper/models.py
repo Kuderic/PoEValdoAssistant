@@ -176,6 +176,14 @@ class Hello:
     # cures a slow tab) from the app reconnecting to a page that stayed open
     page_id: str | None = None
     page_age_s: float | None = None
+    # the page's live search has stopped for good while the tab stays open:
+    # "retry_limit" (the site gave up reconnecting) or "rate_limited" (the
+    # server cut it). None when fine, and from userscripts older than 0.8.6.
+    live_error: str | None = None
+
+
+# live_error values a hello may carry; anything else is ignored
+LIVE_ERRORS = frozenset({"retry_limit", "rate_limited"})
 
 
 @dataclass(frozen=True)
@@ -233,6 +241,10 @@ def parse_frame(msg: object) -> Frame:
             page_id=page_id if isinstance(page_id, str) and page_id else None,
             page_age_s=float(page_age)
             if isinstance(page_age, (int, float)) and not isinstance(page_age, bool)
+            else None,
+            # isinstance first: an unhashable value would raise in the set test
+            live_error=live_error
+            if isinstance(live_error := msg.get("live_error"), str) and live_error in LIVE_ERRORS
             else None,
         )
 

@@ -107,9 +107,19 @@ HELP = {
         "Live-search tabs",
         "Chrome tabs on the trade site running the Valdo Sniper script. Each one is a "
         "live search: the trade site pushes new listings into the tab and the script "
-        "forwards them here the same instant. Green = connected. “stale” = a tab "
-        "stopped checking in (reload it). Amber with a RELOAD bar below = a tab has "
-        "fallen behind. Red = none connected; click to install the script.",
+        "forwards them here the same instant. Green = connected. “stale: Mageblood” = "
+        "that tab stopped checking in (reload it). “update script: …” = those tabs run "
+        "an old script; click to reinstall, then reload them. Amber with a RELOAD bar "
+        "below = a tab has fallen behind. Red = none connected; click to install the "
+        "script.",
+    ),
+    "stopped": (
+        "Live search stopped",
+        "The trade site ended this tab's live search: it showed “Live Search retry "
+        "limit exceeded” (it lost the connection and gave up reconnecting) or "
+        "“Rate-limiting is active for your account”. The tab stays open and still "
+        "talks to the app, but no new listings will arrive from it. Press F5 in that "
+        "Chrome tab to start the live search again; the bar clears once it is back.",
     ),
     "reload": (
         "Reload this tab",
@@ -148,7 +158,8 @@ HELP = {
         "Asking price",
         "What the seller wants, in the currency they listed it in. You pay it at "
         "Faustus in their hideout. Turns red when that currency is not the one the "
-        "reward is priced in, a common bait (e.g. 80 chaos dressed up as 80 divine).",
+        "reward is priced in, a common bait (e.g. 20 exalted read as 20 divine). "
+        "Chaos and alchemy prices are never flagged: they only ever mean a cheaper map.",
     ),
     "net": (
         "EV (expected value)",
@@ -290,6 +301,23 @@ def _stash_spot(x: int, y: int) -> tuple[int, str]:
 def _display_name(key: str) -> str:
     """Reward keys keep their 'Foil ' prefix internally; the UI drops it."""
     return key.removeprefix("Foil ")
+
+
+def _tab_names(picked, total: int) -> str:
+    """Which tabs a pill warning means: 'Mageblood, Headhunter ×2', or
+    'all' when it is every tab (the names would only repeat the list)."""
+    if len(picked) == total and total > 1:
+        return "all"
+    counts: dict[str, int] = {}
+    for t in picked:
+        if t.get("search_reward"):
+            name = _display_name(t["search_reward"])
+        elif t.get("search_kind") == "any":
+            name = "other search"
+        else:
+            name = "unknown tab"
+        counts[name] = counts.get(name, 0) + 1
+    return ", ".join(n if c == 1 else f"{n} ×{c}" for n, c in sorted(counts.items()))
 
 
 def _reload_notes(tabs) -> list[str]:
@@ -539,8 +567,12 @@ TRAVEL_FAIL_S = 10.0
 FAIL_TEXT = {
     "row_gone": "listing is gone from the trade page",
     "item_no_longer_available": "item already sold",
-    "already_clicked": "already traveled to this listing",
+    "already_clicked": "already traveled - click the listing again to re-travel",
     "button_missing": "no Travel button on that listing",
+    # re-travel (a traveled listing clicked again): refresh the row, click once
+    "retravel_busy": "still refreshing that listing",
+    "refresh_missing": "no Refresh button on that listing",
+    "refresh_timeout": "listing did not refresh in time - click again to retry",
 }
 # click_result reasons meaning the listing is gone (sold or delisted): a
 # jackpot alarm still ringing for it has nothing left to announce
@@ -947,6 +979,36 @@ class Overlay:
         )
         self._reload_hint.pack(fill="x", padx=12, pady=(0, 5))
         self._bind_help((self._reload_bar, self._reload_label, self._reload_hint), HELP["reload"])
+
+        # A tab whose live search the trade site has stopped ("Live Search
+        # retry limit exceeded", or rate-limited): red, because that tab will
+        # never push another listing until it is refreshed - while its
+        # script keeps checking in, so nothing else on screen looks wrong.
+        self._dead_bar = tk.Frame(root, bg=BAD_FILL)
+        self._dead_label = tk.Label(
+            self._dead_bar,
+            text="",
+            bg=BAD_FILL,
+            fg="white",
+            font=self._font("ui", 10, "bold"),
+            anchor="w",
+            justify="left",
+            wraplength=490,
+        )
+        self._dead_label.pack(fill="x", padx=12, pady=(5, 0))
+        self._dead_hint = tk.Label(
+            self._dead_bar,
+            text="",
+            bg=BAD_FILL,
+            fg="white",
+            font=self._font("ui", 8),
+            anchor="w",
+            justify="left",
+            wraplength=490,
+        )
+        self._dead_hint.pack(fill="x", padx=12, pady=(0, 5))
+        self._bind_help((self._dead_bar, self._dead_label, self._dead_hint), HELP["stopped"])
+        self._dead_tabs: set[str] = set()  # tab ids already announced
 
         # What is being watched - each searched reward with its price - is
         # the idle card's Watching panel (_render_price_panel); an alert
@@ -1457,7 +1519,8 @@ class Overlay:
             elif isinstance(ev, TabsChanged):
                 n = len(ev.tabs)
                 # a tab whose 30s heartbeat is >75s old is silently dead
-                stale = sum(1 for t in ev.tabs if t.get("hello_age_s", 0) > 75)
+                stale_tabs = [t for t in ev.tabs if t.get("hello_age_s", 0) > 75]
+                stale = len(stale_tabs)
                 self._open_rewards = {t["search_reward"] for t in ev.tabs if t.get("search_reward")}
                 # A tab running an older userscript silently drops whatever
                 # the new version added - the fields just arrive missing,
@@ -1466,14 +1529,19 @@ class Overlay:
                 # grepping userscript_version out of the logs.
                 # A missing version means a script older than the one that
                 # started reporting it, so it is stale too - not unknown.
-                old = sorted(
-                    {
-                        t.get("version") or "pre-0.7.2"
-                        for t in ev.tabs
-                        if t.get("version") != EXPECTED_USERSCRIPT_VERSION
-                    }
-                )
-                text = f"{n} tab{'' if n == 1 else 's'}" + (f" · {stale} stale" if stale else "")
+                old_tabs = [t for t in ev.tabs if t.get("version") != EXPECTED_USERSCRIPT_VERSION]
+                old = sorted({t.get("version") or "pre-0.7.2" for t in old_tabs})
+                # name the tabs, not just count them: "2 stale" left the user
+                # hunting through every tab for the ones to reload
+                text = f"{n} tab{'' if n == 1 else 's'}"
+                if stale:
+                    text += f" · stale: {_tab_names(stale_tabs, n)}"
+                # the trade site stopped a tab's live search (retry limit /
+                # rate-limited): it checks in fine but will push nothing
+                dead_tabs = [t for t in ev.tabs if t.get("live_error")]
+                if dead_tabs:
+                    text += f" · stopped: {_tab_names(dead_tabs, n)}"
+                self._show_dead(ev.tabs)
                 # a tab whose listings have crept from ~1.5s late to 4-6s
                 # late over hours (see sniper.tablag): a reload fixes it
                 slow = _reload_notes(ev.tabs)
@@ -1481,10 +1549,11 @@ class Overlay:
                 if old:
                     # clicking the pill reinstalls; Tampermonkey also picks
                     # the new version up by itself via @updateURL
-                    text += " · update script"
+                    text += f" · update script: {_tab_names(old_tabs, n)}"
                     event("userscript_outdated", running=old, expected=EXPECTED_USERSCRIPT_VERSION)
                 self._tabs_label.config(
-                    text=text, fg=BAD if old else WARN if stale or slow else GOOD if n else BAD
+                    text=text,
+                    fg=BAD if old or dead_tabs else WARN if stale or slow else GOOD if n else BAD,
                 )
                 self._tabs_need_install = bool(old) or n == 0
                 self._tabs_label.set_cursor("hand2" if self._tabs_need_install else "")
@@ -1497,7 +1566,9 @@ class Overlay:
                 unknown = sum(
                     1
                     for t in ev.tabs
-                    if not t.get("search_reward") and t.get("search_kind") != "any"
+                    if not t.get("search_reward")
+                    and t.get("search_kind") != "any"
+                    and not t.get("live_error")  # not loading: stopped, and bannered
                 )
                 extra = []
                 if generic:
@@ -1928,7 +1999,9 @@ class Overlay:
         if self._pinned_top is None and self._alerts:
             self._on_travel(self._alerts[0].listing_id)
         elif self._pinned_top is not None:
-            self._on_travel(self._pinned_top.listing_id)  # no-ops: already traveled
+            # already traveled: the app re-travels it (refresh + one click),
+            # or no-ops if the last travel was under 2s ago
+            self._on_travel(self._pinned_top.listing_id)
 
     def _pin_top(self, view: AlertView) -> None:
         """Sets pin state only; the caller (drain) renders once per batch."""
@@ -2161,6 +2234,33 @@ class Overlay:
             root.attributes("-topmost", True)
         event("overlay_raised")
 
+    def _show_dead(self, tabs) -> None:
+        """The red LIVE SEARCH STOPPED bar while any tab's live search is
+        dead; plays the error sound once per tab as it dies."""
+        dead = [t for t in tabs if t.get("live_error")]
+        new = {t["tab_id"] for t in dead if t.get("tab_id")} - self._dead_tabs
+        self._dead_tabs = {t["tab_id"] for t in dead if t.get("tab_id")}
+        if not dead:
+            self._dead_bar.pack_forget()
+            return
+        if new:
+            self._play_sound("error")
+        names = _tab_names(dead, len(tabs))
+        label = "all tabs" if names == "all" else names
+        self._dead_label.config(text=f"⛔  LIVE SEARCH STOPPED  {label}")
+        if all(t["live_error"] == "rate_limited" for t in dead):
+            hint = (
+                "The trade site is rate-limiting your account. Wait a minute, then press "
+                "F5 in that Chrome tab."
+            )
+        else:
+            hint = (
+                "The trade site gave up reconnecting. Press F5 in that Chrome tab: no "
+                "listings arrive from it until you do."
+            )
+        self._dead_hint.config(text=hint)
+        self._pack_top_bar(self._dead_bar)
+
     def _show_reload(self, notes: list[str]) -> None:
         """The amber RELOAD bar, under the status strip, while a tab lags."""
         if not notes:
@@ -2211,10 +2311,11 @@ class Overlay:
 
     def _pack_top_bar(self, bar: tk.Widget) -> None:
         """Pack one of the top bars in its fixed slot - update, then travel
-        failed, then reload - whichever others are showing."""
+        failed, then live search stopped, then reload - whichever others are
+        showing."""
         if bar.winfo_manager():
             return
-        order = [self._update_bar, self._fail_bar, self._reload_bar]
+        order = [self._update_bar, self._fail_bar, self._dead_bar, self._reload_bar]
         after = order[order.index(bar) + 1 :]
         nxt = next((b for b in after if b.winfo_manager()), self._card)
         bar.pack(fill="x", before=nxt)
@@ -3771,8 +3872,10 @@ class Overlay:
             self._alert_wav(kind)
 
     def _play_sound(self, kind: str = "valdo") -> None:
-        """kind: "valdo" | "generic" | "jackpot" | "super". One async play
-        (a jackpot's WAV already holds its repeats)."""
+        """kind: "valdo" | "generic" | "jackpot" | "super" | "error". One
+        async play (a jackpot's WAV already holds its repeats). "error" is
+        the Windows error sound, deliberately unlike any listing alert so it
+        never reads as a snipe to press the hotkey on."""
         if self._muted or self._volume <= 0:
             return
         if winsound is None:
@@ -3789,6 +3892,11 @@ class Overlay:
             return
         if command.kind == "stop":
             winsound.PlaySound(None, 0)  # stops a sound mid-play
+            return
+        if command.kind == "error":
+            winsound.PlaySound(
+                "SystemHand", winsound.SND_ALIAS | winsound.SND_ASYNC | winsound.SND_NODEFAULT
+            )
             return
         path = self._alert_wav(command.kind)
         if path is not None:

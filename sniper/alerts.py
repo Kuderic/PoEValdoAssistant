@@ -169,13 +169,11 @@ class AlertStore:
         pushed to the top of the hotkey - it still alerts normally, with its
         mismatch banner.
 
-        Except chaos: plenty of sellers price in chaos rather than divine,
-        and chaos is the unit every price is normalized to, so a chaos
-        listing's net is as trustworthy as a divine one's. It still shows
-        its MISMATCH banner; it just is not barred from the jackpot tier."""
+        Chaos and alchemy listings are never mismatches in the first place
+        (margin.SAFE_LISTING_CURRENCIES), so they can be jackpots."""
         if decision.listing.generic:
             return False
-        if decision.currency_mismatch and decision.listing.price.currency != "chaos":
+        if decision.currency_mismatch:
             return False
         return is_jackpot(
             decision.net_div,

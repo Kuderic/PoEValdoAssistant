@@ -246,8 +246,12 @@ the other tabs only. Replayed over the logs, the rule flags Mageblood about
 Python -> Userscript:
 
 ```json
-{ "type": "click_travel", "search_id": "...", "listing_id": "..." }
+{ "type": "click_travel", "search_id": "...", "listing_id": "...", "retravel": true }
 ```
+
+`retravel` is present (and `true`) only for a re-travel to a listing
+already traveled to — see "Re-travel" below; a userscript older than 0.8.6
+ignores it and answers `already_clicked`.
 
 Userscript replies with `{"type": "click_result", "listing_id": "...",
 "ok": true|false, "reason": "..."}` so failures (row gone, button missing,
@@ -256,7 +260,7 @@ silently.
 
 Heartbeat: userscript sends `{"type": "hello", "search_id": ..., "tab_id":
 ..., "search_reward": ..., "search_kind": ..., "live": ..., "version": ...,
-"net_stats": {...}, "page_id": ..., "page_age_s": ...}` on connect and every 30s;
+"net_stats": {...}, "page_id": ..., "page_age_s": ..., "live_error": ...}` on connect and every 30s;
 the overlay shows a per-tab connection indicator so a dead tab is visible
 before it costs a snipe. `search_reward` is the majority reward among
 visible rows when there are any (their exact spelling), else the search
@@ -266,6 +270,23 @@ current site no longer ships — it tells the trade pricer what to price
 before the first live push arrives. While it is unknown the script looks
 again every 2 s (the form can render after the first hello). `search_kind` is `"valdo"` or `"any"`; absent means
 `"valdo"`, so an older userscript keeps its scored behaviour.
+
+`live_error` is `null`, or `"retry_limit"` / `"rate_limited"` once the page's
+live search has died while the tab stays open. From the site's trade.js:
+after 5 failed reconnects `scheduleLiveSearch` shows the toast "Live Search
+retry limit exceeded / Please refresh the page and try again" (timeout 0)
+and calls `cancelLive`; a socket closed with code 1013 shows "Rate-limiting
+is active for your account" and is not retried. The script matches either
+text inside `div.toast-container` (the container is in the progenesis
+snapshot; the toast markup is not, so no inner class is relied on), via a
+MutationObserver plus the 2 s sentinel, and re-hellos at once. The flag
+sticks until a new search is opened in the tab (a refresh reruns the script
+clear); the toast that set it is remembered so it cannot re-fire on that
+next search. The server keeps such a tab listed even if its URL is no longer
+`/live`, logs `live_search_stopped` once, and the overlay shows a red
+LIVE SEARCH STOPPED bar naming the tab, adds `stopped: <tab>` to the tabs
+pill, and plays the Windows error sound once per tab (never a listing
+alert sound, so it cannot be mistaken for a snipe).
 
 `live` is `false` when the tab is on a plain (non-live) search page — its
 URL does not end in `/live`. Those results were never pushed, so the
@@ -280,6 +301,13 @@ a plain and a live search in place, without a reload.
 
 A tab whose query has no `map_completion_reward` filter is watching
 something other than a Valdo reward — any item the user built a search for.
+The userscript decides this from, in order: the search form's "Map
+Completion Reward" dropdown (a picked reward = Valdo; "Any" = generic unless
+one of the first rows carries the Reward property, i.e. a Valdo search left
+on Any); the page-load `tradeOpts` state; then 5+ rows with no reward. The
+dropdown is in the DOM even while its filter group is collapsed, so a fresh
+generic tab is known before its first result, and the script re-hellos the
+moment its `search_kind` changes instead of waiting for the 30 s heartbeat.
 Those listings take a bypass lane (`margin._generic_decision`): no
 reference lookup, no mod scoring, no threshold, no warm-up hold. They alert
 on arrival, because the user's own live search already encodes what they
@@ -307,9 +335,8 @@ generic tabs open ranks exactly as it always did.
 jackpot. It outranks every other alert, generic hits included: it clears
 both bars, so it is what the hotkey takes.
 Generic hits and currency mismatches are never jackpots (the scam guard's
-case must not be pushed to the top). The one exception is a chaos price: a
-normal way to list, and the unit every price normalizes to, so its net is
-trustworthy. It keeps its MISMATCH banner but may be a jackpot. A jackpot
+case must not be pushed to the top). Chaos and alchemy prices are not
+mismatches at all (see Scam guard), so they can be jackpots. A jackpot
 gets a magenta banner, frame and feed row, and plays an alarm once (a super
 jackpot its own alarm, once; `alerts.alert_sound` picks a
 batch's one sound: super, then jackpot, then generic, then Valdo). The
@@ -342,6 +369,13 @@ currency of the map's reference price (e.g., reference in divine, listed
 in exalted — the classic "20 exalted instead of 20 divine" bait). The
 overlay shows both currencies prominently. Margin is still computed
 correctly via chaos normalization; a mismatch warns, it never blocks.
+
+Chaos and alchemy (`margin.SAFE_LISTING_CURRENCIES`) never count as a
+mismatch: chaos is the normalization unit and alchemy a cheap orb with a
+solid poe.ninja rate, so a Valdo map listed in either is a seller
+under-pricing it, never bait. No banner, no red price, and the jackpot
+tiers apply. An alchemy price needs poe.ninja's rate (there is no manual
+fallback for it in `currency_rates`); without one it is `no_rate`.
 
 ## Failure risks
 
@@ -618,10 +652,33 @@ listing can still be judged after its alert has gone.
   on a travel that works, or on a click) and drops the traveled pin, and the AlertStore hands
   back the runners-up that press had cleared (see "Hotkey and focus path"),
   so the next-best alert takes the top slot and is targetable immediately.
+- Re-travel (verified from the progenesis snapshot, 2026-08-09): the site
+  disables a Travel button once used or left too long — `direct-btn expired
+  disabled`, `title="Item must be refreshed"` — and every row has its own
+  Refresh button (`.left button.refresh`, hidden on sold rows). Clicking a
+  listing on the overlay that was already traveled to (by hotkey or click)
+  sends `click_travel` with `retravel: true`, unless the last travel to it
+  was under 2 s ago (`RETRAVEL_GAP_S`: a double-click is not a request to
+  travel twice). The userscript then clicks the row's Refresh, waits up to
+  5 s for the Travel button to come back enabled with its normal label, and
+  clicks it **once** (`ok: true, reason: "refreshed"`; `"retravel"` when the
+  button was still enabled and no refresh was needed). It fails with
+  `refresh_timeout`, `refresh_missing`, `retravel_busy` or
+  `item_no_longer_available` and never retries: one user click = one
+  travel. The refresh is the site's own one-listing read, the same request
+  the user's own Refresh click makes. The hotkey never re-travels: it only
+  ever takes live alerts.
 
 ## Hotkey and focus path
 
-- `keyboard` registers one global hotkey (default in `config.yaml`).
+- `keyboard` registers one global hotkey (default in `config.yaml`). The
+  combo's trigger key is hooked directly (`keyboard.hook_key`), not via
+  `add_hotkey`: in keyboard 0.13.5 add_hotkey only matches when the held
+  keys are exactly the combo (a press while Shift/Ctrl/a skill key was down
+  never arrived, not even in the log) and fires on every auto-repeat. The
+  hook acts on the first key-down until key-up, ignores extra held keys, and
+  still requires the combo's own modifiers (`ctrl+f9` needs Ctrl).
+  Multi-step combos (`a, b`) are rejected.
 - An AlertStore keeps the non-expired above-threshold alerts; the hotkey
   always targets the one with the **highest profit per 100 difficulty**
   (a jackpot first, see the Jackpot tier above). The

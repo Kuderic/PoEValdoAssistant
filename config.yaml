@@ -400,6 +400,8 @@ mod_scoring:
       multiplier: 1.3
     - { label: "Petrification on hit", match: "inflict petrification", multiplier: 1.2 }
     - { label: "Rares extra modifiers", match: "rare monsters each have", multiplier: 1.2 }
+    # Real wording: "Rare Monsters have Essence effects".
+    - { label: "Rares have Essence effects", match: "rare monsters have essence effects", multiplier: 1.3 }
     - { label: "Slower debuff expiry", match: "debuffs on players expire", multiplier: 1.1 }
     # Charge two-liners: "gain a X charge on hit" + "+6 to maximum X charges".
     - label: "Endurance Charges"

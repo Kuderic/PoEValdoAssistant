@@ -74,7 +74,7 @@ async def test_full_stream_end_to_end(running_server):
         assert by_id["case1-alert"].verdict == "alert"
         assert not by_id["case1-alert"].currency_mismatch
         assert by_id["case2-chaos-normalized"].verdict == "alert"
-        assert by_id["case2-chaos-normalized"].currency_mismatch
+        assert not by_id["case2-chaos-normalized"].currency_mismatch  # chaos is safe
         assert by_id["case2-chaos-normalized"].margin == (36000 - 9000) / 36000
         assert by_id["case3-blocked"].verdict == "blocked"
         # proportional scaling: clean map (diff 25) needs 20 * 0.25 = 5 div,
@@ -105,6 +105,16 @@ async def test_full_stream_end_to_end(running_server):
         )
         await asyncio.sleep(0.2)
         assert clicks and clicks[0].ok
+
+        # a re-travel carries the flag that tells the tab to refresh first
+        assert await server.send_click_travel("case1-alert", retravel=True)
+        cmd = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+        assert cmd == {
+            "type": "click_travel",
+            "search_id": "replay",
+            "listing_id": "case1-alert",
+            "retravel": True,
+        }
 
     await asyncio.sleep(0.2)
     assert server.tab_snapshot() == []  # disconnect cleaned up

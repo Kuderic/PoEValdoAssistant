@@ -19,6 +19,15 @@ from sniper.models import Decision, Listing
 from sniper.modrules import ModRules, ModScoring
 from sniper.prices import PriceBook
 
+# Listing currencies that are never a currency mismatch, even against a
+# divine reference. The scam guard exists for a price whose unit could be
+# misread; chaos is the unit every price normalizes to (rate exactly 1) and
+# alchemy is a cheap, liquid orb with a solid poe.ninja rate. A Valdo map
+# priced in either is a seller's under-pricing, not bait: the chaos-converted
+# cost on screen is already what you pay, so it gets no banner and no red
+# price, and can be a jackpot or super jackpot like any divine listing.
+SAFE_LISTING_CURRENCIES = frozenset({"chaos", "alch"})
+
 
 def net_yield(net_div: float | None, difficulty: float) -> float | None:
     """Divine profit normalised to a 100-difficulty map.
@@ -150,7 +159,10 @@ def evaluate(
     net_div = ((1.0 - fail_chance) * reference.chaos_value - listing_chaos) / divine_rate
     net_div -= thresholds.running_cost
     margin = (reference.chaos_value - listing_chaos) / reference.chaos_value
-    mismatch = listing.price.currency != reference.display_currency
+    mismatch = (
+        listing.price.currency != reference.display_currency
+        and listing.price.currency not in SAFE_LISTING_CURRENCIES
+    )
 
     if blocked:
         verdict = "blocked"

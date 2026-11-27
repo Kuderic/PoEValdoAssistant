@@ -102,12 +102,15 @@ def test_currency_mismatch_is_never_a_jackpot():
     assert ex.currency_mismatch and not s.is_jackpot(ex)
 
 
-def test_a_chaos_listing_can_still_be_a_jackpot():
-    """Chaos is a normal way to price, not bait: listed in chaos against a
-    divine reference it keeps its MISMATCH flag but can be a jackpot."""
+@pytest.mark.parametrize(
+    ("currency", "amount"), [("chaos", 2000), ("alch", 50)], ids=["chaos", "alchemy"]
+)
+def test_a_chaos_or_alchemy_listing_is_no_mismatch_and_can_be_a_super_jackpot(currency, amount):
+    """A seller under-pricing in chaos or alchemy is a bargain, not bait:
+    no MISMATCH warning, and the jackpot tiers apply as for divine."""
     s = super_store()
-    d = decision("chaos", 150, 25, price={"amount": 2000, "currency": "chaos"})
-    assert d.currency_mismatch
+    d = decision(currency, 150, 25, price={"amount": amount, "currency": currency})
+    assert not d.currency_mismatch
     assert s.is_jackpot(d)
     assert s.is_super_jackpot(d)
 

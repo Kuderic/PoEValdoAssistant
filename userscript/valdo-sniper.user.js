@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.8.5
+// @version      0.8.6
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
@@ -59,6 +59,18 @@ const SELECTORS = {
   filterInput: '.multiselect__input',
   filterOpen: '.multiselect--active', // dropdown open: input holds typed text
   travelButton: 'button.direct-btn',
+  /* Each row's own Refresh button: <div class="left"><button class="refresh"
+     title="Refresh">, hidden on sold rows. A Travel button already used (or
+     left too long) renders `class="... direct-btn expired disabled"
+     title="Item must be refreshed" disabled` until the row is refreshed
+     (52 such rows in the progenesis snapshot, 2026-08-09). */
+  rowRefresh: '.left button.refresh',
+  /* The site's toasts render into <div class="toast-container
+     toast-top-center"> / toast-bottom-center under #trade (progenesis
+     snapshot, 2026-08-09). The toast markup inside is not in any snapshot,
+     so the live-search errors are matched by text within the container,
+     one child element per toast, not by inner class names. */
+  toastContainer: '.toast-container',
   /* sold/delisted rows render `<span class="error">Item no longer
      available</span>` and hide the .btns group (verified in the
      progenesis snapshot, 2026-08-09) */
@@ -72,12 +84,25 @@ const SELECTORS = {
 const CONFIRM_TEXT = /in demand|teleport anyway/i;
 const UNAVAILABLE_TEXT = /no longer available/i;
 const CONFIRM_WINDOW_MS = 3_000;
+/* A re-travel waits this long for the refreshed row's Travel button to come
+   back enabled, then gives up: the click is never retried. */
+const RETRAVEL_WINDOW_MS = 5_000;
+/* Toasts after which the page's live search is DEAD while the tab, and this
+   script, stay up - so the app saw a healthy tab that would never push
+   another listing. From the site's own trade.js (scheduleLiveSearch /
+   connection.onclose): after 5 failed reconnects it shows "Live Search retry
+   limit exceeded" with timeout 0 and calls cancelLive(); a close with code
+   1013 shows "Rate-limiting is active for your account" and does not retry. */
+const LIVE_ERRORS = [
+  { re: /live search retry limit exceeded/i, reason: 'retry_limit' },
+  { re: /rate-limiting is active for your account/i, reason: 'rate_limited' },
+];
 
 /* Sent in every hello and logged by the server: a tab keeps running the
    script it loaded with until it is reloaded, so this is the only way to
    tell from logs/ whether a live tab is on a stale userscript.
    KEEP IN SYNC with the @version header above. */
-const SCRIPT_VERSION = '0.8.5';
+const SCRIPT_VERSION = '0.8.6';
 
 const WS_URL = 'ws://127.0.0.1:8765';
 const HEARTBEAT_MS = 30_000;
@@ -457,6 +482,16 @@ function main() {
    * existing scored behaviour instead of gaining a new one.
    */
   function isGenericSearch() {
+    // The form answers before any row renders. The 2026-11-26 snapshot has
+    // no tradeOpts at all, so without this a fresh non-Valdo tab read as a
+    // Valdo one "still loading its search" until 5 rows had arrived. The
+    // filter is in the DOM even while its Map Filters group is collapsed
+    // (progenesis snapshot: collapsed groups render every filter title).
+    const fromForm = rewardFilter();
+    if (fromForm) return false;
+    // "Any": no reward filter - unless a row carries the Reward property,
+    // which proves a Valdo search left on "Any" (every Valdo row has one).
+    if (fromForm === '') return !rowsCarryReward();
     const state = queryState();
     if (state) {
       const filters = state.filters && state.filters.map_filters;
@@ -485,6 +520,18 @@ function main() {
    * from momentarily looking generic, and rows are only consulted when the
    * authoritative query state is unavailable.
    */
+  /* Only the first few rows: on a Valdo search every row has a reward, and
+     this runs per listing on the capture path. */
+  function rowsCarryReward() {
+    if (!observedContainer) return false;
+    const rows = observedContainer.querySelectorAll(SELECTORS.row);
+    const n = Math.min(rows.length, GENERIC_ROW_EVIDENCE);
+    for (let i = 0; i < n; i += 1) {
+      if (textOf(rows[i], SELECTORS.rewardValue)) return true;
+    }
+    return false;
+  }
+
   function rowsLookGeneric() {
     if (!observedContainer) return false;
     const rows = observedContainer.querySelectorAll(SELECTORS.row);
@@ -505,15 +552,24 @@ function main() {
    * typed), and for "Any" or an empty box (no reward filter).
    */
   function dropdownReward() {
+    return rewardFilter() || null;
+  }
+
+  /**
+   * The dropdown's raw state: the picked option, '' for "Any"/empty (the
+   * search has no reward filter), null while it is open (unreadable), and
+   * undefined when the form has not rendered the filter at all.
+   */
+  function rewardFilter() {
     for (const title of document.querySelectorAll(SELECTORS.filterTitle)) {
       if (title.textContent.trim() !== REWARD_FILTER_TITLE) continue;
       const block = title.closest(SELECTORS.filterBlock);
       if (!block || block.querySelector(SELECTORS.filterOpen)) return null;
       const input = block.querySelector(SELECTORS.filterInput);
       const option = input ? (input.value || input.placeholder || '').trim() : '';
-      return option && option !== 'Any' ? option : null;
+      return option && option !== 'Any' ? option : '';
     }
-    return null;
+    return undefined;
   }
 
   function stateReward() {
@@ -546,17 +602,68 @@ function main() {
 
   let lastSentReward = null;
   let lastRewardFromRows = false; // the reward came from rows, not the filter
+  let lastSentKind = null;
+
+  // --- live search died -----------------------------------------------------
+  /* 'retry_limit' | 'rate_limited' once the page shows one of LIVE_ERRORS.
+     Sticky until a new search is opened in this tab: closing the toast does
+     not bring the live search back, only a refresh does (which reruns this
+     script with it cleared). */
+  let liveError = null;
+  // toasts already acted on: a timeout-0 toast stays on screen after the
+  // user opens a new search in place, and must not kill that one too
+  const seenErrorToasts = new WeakSet();
+  const watchedToastBoxes = new WeakSet();
+
+  function checkLiveError() {
+    if (liveError) return;
+    for (const box of document.querySelectorAll(SELECTORS.toastContainer)) {
+      for (const toast of box.children) {
+        if (seenErrorToasts.has(toast)) continue;
+        const text = toast.textContent || '';
+        const hit = LIVE_ERRORS.find(({ re }) => re.test(text));
+        if (!hit) continue;
+        seenErrorToasts.add(toast);
+        liveError = hit.reason;
+        console.warn(`[valdo] live search stopped: ${hit.reason} - refresh this tab`);
+        hello(); // now, not at the next 30s heartbeat
+        return;
+      }
+    }
+  }
+
+  /** React the moment a toast appears; the 2s sentinel calls this too, to
+   *  pick up containers Vue renders after start-up. */
+  function watchToasts() {
+    for (const box of document.querySelectorAll(SELECTORS.toastContainer)) {
+      if (watchedToastBoxes.has(box)) continue;
+      watchedToastBoxes.add(box);
+      new MutationObserver(checkLiveError).observe(box, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    }
+    checkLiveError();
+  }
+
+  function searchKind() {
+    return isGenericSearch() ? 'any' : 'valdo';
+  }
 
   function hello() {
     const fromRows = majorityReward();
     lastSentReward = fromRows || filterReward();
     lastRewardFromRows = Boolean(fromRows);
+    lastSentKind = searchKind();
     send({
       type: 'hello',
       search_id: searchId,
       tab_id: tabId,
       search_reward: lastSentReward,
-      search_kind: isGenericSearch() ? 'any' : 'valdo',
+      search_kind: lastSentKind,
+      // the page's live search has stopped (see LIVE_ERRORS); null when fine
+      live_error: liveError,
       // false on a plain (non-live) search: the app leaves the tab out of
       // its searches and ignores anything it sends
       live: isLivePage(),
@@ -573,12 +680,14 @@ function main() {
   /**
    * Re-hello immediately once the tab's reward becomes knowable (rows may
    * render after the first hello), instead of waiting for the heartbeat.
-   * Also corrects a filter-derived name once rows confirm the real spelling.
+   * Also corrects a filter-derived name once rows confirm the real spelling,
+   * and re-hellos when the form shows the tab is not a Valdo search at all
+   * (the overlay otherwise counts it as "still loading" for up to 30s).
    */
   function refreshRewardIdentity() {
     const fromRows = majorityReward();
     const reward = fromRows || filterReward();
-    if (reward && reward !== lastSentReward) hello();
+    if ((reward && reward !== lastSentReward) || searchKind() !== lastSentKind) hello();
     else if (fromRows) lastRewardFromRows = true;
   }
 
@@ -933,9 +1042,11 @@ function main() {
       networkSilentUntil = Date.now() + NETWORK_SILENT_MS;
       observer.disconnect();
       attach(true);
+      liveError = null; // a new search: the dead one's toast stays ignored
       hello();
       return;
     }
+    watchToasts();
     // The search form can render after the first hello: until the tab knows
     // its reward, look again every tick - the dropdown names it without
     // waiting for a result row. Before the container check, because a live
@@ -1044,10 +1155,89 @@ function main() {
     check();
   }
 
+  /** An enabled Travel button showing its normal label: clickable for a
+   *  fresh travel (not the used/expired state, not the in-demand confirm). */
+  function travelReady(btn) {
+    return Boolean(btn) && !btn.disabled && !btn.classList.contains('disabled')
+      && !CONFIRM_TEXT.test(btn.textContent.trim());
+  }
+
+  const retravelling = new Set(); // ids with a re-travel waiting on a refresh
+
+  /**
+   * A re-travel to a listing already traveled to, on a NEW user click in
+   * the overlay (the app refuses one within 2s of the last travel, so a
+   * double-click cannot trigger it). The site disables a used Travel button
+   * ("Item must be refreshed") until the row is refreshed, so: press the
+   * row's own Refresh button - the same read the user would do by hand -
+   * wait for the Travel button to come back enabled, and click it ONCE.
+   * One user input -> one travel; on timeout it fails, never retries.
+   */
+  function retravel(id, reply) {
+    if (retravelling.has(id)) return reply(false, 'retravel_busy');
+    const rowEl = resolveRow(id);
+    if (!rowEl) return reply(false, 'row_gone');
+    if (unavailableError(rowEl)) return reply(false, 'item_no_longer_available');
+    const ready = rowEl.querySelector(SELECTORS.travelButton);
+    if (travelReady(ready)) {
+      // the first travel never used the button: no refresh needed
+      clickedIds.add(id);
+      ready.click();
+      reply(true, 'retravel');
+      watchAfterClick(id, rowEl);
+      return;
+    }
+    const refresh = rowEl.querySelector(SELECTORS.rowRefresh);
+    if (!refresh) return reply(false, 'refresh_missing');
+    retravelling.add(id);
+    const deadline = Date.now() + RETRAVEL_WINDOW_MS;
+    let done = false;
+    const finish = () => {
+      done = true;
+      observer.disconnect();
+      clearInterval(poll);
+      retravelling.delete(id);
+    };
+    const check = () => {
+      if (done) return;
+      const row = resolveRow(id);
+      if ((row && unavailableError(row)) || (!row && rowEl.classList.contains('gone'))) {
+        finish();
+        reply(false, 'item_no_longer_available');
+        return;
+      }
+      const btn = row && row.querySelector(SELECTORS.travelButton);
+      if (travelReady(btn)) {
+        finish();
+        clickedIds.add(id);
+        btn.click(); // the single travel click for this user input
+        reply(true, 'refreshed');
+        watchAfterClick(id, row);
+        return;
+      }
+      if (Date.now() > deadline) {
+        finish();
+        reply(false, 'refresh_timeout');
+      }
+    };
+    // the site may re-render the row in place or replace it: watch the
+    // whole results container, with a slow poll for a swapped container
+    const observer = new MutationObserver(check);
+    observer.observe(observedContainer || rowEl, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+    });
+    const poll = setInterval(check, 100);
+    refresh.click();
+  }
+
   function handleClickTravel(msg) {
     const id = msg.listing_id;
     const reply = (ok, reason) =>
       send({ type: 'click_result', listing_id: id, ok, reason: reason || '' });
+    if (msg.retravel === true) return retravel(id, reply);
     if (clickedIds.has(id)) return reply(false, 'already_clicked');
     const rowEl = resolveRow(id);
     if (!rowEl) return reply(false, 'row_gone');
@@ -1064,6 +1254,7 @@ function main() {
   watchContainerSwap();
   hookNetwork();
   connect();
+  watchToasts();
 }
 
 if (window.__VALDO_TEST__) {

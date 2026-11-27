@@ -346,7 +346,7 @@ also work their sum through for the listing on screen, e.g. EV shows
 |---|---|
 | **Reward worth …** | What the map's reward unique sells for and when that price was last checked on the trade site (`price checked 4m ago`). A price from anywhere else says so (last session / poe.ninja estimate / your price). EV is worked out from it |
 | **Stash spot** | Where the item sits in the seller's tab: a mini grid with its cell marked, the rough area (`bottom right`), the tab name and the exact `col, row`. Read it while the hideout loads and the click at Faustus is already aimed. Shown for listings caught from the network (almost all of them). The trade site doesn't give the tab size, so a 12×12 tab is assumed unless the position only fits a quad tab |
-| **PRICE** | What you pay, and in which currency. Turns red on a currency mismatch (the classic "20 exalted, not 20 divine" bait) — a full-width banner also appears |
+| **PRICE** | What you pay, and in which currency. Turns red on a currency mismatch (the classic "20 exalted, not 20 divine" bait) — a full-width banner also appears. Chaos and alchemy prices are never flagged |
 | **EV** | Expected value: reward value (scaled by the chance the map succeeds) − asking price − the running cost, in divine (`+48 div`). What the map leaves you on average |
 | **SCORE** | The decision number, in the tinted cell: EV ÷ difficulty × 100, i.e. profit per unit of pain. It decides alerts and the hotkey's pick, so an easy map with modest profit can beat a brutal one. Green means it clears your threshold |
 | **DIFFICULTY** | How hard the mods make the map; 100 is a typical map. The toughest encounter's base (or the clean-map default) × every dangerous mod and pairing. Plain ≤100, amber >100, red >300 |
@@ -368,7 +368,15 @@ alert by score, click the **TELEPORT** button, or click any row — including
 a grayed-out one in the history — to travel to that specific listing. All
 require PoE to be running; the hotkey is deliberately inert otherwise. After
 traveling, the map's mods stay pinned for ~10s so you can read them during
-the loading screen, then you buy manually at Faustus.
+the loading screen, then you buy manually at Faustus. The hotkey works even
+while you hold Shift, Ctrl or another key, and holding it down counts as one
+press.
+
+**Travel again:** if a teleport didn't take, click the same listing again
+(the pinned card or its history row) after a couple of seconds. The trade
+tab refreshes that listing — the site locks a used Travel button until then
+— and clicks Travel once. Each click is one travel; nothing repeats on its
+own.
 
 ---
 
@@ -447,8 +455,9 @@ instead.
 
 Tune the bars in the ⚙ panel's **Alerts** tab (applied live and saved), or
 with `alerts.jackpot_min_net` / `jackpot_min_yield` in `config.yaml`. A
-currency mismatch is never a jackpot, except a listing priced in chaos: it
-keeps its MISMATCH banner but can still be a jackpot.
+currency mismatch is never a jackpot. A listing priced in chaos or alchemy is
+not a mismatch at all: it can only mean a cheaper map, so it gets no warning
+and can be a jackpot or super jackpot like a divine one.
 
 #### Super jackpots
 
@@ -622,6 +631,7 @@ searches you aren't actually racing for.
 | `start.bat` says Python not found | Install Python 3.12+ with *Add to PATH* ticked, then run it again. Delete the `.venv` folder to force a clean reinstall |
 | `RATE LIMITED` / `Est. prices N/M` | Trade API refused us; margins fall back to poe.ninja medians and every affected alert is flagged. Close some searches |
 | Amber bar says `⟳ RELOAD <reward> (+2.7s lag)` | That tab's listings now arrive seconds later than when it was freshly loaded; the bracket is how much later (the median of its recent listings). A busy live search slows down as its results pile up over hours; reload the tab (F5) and it is fast again, and the bar clears |
+| Red bar says `⛔ LIVE SEARCH STOPPED <reward>` (with an error sound) | The trade site ended that tab's live search: it showed "Live Search retry limit exceeded" (it lost the connection and gave up reconnecting) or "Rate-limiting is active for your account". The tab stays open but no listings arrive from it. Press F5 in that tab (after a minute, if rate-limited); the bar clears once it is live again |
 | Alert shows no latency | The DOM path captured it, or the tab is on an old userscript. `python tools/capture_report.py` says which |
 | Alerts but hotkey does nothing | `PoE not running` in the status strip — the hotkey is deliberately inert without the game |
 | Travel says `item no longer available` | Someone beat you to it — the runner-up is promoted to the top slot, press again to take it. Check the latency figure on the alerts you're losing |

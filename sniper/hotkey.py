@@ -3,8 +3,18 @@ two cheap things only: check the PoE-running gate and hand off to the
 asyncio loop. Everything else (alert consumption, the single click_travel,
 window focus) happens on the loop via App.hotkey_pressed.
 
-One press schedules exactly one hotkey_pressed() call; the AlertStore's
-consume semantics guarantee at most one click per press.
+One physical press schedules exactly one hotkey_pressed() call; the
+AlertStore's consume semantics guarantee at most one click per press.
+
+The combo's trigger key (its last key) is hooked directly rather than through
+`keyboard.add_hotkey`, for two reasons found in keyboard 0.13.5:
+- add_hotkey only matches when the keys held are EXACTLY the combo, so a
+  press while Shift, Ctrl, Alt or a skill key happened to be down (shift-
+  clicking currency, moving items) was silently dropped - no log line at all.
+  Here extra keys are ignored; the combo's own modifiers must still be held.
+- add_hotkey fires on every auto-repeat key-down, so holding the key fired
+  several presses (with `consume: top`, several alerts). Here only the first
+  key-down counts until the key is released.
 """
 
 from __future__ import annotations
@@ -22,6 +32,28 @@ class HotkeyError(Exception):
     pass
 
 
+def _hook_combo(combo: str, on_press: Callable[[], None]) -> Callable[[], None]:
+    """Hook `combo`; returns the function that removes the hook. Raises
+    ValueError for a combo keyboard cannot parse or a multi-step one."""
+    steps = keyboard.parse_hotkey(combo)
+    if len(steps) != 1:
+        raise ValueError("multi-step hotkeys (keys separated by a comma) are not supported")
+    *modifiers, trigger = steps[0]
+    held = {"down": False}
+
+    def on_key(e) -> None:
+        if e.event_type == keyboard.KEY_UP:
+            held["down"] = False
+            return
+        if held["down"]:
+            return  # auto-repeat while the key is held: still the same press
+        held["down"] = True
+        if all(any(keyboard.is_pressed(code) for code in codes) for codes in modifiers):
+            on_press()
+
+    return keyboard.hook_key(tuple(trigger), on_key)
+
+
 class Hotkey:
     def __init__(
         self,
@@ -35,7 +67,7 @@ class Hotkey:
         self._coro_factory = coro_factory
         self._poe_running = poe_running
         try:
-            self._handle = keyboard.add_hotkey(combo, self._on_press)
+            self._remove = _hook_combo(combo, self._on_press)
         except Exception as e:  # registration can fail without elevation
             raise HotkeyError(
                 f"could not register global hotkey {combo!r}: {e}. "
@@ -57,14 +89,21 @@ class Hotkey:
         if combo == self._combo:
             return None
         try:
-            new_handle = keyboard.add_hotkey(combo, self._on_press)
+            keyboard.parse_hotkey(combo)  # reject a bad name before unhooking
         except Exception as e:
             return f"invalid hotkey {combo!r}: {e}"
-        keyboard.remove_hotkey(self._handle)
-        self._handle = new_handle
+        # Old hook off BEFORE the new one goes on: keyboard keys its removal
+        # bookkeeping by key, so two live hooks on the same trigger key (a
+        # rebind from ` to ctrl+`) would break the second removal.
+        self._remove()
+        try:
+            self._remove = _hook_combo(combo, self._on_press)
+        except Exception as e:
+            self._remove = _hook_combo(self._combo, self._on_press)
+            return f"invalid hotkey {combo!r}: {e}"
         self._combo = combo
         event("hotkey_rebound", combo=combo)
         return None
 
     def unregister(self) -> None:
-        keyboard.remove_hotkey(self._handle)
+        self._remove()

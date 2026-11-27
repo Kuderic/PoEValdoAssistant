@@ -74,8 +74,12 @@ class Tree(HTMLParser):
         self.cur.text += data
 
 
-def dropdown_reward(html: str) -> str | None:
-    """dropdownReward() from the userscript, step for step."""
+MISSING = object()  # JS undefined: the form has not rendered the filter
+
+
+def reward_filter(html: str):
+    """rewardFilter() from the userscript, step for step: the option, '' for
+    "Any", None while open, MISSING when the filter is not on the page."""
     tree = Tree()
     tree.feed(html)
     title_cls = selector("filterTitle").lstrip(".")
@@ -90,8 +94,14 @@ def dropdown_reward(html: str) -> str | None:
         option = (
             (box.attrs.get("value") or box.attrs.get("placeholder") or "") if box else ""
         ).strip()
-        return option if option and option != "Any" else None
-    return None
+        return option if option and option != "Any" else ""
+    return MISSING
+
+
+def dropdown_reward(html: str) -> str | None:
+    """dropdownReward(): rewardFilter() || null."""
+    found = reward_filter(html)
+    return found if isinstance(found, str) and found else None
 
 
 def test_the_real_page_names_its_reward():
@@ -132,3 +142,40 @@ def test_the_script_rechecks_until_the_reward_is_known():
     recheck = sentinel.index("if (!lastSentReward) refreshRewardIdentity();")
     assert recheck < sentinel.index("if (!observedContainer || !observedContainer.isConnected)")
     assert "dropdownReward() || stateReward()" in SCRIPT
+
+
+def any_reward(html: str) -> str:
+    return html.replace('value="Mageblood"', 'value="Any"').replace(
+        'placeholder="Mageblood"', 'placeholder="Any"'
+    )
+
+
+def test_a_reward_filter_on_any_means_a_non_valdo_search():
+    """A live search for some other item leaves the reward on "Any". The form
+    says so before any result row exists, so the tab is not counted as a
+    Valdo search "still loading" (tradeOpts, the old source, is gone)."""
+    html = SNAPSHOT.read_text(encoding="utf-8")
+    assert reward_filter(html) == "Mageblood"
+    assert reward_filter(any_reward(html)) == ""
+    start = html.index("Map Completion Reward")
+    block_start = html.rindex('<div class="filter ', 0, start)
+    block_end = html.index('<div class="filter ', start)
+    assert reward_filter(html[:block_start] + html[block_end:]) is MISSING
+
+
+def test_the_generic_decision_reads_the_form_first():
+    body = SCRIPT[SCRIPT.index("function isGenericSearch()") :]
+    body = body[: body.index("\n  }\n")]
+    form = body.index("rewardFilter()")
+    assert form < body.index("queryState()") < body.index("rowsLookGeneric()")
+    # "Any" still yields to a row carrying a reward: a Valdo search left on Any
+    assert "if (fromForm === '') return !rowsCarryReward();" in body
+    assert "if (fromForm) return false;" in body
+
+
+def test_the_script_re_announces_a_changed_search_kind():
+    """Without this a non-Valdo tab whose form renders after the first hello
+    stays "still loading" until the next 30s heartbeat."""
+    body = SCRIPT[SCRIPT.index("function refreshRewardIdentity()") :]
+    body = body[: body.index("\n  }\n")]
+    assert "searchKind() !== lastSentKind" in body

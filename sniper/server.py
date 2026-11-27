@@ -31,7 +31,7 @@ _ROUTE_CAP = 1000
 # tab silently loses whatever the new version added - new fields simply
 # arrive missing, which reads as a broken feature rather than an old script.
 # KEEP IN SYNC with @version in userscript/valdo-sniper.user.js.
-EXPECTED_USERSCRIPT_VERSION = "0.8.5"
+EXPECTED_USERSCRIPT_VERSION = "0.8.6"
 
 # The app serves its own userscript over plain HTTP on the websocket port, so
 # installing is one click (Tampermonkey intercepts any *.user.js URL) and the
@@ -93,6 +93,7 @@ class TabState:
     search_reward: str | None = None
     search_kind: str = "valdo"
     version: str | None = None  # userscript @version this tab is running
+    live_error: str | None = None  # the page's live search stopped (Hello.live_error)
 
 
 class SniperServer:
@@ -172,10 +173,14 @@ class SniperServer:
                     if frame.net_stats and self._net_stats.get(tab_id) != frame.net_stats:
                         self._net_stats[tab_id] = frame.net_stats
                         event("capture_stats", tab_id=tab_id, **frame.net_stats)
-                    if not frame.live:
+                    # A dead live search stays listed whatever its URL now
+                    # says: dropping it as "not live" would make it vanish
+                    # from the overlay exactly when it needs a refresh.
+                    if not frame.live and not frame.live_error:
                         self._tab_not_live(tab_id, frame.search_id)
                         continue
                     self._static_tabs.discard(tab_id)  # back on a live search
+                    previous = self.tabs.get(tab_id)
                     self.tabs[tab_id] = TabState(
                         ws=ws,
                         search_id=frame.search_id,
@@ -183,7 +188,20 @@ class SniperServer:
                         search_reward=frame.search_reward,
                         search_kind=frame.search_kind,
                         version=frame.version,
+                        live_error=frame.live_error,
                     )
+                    was_error = previous.live_error if previous else None
+                    if frame.live_error != was_error:
+                        if frame.live_error:
+                            event(
+                                "live_search_stopped",
+                                tab_id=tab_id,
+                                search_id=frame.search_id,
+                                search_reward=frame.search_reward,
+                                reason=frame.live_error,
+                            )
+                        if known:  # a new tab is announced just below
+                            self._notify_tabs()
                     # a reload starts the tab's delay history over; the
                     # app reconnecting to a page that stayed open does not
                     self._tab_lag.page_seen(tab_id, frame.page_id, frame.page_age_s)
@@ -204,6 +222,7 @@ class SniperServer:
                             # reloaded; logged so a missed snipe can be traced
                             # to a stale userscript
                             userscript_version=frame.version,
+                            live_error=frame.live_error,
                         )
                         self._notify_tabs()
                 elif isinstance(frame, Listing):
@@ -345,24 +364,24 @@ class SniperServer:
 
     # ------------------------------------------------------------- click path
 
-    async def send_click_travel(self, listing_id: str) -> bool:
+    async def send_click_travel(self, listing_id: str, retravel: bool = False) -> bool:
         """Send exactly one click_travel for a listing. Caller (hotkey path)
-        guarantees this happens only on a user press."""
+        guarantees this happens only on a user press. `retravel` asks the tab
+        to refresh a row it already traveled to, then click Travel once."""
         tab_id = self._listing_tab.get(listing_id)
         tab = self.tabs.get(tab_id) if tab_id else None
         if tab is None:
             event("click_send_failed", listing_id=listing_id, reason="tab_gone")
             return False
+        frame = {"type": "click_travel", "search_id": tab.search_id, "listing_id": listing_id}
+        if retravel:
+            frame["retravel"] = True
         try:
-            await tab.ws.send(
-                json.dumps(
-                    {"type": "click_travel", "search_id": tab.search_id, "listing_id": listing_id}
-                )
-            )
+            await tab.ws.send(json.dumps(frame))
         except websockets.ConnectionClosed:
             event("click_send_failed", listing_id=listing_id, reason="connection_closed")
             return False
-        event("click_sent", listing_id=listing_id, tab_id=tab_id)
+        event("click_sent", listing_id=listing_id, tab_id=tab_id, retravel=retravel)
         return True
 
     # ------------------------------------------------------------------ misc
@@ -407,6 +426,7 @@ class SniperServer:
                     "search_reward": t.search_reward,
                     "search_kind": t.search_kind,
                     "version": t.version,
+                    "live_error": t.live_error,
                     "hello_age_s": round(now - t.last_hello_monotonic, 1),
                     # listing delay: recent median, median when freshly
                     # loaded, and whether it has crept up enough to reload

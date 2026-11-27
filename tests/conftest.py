@@ -46,7 +46,7 @@ def make_config(
         hotkey=HotkeyConfig(),
         ninja=NinjaConfig(enabled=ninja_enabled),
         trade_pricing=TradePricingConfig(enabled=False),
-        currency_rates=currency_rates or {"chaos": 1, "divine": 180, "exalted": 2},
+        currency_rates=currency_rates or {"chaos": 1, "divine": 180, "exalted": 2, "alch": 0.5},
         prices=prices
         if prices is not None
         else {"Foil Mageblood": ManualPrice(currency="divine", amount=200)},

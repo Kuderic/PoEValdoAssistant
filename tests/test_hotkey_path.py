@@ -21,8 +21,8 @@ def build_app(monkeypatch, consume: str = "all"):
     clicks: list[str] = []
     focused: list[str] = []
 
-    async def fake_send(listing_id: str) -> bool:
-        clicks.append(listing_id)
+    async def fake_send(listing_id: str, retravel: bool = False) -> bool:
+        clicks.append(f"{listing_id} (retravel)" if retravel else listing_id)
         return True
 
     monkeypatch.setattr(app.server, "send_click_travel", fake_send)
@@ -125,6 +125,50 @@ async def test_click_travel_consumed_or_expired_noops(monkeypatch):
     feed(app, "snipe", 100)
     await app.travel_listing("snipe")
     await app.travel_listing("snipe")  # second click on the same row
+    assert clicks == ["snipe"]
+
+
+def let_the_double_click_window_pass(app, listing_id):
+    from sniper.__main__ import RETRAVEL_GAP_S
+
+    app._traveled_at[listing_id] -= RETRAVEL_GAP_S + 0.1
+
+
+async def test_clicking_a_traveled_listing_again_re_travels_it(monkeypatch):
+    """'already traveled' used to be a dead end. A new click past the
+    double-click window asks the tab to refresh the row and travel once."""
+    app, bus, clicks, focused = build_app(monkeypatch)
+    app.watcher.running.set()
+    feed(app, "snipe", 100)
+    await app.travel_listing("snipe")
+    let_the_double_click_window_pass(app, "snipe")
+    await app.travel_listing("snipe")
+    assert clicks == ["snipe", "snipe (retravel)"]
+    # and each further re-travel needs its own click past the window
+    await app.travel_listing("snipe")
+    assert clicks == ["snipe", "snipe (retravel)"]
+    outcomes = [e for e in bus.drain() if isinstance(e, ClickOutcome)]
+    assert "click again to re-travel" in outcomes[-1].reason
+
+
+async def test_a_hotkey_travel_can_be_re_traveled_by_click(monkeypatch):
+    app, bus, clicks, focused = build_app(monkeypatch)
+    app.watcher.running.set()
+    feed(app, "snipe", 100)
+    await app.hotkey_pressed()
+    let_the_double_click_window_pass(app, "snipe")
+    await app.travel_listing("snipe")
+    assert clicks == ["snipe", "snipe (retravel)"]
+
+
+async def test_the_hotkey_never_re_travels(monkeypatch):
+    """One press takes a live alert or nothing: a traveled listing is gone
+    from the store, so a later press cannot send it again."""
+    app, bus, clicks, focused = build_app(monkeypatch)
+    feed(app, "snipe", 100)
+    await app.hotkey_pressed()
+    let_the_double_click_window_pass(app, "snipe")
+    await app.hotkey_pressed()
     assert clicks == ["snipe"]
 
 

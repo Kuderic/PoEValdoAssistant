@@ -60,6 +60,11 @@ WARMUP_STALL_S = 90.0
 # identified fallback takes about three minutes. Past it, listings are judged
 # on the poe.ninja fallback, so a broken pricer cannot hide a reward forever.
 MIDSESSION_HOLD_S = 300.0
+# A traveled listing clicked again sooner than this is a double-click, not a
+# request to travel again (see App.travel_listing).
+RETRAVEL_GAP_S = 2.0
+# traveled listings remembered for re-travel; matches the _recent cap
+RECENT_CAP = 200
 
 
 class App:
@@ -99,9 +104,13 @@ class App:
         )
         self.watcher = GameWatcher(config.game.process_names)
         # every recent decision (any verdict) so grayed-out feed rows are
-        # clickable too; _traveled_ids guards one-travel-per-listing
+        # clickable too
         self._recent: OrderedDict[str, Decision] = OrderedDict()
-        self._traveled_ids: set[str] = set()
+        # listing id -> monotonic time of its last travel (hotkey or click).
+        # Clicking a traveled listing again re-travels it (refresh + one
+        # click in the tab), but not within RETRAVEL_GAP_S: a double-click
+        # must not fire a second travel on top of the first.
+        self._traveled_at: dict[str, float] = {}
         # Startup warm-up: until a reward has a primary (trade/manual) price,
         # its listings are held rather than judged against poe.ninja's
         # inaccurate per-map median. Disabled outright when trade pricing is
@@ -223,7 +232,7 @@ class App:
         if self._hold_listing(decision):
             return
         self._recent[decision.listing.listing_id] = decision
-        while len(self._recent) > 200:
+        while len(self._recent) > RECENT_CAP:
             self._recent.popitem(last=False)
         if self.bus:  # live feed shows every listing, alerting or not
             self.bus.put(
@@ -320,7 +329,12 @@ class App:
     async def travel_listing(self, listing_id: str) -> None:
         """Overlay click on any listed row - active alert OR a grayed-out
         feed entry. One user click = one click_travel for exactly that
-        listing, once ever, with the same game gate as the hotkey."""
+        listing, with the same game gate as the hotkey.
+
+        Clicking a listing already traveled to re-travels it: the tab
+        refreshes that row (the site disables a used Travel button until
+        then) and clicks Travel once. Still one click = one travel; nothing
+        repeats without another click."""
         import time
 
         from sniper.alerts import Alert
@@ -330,10 +344,34 @@ class App:
             if self.bus:
                 self.bus.put(ClickOutcome(listing_id, False, "PoE not running - click ignored"))
             return
-        if listing_id in self._traveled_ids:
-            event("travel_click_noop", reason="already_traveled", listing_id=listing_id)
-            if self.bus:
-                self.bus.put(ClickOutcome(listing_id, False, "already traveled to this listing"))
+        traveled_at = self._traveled_at.get(listing_id)
+        if traveled_at is not None:
+            if time.monotonic() - traveled_at < RETRAVEL_GAP_S:
+                event("travel_click_noop", reason="just_traveled", listing_id=listing_id)
+                if self.bus:
+                    self.bus.put(
+                        ClickOutcome(
+                            listing_id, False, "travel just sent - click again to re-travel"
+                        )
+                    )
+                return
+            decision = self._recent.get(listing_id)
+            if decision is None:
+                event("travel_click_noop", reason="listing_unknown", listing_id=listing_id)
+                if self.bus:
+                    self.bus.put(ClickOutcome(listing_id, False, "listing no longer tracked"))
+                return
+            now = time.monotonic()
+            alert = Alert(decision=decision, created_monotonic=now, expires_at_monotonic=now)
+            event(
+                "travel_click",
+                listing_id=listing_id,
+                key=decision.key,
+                verdict=decision.verdict,
+                net_div=round(decision.net_div or 0, 2),
+                retravel=True,
+            )
+            await self._travel(alert, retravel=True)
             return
         alert = self.store.consume(listing_id)
         self._push_alerts(new_alert=False)
@@ -346,7 +384,6 @@ class App:
                 return
             now = time.monotonic()
             alert = Alert(decision=decision, created_monotonic=now, expires_at_monotonic=now)
-        self._traveled_ids.add(listing_id)
         event(
             "travel_click",
             listing_id=listing_id,
@@ -356,11 +393,19 @@ class App:
         )
         await self._travel(alert)
 
-    async def _travel(self, alert) -> None:
+    async def _travel(self, alert, retravel: bool = False) -> None:
+        import time
+
         lid = alert.decision.listing.listing_id
+        self._traveled_at[lid] = time.monotonic()
+        if len(self._traveled_at) > RECENT_CAP:
+            self._traveled_at.pop(next(iter(self._traveled_at)))
         if self.bus:
             self.bus.put(Traveled(alert.view()))
-        ok = await self.server.send_click_travel(lid)
+        if retravel:
+            ok = await self.server.send_click_travel(lid, retravel=True)
+        else:
+            ok = await self.server.send_click_travel(lid)
         if not ok:
             # the click never left the building, so no click_result is coming:
             # settle it here or the runners-up would be lost to a travel that
