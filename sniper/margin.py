@@ -1,6 +1,7 @@
 """Pure decision logic: listing + PriceBook + rules -> Decision. Hot path.
 
-Alert condition: net_div >= required_net_div AND net_div >= thresholds.min_net,
+Alert condition: net_div >= required_net_div AND net_div >= thresholds.min_net
+(or thresholds.void_min_net, if higher, for a map with the VOID mod),
 where required_net_div = threshold * difficulty_score / 100.
 The base threshold is calibrated for a 100-difficulty map: a 200-difficulty
 map needs twice the profit, a 50-difficulty map only half. min_net is a flat
@@ -27,6 +28,13 @@ from sniper.prices import PriceBook
 # cost on screen is already what you pay, so it gets no banner and no red
 # price, and can be a jackpot or super jackpot like any divine listing.
 SAFE_LISTING_CURRENCIES = frozenset({"chaos", "alch"})
+# The VOID mod ("Players who Die in area are sent to the Void"): a map with
+# it must also clear thresholds.void_min_net to alert
+VOID_MOD = "sent to the void"
+
+
+def is_void_map(mods) -> bool:
+    return any(VOID_MOD in m.casefold() for m in mods)
 
 
 def net_yield(net_div: float | None, difficulty: float) -> float | None:
@@ -85,6 +93,14 @@ def _generic_decision(listing: Listing, thresholds: Thresholds) -> Decision:
         # mods pass through unscored so the overlay can still show them
         mods_annotated=tuple((m, "", "none") for m in listing.mods),
     )
+
+
+def _ev_floor(listing: Listing, thresholds: Thresholds) -> float:
+    """The flat EV a listing must reach: min_net, or void_min_net when it is
+    higher and the map has the VOID mod."""
+    if thresholds.void_min_net > thresholds.min_net and is_void_map(listing.mods):
+        return thresholds.void_min_net
+    return thresholds.min_net
 
 
 def evaluate(
@@ -166,7 +182,7 @@ def evaluate(
 
     if blocked:
         verdict = "blocked"
-    elif net_div >= required and net_div >= thresholds.min_net:
+    elif net_div >= required and net_div >= _ev_floor(listing, thresholds):
         verdict = "alert"
     else:
         verdict = "below_threshold"

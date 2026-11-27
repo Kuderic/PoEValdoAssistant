@@ -350,7 +350,10 @@ blips: 0.11-0.32s, full level within 2ms. `jingle` is the `JINGLE_NOTES`
 chimes: overlapping near-pure sines with a 6ms attack and a bell decay,
 0.35-0.48s, half level within 5ms. `windows` is the Windows files. Both
 built-in styles match their loudest 100ms RMS to the Windows sound they
-replace (`SHORT_LEVELS`). The ⚙ panel's Alert sounds row switches it live,
+replace (`SHORT_LEVELS`). `alerts.sound_plays` (1-4, default 3) repeats a
+built-in pattern with a 60ms gap (`repeat_wav(..., gap_s)`, baked into the
+cached file), so the alert is longer but its first note is unchanged. The
+⚙ panel's Alert sounds row switches it live,
 saves it as `sound_style` in scoring_overrides.yaml (wins over config.yaml)
 and plays the pick. 1.3.11's `short_sounds: false` still maps to `windows`
 unless `sound_style` is set. Long sounds made the user wait for them to finish before
@@ -447,6 +450,9 @@ for regex, `match_all` for combos where every pattern must hit):
   the same unit as the threshold — yield >= threshold is the alert
   condition, together with a flat floor `net >= thresholds.min_net`: an
   easy map can reach a high yield on a profit too small to travel for.
+  A map with the VOID mod (`margin.is_void_map`: "sent to the void") must
+  clear `thresholds.void_min_net` instead when that is higher (0 = off; ⚙
+  Alerts tab, saved as `void_min_net`).
 - Baseline rule values (config.yaml): Feared 100 / Twisted 50 / Einhar 80 /
   invitation bosses 60 / porcupines 20 (inert while base_default is 25);
   multipliers: ghosts 3-4 x2.2, void x2 (+warning), fatal x2, delirium

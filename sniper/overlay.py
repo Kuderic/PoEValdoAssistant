@@ -59,6 +59,7 @@ from sniper.sound import (
     GENERIC_WAV,
     JACKPOT_PLAYS,
     JACKPOT_WAV,
+    MAX_SOUND_PLAYS,
     SUPER_JACKPOT_PLAYS,
     SUPER_JACKPOT_WAV,
     SoundCommand,
@@ -791,6 +792,7 @@ class Overlay:
         self._scoring_config = config.mod_scoring
         self._current_threshold = config.thresholds.min_yield
         self._current_min_net = config.thresholds.min_net
+        self._current_void_min_net = config.thresholds.void_min_net
         self._current_running_cost = config.thresholds.running_cost
         self._current_combo = config.hotkey.combo
         self._raise_on_hotkey = config.hotkey.raise_overlay
@@ -825,6 +827,7 @@ class Overlay:
         self._muted = False
         self._volume = config.alerts.volume
         self._sound_style = config.alerts.sound_style  # sound.SOUND_STYLES
+        self._sound_plays = config.alerts.sound_plays  # built-in pattern repeats
         # A jackpot's alarm plays to the end (SOUND_PLAYS times): until then
         # a routine alert sound must not cut it off (monotonic finish time)
         self._jp_sound_until = 0.0
@@ -3235,6 +3238,14 @@ class Overlay:
             "profit too small to travel for. 0 = score alone decides.",
             search="threshold min_net profit net expected value",
         )
+        void_e = field(
+            "Void maps: alert at EV ≥",
+            _fmt(self._current_void_min_net),
+            hint="A map with the VOID mod (dying sends you to the Void and\n"
+            "deletes the character) must also make at least this many\n"
+            "divines of EV to alert. 0 = the same bars as any other map.",
+            search="void min_net threshold sent to the void",
+        )
         thr_e = field(
             "Alert at SCORE ≥",
             _fmt(self._current_threshold),
@@ -3470,6 +3481,45 @@ class Overlay:
             style_btns[style] = btn
         show_style()
         self._style_pick = pick_style  # for tests
+        # how many times the built-in sound plays its pattern
+        card, r = next_row()
+        plays_hint = (
+            "How many times the Short or Soft jingle sound plays its\n"
+            "pattern, back to back. More is longer and easier to notice;\n"
+            "the first note still lands at once, so press on it. Does\n"
+            "nothing for the Windows sounds. Click one to hear it."
+        )
+        plays_name = row_label(card, r, "Sound plays", plays_hint)
+        plays_box = tk.Frame(card, bg=SURFACE)
+        plays_box.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
+        plays_btns: dict[int, tk.Label] = {}
+
+        def show_plays() -> None:
+            for n, btn in plays_btns.items():
+                on = n == self._sound_plays
+                btn.config(bg=GOOD if on else BOX, fg=BG if on else DIM)
+
+        def pick_plays(n: int) -> None:
+            changed = n != self._sound_plays
+            self._sound_plays = n
+            show_plays()
+            if changed:
+                event("sound_plays_changed", plays=n)
+                collect(save=True)
+            self._play_sound("valdo")
+
+        for n in range(1, MAX_SOUND_PLAYS + 1):
+            btn = tk.Label(
+                plays_box, text=f"{n}×", font=self._font("ui", 9), padx=8, cursor="hand2"
+            )
+            btn.pack(side="left", padx=(0, 4))
+            btn.bind("<Button-1>", lambda e, n=n: pick_plays(n))
+            plays_btns[n] = btn
+        show_plays()
+        self._plays_pick = pick_plays  # for tests
+        sections[-1]["rows"].append(
+            (f"sound plays repeat {plays_hint} longer".casefold(), [plays_name, plays_box])
+        )
         sections[-1]["rows"].append(
             (
                 f"alert sounds {style_hint} jingle chime blip sound style".casefold(),
@@ -3733,6 +3783,7 @@ class Overlay:
                 )
                 new_threshold = float(thr_e.get())
                 new_min_net = float(min_net_e.get())
+                new_void_min_net = float(void_e.get())
                 new_flat = float(flat_e.get())
                 new_volume = float(vol_e.get())
                 new_jp_net = float(jp_net_e.get())
@@ -3775,11 +3826,14 @@ class Overlay:
             if new_min_net < 0:
                 note.config(text="Alert at EV must be >= 0", fg=BAD)
                 return
+            if new_void_min_net < 0:
+                note.config(text="Void maps EV must be >= 0", fg=BAD)
+                return
 
             error = None
             if self._on_settings_change:
                 error = self._on_settings_change(
-                    new_config, new_threshold, new_combo, new_flat, new_min_net
+                    new_config, new_threshold, new_combo, new_flat, new_min_net, new_void_min_net
                 )
             if error:  # e.g. invalid hotkey combo - old combo stays active
                 note.config(text=error, fg=BAD)
@@ -3787,6 +3841,7 @@ class Overlay:
             self._scoring_config = new_config
             self._current_threshold = new_threshold
             self._current_min_net = new_min_net
+            self._current_void_min_net = new_void_min_net
             self._current_running_cost = new_flat
             self._current_combo = new_combo
             self._raise_on_hotkey = raise_state[0]
@@ -3831,6 +3886,8 @@ class Overlay:
                     super_jackpot_min_yield=new_sjp_yield,
                     raise_overlay=raise_state[0],
                     sound_style=self._sound_style,
+                    sound_plays=self._sound_plays,
+                    void_min_net=new_void_min_net,
                 )
             # never claim a pinned price was saved: it lives for this session
             # only, and "Saved" would read as a promise the app does not keep
@@ -3843,6 +3900,8 @@ class Overlay:
         # in the note and change nothing until fixed)
         pending: list[str] = []
 
+        self._apply_settings_now = lambda: collect(save=True)  # for tests
+
         def schedule_apply(_event=None) -> None:
             if pending:
                 win.after_cancel(pending.pop())
@@ -3850,6 +3909,7 @@ class Overlay:
 
         for widget in [
             min_net_e,
+            void_e,
             thr_e,
             flat_e,
             jp_net_e,
@@ -4268,14 +4328,14 @@ class Overlay:
         # the soft jingle) unless that is the Windows sounds; a .wav of the
         # user's own always wins
         style = self._sound_style
-        default = builtin_wav(kind, style) or default
+        default = builtin_wav(kind, style, self._sound_plays) or default
         plays = SOUND_PLAYS.get(kind, 1)
         volume = self._volume
         # `kind` belongs in the key even though `configured` usually
         # differs: with the settings left empty the paths are the SAME
         # empty string, and keying on it alone made the generic alert replay
         # the Valdo sound - the one thing a separate sound exists to prevent.
-        key = (kind, configured, round(volume, 3), style)
+        key = (kind, configured, round(volume, 3), style, self._sound_plays)
         if key not in self._wav_cache:
             self._wav_cache[key] = alert_wav_path(configured, volume, default, repeat=plays)
         return self._wav_cache[key]

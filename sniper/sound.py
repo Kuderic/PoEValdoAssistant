@@ -82,6 +82,11 @@ JINGLE_NOTES: dict[str, tuple[tuple[float, float, float], ...]] = {
 JINGLE_ATTACK_S = 0.006
 # alerts.sound_style: what an empty sound setting plays
 SOUND_STYLES = ("short", "jingle", "windows")
+# alerts.sound_plays: how many times a built-in sound plays its pattern, back
+# to back with REPEAT_GAP_S between - a longer alert whose first note still
+# lands within a few ms (the Windows style is long already and never repeats)
+MAX_SOUND_PLAYS = 4
+REPEAT_GAP_S = 0.06
 SYNTH_RATE = 44100
 SYNTH_ATTACK_S = 0.003  # fast, but not a click
 SYNTH_RELEASE_S = 0.006  # fade the tail to zero: no click at the cut
@@ -170,13 +175,16 @@ def _render(values: list[float], level: float, rate: int) -> bytes:
     return out.getvalue()
 
 
-def builtin_wav(kind: str, style: str = "short") -> Path | None:
+def builtin_wav(kind: str, style: str = "short", plays: int = 1) -> Path | None:
     """The built-in sound for an alert kind in a style ("short" blips or the
     soft "jingle"), as a file (PlaySound plays files asynchronously, not
     memory). Written once to the temp folder under a name hashed from its
     recipe, so changing the recipe makes a new file. None for the "windows"
     style, an unknown kind, or when it cannot be written - the caller then
-    falls back to the Windows sound."""
+    falls back to the Windows sound. `plays` repeats the pattern with a
+    short gap (alerts.sound_plays): longer, but the first note still lands
+    at once."""
+    plays = max(1, min(MAX_SOUND_PLAYS, int(plays)))
     if style == "jingle":
         notes = JINGLE_NOTES.get(kind)
         make = synth_jingle
@@ -190,13 +198,25 @@ def builtin_wav(kind: str, style: str = "short") -> Path | None:
     if notes is None:
         return None
     level = SHORT_LEVELS.get(kind, 0.06)
-    recipe = (style, notes, level, SYNTH_RATE, *shape, SYNTH_RELEASE_S, SYNTH_PEAK, SYNTH_VERSION)
+    recipe = (
+        style,
+        notes,
+        level,
+        plays,
+        REPEAT_GAP_S,
+        SYNTH_RATE,
+        *shape,
+        SYNTH_RELEASE_S,
+        SYNTH_PEAK,
+        SYNTH_VERSION,
+    )
     digest = hashlib.sha1(repr(recipe).encode(), usedforsecurity=False).hexdigest()
-    path = Path(tempfile.gettempdir()) / f"valdo-{style}-{kind}-{digest[:12]}.wav"
+    name = f"valdo-{style}-{kind}" + (f"-x{plays}" if plays > 1 else "")
+    path = Path(tempfile.gettempdir()) / f"{name}-{digest[:12]}.wav"
     try:
         if not path.is_file():
             partial = path.with_suffix(".part")
-            partial.write_bytes(make(notes, level))
+            partial.write_bytes(repeat_wav(make(notes, level), plays, REPEAT_GAP_S))
             partial.replace(path)
     except OSError:
         return None
@@ -329,7 +349,7 @@ def load_wav(path: str = "", default: Path | None = None) -> bytes | None:
         return None
 
 
-def repeat_wav(data: bytes, times: int) -> bytes:
+def repeat_wav(data: bytes, times: int, gap_s: float = 0.0) -> bytes:
     """`data` with its audio played `times` times back to back, as one WAV.
     One async PlaySound of it then plays N times and can still be cut off
     by the next command, which a play-N-times loop could not. Returns
@@ -343,7 +363,8 @@ def repeat_wav(data: bytes, times: int) -> bytes:
         out = io.BytesIO()
         with wave.open(out, "wb") as dst:
             dst.setparams(params)
-            dst.writeframes(frames * times)
+            gap = b"\0" * (int(params.framerate * gap_s) * params.sampwidth * params.nchannels)
+            dst.writeframes((frames + gap) * (times - 1) + frames)
         return out.getvalue()
     except (wave.Error, ValueError, EOFError, MemoryError):
         return data  # plays once rather than not at all

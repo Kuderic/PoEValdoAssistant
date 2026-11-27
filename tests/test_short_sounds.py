@@ -156,13 +156,68 @@ def make_overlay():
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_the_overlay_plays_the_short_sound_by_default(make_overlay, kind):
-    assert make_overlay()._alert_wav(kind) == str(short_wav(kind))
+def test_the_overlay_plays_the_short_sound_three_times_by_default(make_overlay, kind):
+    assert make_overlay()._alert_wav(kind) == str(builtin_wav(kind, "short", 3))
 
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_the_jingle_style_plays_the_jingle(make_overlay, kind):
-    assert make_overlay(sound_style="jingle")._alert_wav(kind) == str(builtin_wav(kind, "jingle"))
+    ov = make_overlay(sound_style="jingle", sound_plays=1)
+    assert ov._alert_wav(kind) == str(builtin_wav(kind, "jingle"))
+
+
+# ------------------------------------------------------------------ repeats
+
+
+@pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("kind", KINDS)
+def test_more_plays_repeat_the_pattern_and_still_start_at_once(kind, style):
+    once, rate = samples(builtin_wav(kind, style, 1))
+    thrice, _ = samples(builtin_wav(kind, style, 3))
+    gap = int(rate * sound.REPEAT_GAP_S)
+    assert len(thrice) == 3 * len(once) + 2 * gap
+    assert thrice[: len(once)] == once  # the first play is the same sound
+    assert thrice[len(once) + gap : 2 * len(once) + gap] == once
+    assert set(thrice[len(once) : len(once) + gap]) == {0}  # a clean gap
+
+
+def test_plays_are_clamped():
+    assert builtin_wav("valdo", "short", 0) == builtin_wav("valdo", "short", 1)
+    top = sound.MAX_SOUND_PLAYS
+    assert builtin_wav("valdo", "short", top + 3) == builtin_wav("valdo", "short", top)
+
+
+def test_three_plays_is_the_default(tmp_path):
+    assert load_config("config.yaml").alerts.sound_plays == 3
+
+
+@pytest.mark.parametrize("value", ["0", "5", "'2'", "true", "1.5"])
+def test_bad_plays_are_a_config_error(tmp_path, value):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"alerts:\n  sound_plays: {value}\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="sound_plays"):
+        load_config(cfg)
+
+
+def test_the_windows_style_ignores_plays(make_overlay):
+    ov = make_overlay(sound_style="windows", sound_plays=4)
+    expected = sound.source_path("", sound.GENERIC_WAV)
+    assert ov._alert_wav("generic") == (None if expected is None else str(expected))
+
+
+def test_picking_plays_in_the_panel_switches_saves_and_plays_it(make_overlay, tmp_path):
+    ov = make_overlay()
+    ov._overrides_path = tmp_path / SCORING_OVERRIDES_NAME
+    played: list[str] = []
+    ov._play_sound = lambda kind="valdo": played.append(kind)
+    ov._open_tuning()
+    ov._plays_pick(1)
+    assert ov._alert_wav("valdo") == str(short_wav("valdo"))
+    assert played == ["valdo"]
+    assert load_extra_overrides(tmp_path / SCORING_OVERRIDES_NAME)["sound_plays"] == 1
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("", encoding="utf-8")
+    assert load_config(cfg).alerts.sound_plays == 1
 
 
 def test_the_windows_style_plays_the_windows_sounds(make_overlay):
@@ -179,7 +234,7 @@ def test_picking_a_style_in_the_panel_switches_saves_and_plays_it(make_overlay, 
     ov._play_sound = lambda kind="valdo": played.append(kind)
     ov._open_tuning()
     ov._style_pick("jingle")
-    assert ov._alert_wav("valdo") == str(builtin_wav("valdo", "jingle"))
+    assert ov._alert_wav("valdo") == str(builtin_wav("valdo", "jingle", 3))
     assert played == ["valdo"]  # heard at once
     assert load_extra_overrides(tmp_path / SCORING_OVERRIDES_NAME)["sound_style"] == "jingle"
     ov._style_pick("jingle")  # the current one again: replayed, nothing to save

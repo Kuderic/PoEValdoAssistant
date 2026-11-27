@@ -429,6 +429,7 @@ class App:
         min_yield: float,
         running_cost: float = 1.0,
         min_net: float | None = None,
+        void_min_net: float | None = None,
     ) -> None:
         """Swap difficulty scoring + profit numbers live (settings panel).
         Runs on the asyncio thread via call_soon_threadsafe; affects listings
@@ -444,12 +445,16 @@ class App:
                 min_yield=min_yield,
                 running_cost=running_cost,
                 min_net=self.config.thresholds.min_net if min_net is None else min_net,
+                void_min_net=self.config.thresholds.void_min_net
+                if void_min_net is None
+                else void_min_net,
             )
         )
         event(
             "tuning_updated",
             min_yield=min_yield,
             min_net=min_net,
+            void_min_net=void_min_net,
             running_cost=running_cost,
             base_default=scoring_config.base_default,
             rules={
@@ -812,13 +817,18 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
         asyncio.run_coroutine_threadsafe(app.travel_listing(listing_id), loop)
 
     def on_settings_change(
-        scoring_config, min_yield: float, combo: str, running_cost: float, min_net: float
+        scoring_config,
+        min_yield: float,
+        combo: str,
+        running_cost: float,
+        min_net: float,
+        void_min_net: float = 0.0,
     ) -> str | None:
         """Returns an error string (shown in the panel) or None. The hotkey
         rebinds on this (UI) thread; scoring/threshold swap on the loop."""
         error = hotkey.rebind(combo)
         loop.call_soon_threadsafe(
-            app.apply_tuning, scoring_config, min_yield, running_cost, min_net
+            app.apply_tuning, scoring_config, min_yield, running_cost, min_net, void_min_net
         )
         return error
 

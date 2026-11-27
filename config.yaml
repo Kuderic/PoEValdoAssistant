@@ -27,6 +27,10 @@ thresholds:
   # cutoff are computed. An easy map with a tiny margin is not really worth
   # doing. Editable in the ⚙ panel.
   running_cost: 1
+  # Maps with the VOID mod ("sent to the void": dying deletes the character)
+  # must ALSO make at least this much EV, in divines, to alert. 0 = the same
+  # bars as any other map. Editable in the ⚙ panel (Alerts tab).
+  void_min_net: 0
 
 alerts:
   expiry_seconds: 16           # a stale alert can never be traveled to by reflex
@@ -45,6 +49,10 @@ alerts:
   #   windows  the longer Windows sounds (Exclamation 1.4s, tada 1.6s,
   #            Alarm02 3.75s, Alarm03 4s) named in the comments here
   sound_style: short
+  # How many times the short or jingle sound plays its pattern, back to
+  # back (1-4): longer and easier to notice, but the first note still lands
+  # at once. Ignored for the Windows sounds. Also in the gear panel.
+  sound_plays: 3
   traveled_display_seconds: 10 # traveled map's mods stay readable this long
   feed_rows: 40                # live-feed history rows (the area scrolls)
   # JACKPOT: a listing whose EV and SCORE BOTH clear these bars (e.g. a
@@ -168,12 +176,13 @@ mod_pairings:
     multiplier: 3
     note: "Nonstop Blight kills build detonations while damage ramps"
   # Void alone is survivable - you simply do not die. It is The Feared that
-  # makes it lethal: a fight that can one-shot you, in a map where dying
-  # deletes the character. Stacks on top of the VOID and The Feared rules.
+  # makes it lethal: Desolation can kill however tanky you are, in a map
+  # where dying deletes the character. Stacks on top of the VOID and The
+  # Feared rules.
   - label: "The Feared + void"
     match_all: ["area contains the feared", "sent to the void"]
     multiplier: 2
-    note: "The Feared can one-shot; dying here deletes the character"
+    note: "Desolation can always kill the player no matter how tanky they are"
   - label: "Increasingly lethal + void"
     match_all: ["increasingly lethal", "sent to the void"]
     multiplier: 2
@@ -185,14 +194,21 @@ mod_pairings:
   - label: "Legion + melee-range only"
     match_all: ["legion", "within 2 metres of a player"]
     multiplier: 2
-    note: "Legion's dense packs must all be fought point-blank"
+    note: "Makes the Legion much harder to complete in the time limit"
   # Either damage line counts (player "per Equipped Item", minion "per Item
   # Equipped"). Stacks on top of the LEGION and less-damage rules.
   - label: "Legion + less damage"
     match_all: ["legion", "less damage per equipped item|less damage per item equipped"]
     regex: true
     multiplier: 2
-    note: "Legion's huge packs with crippled damage take forever to clear"
+    note: "Makes the Legion much harder to complete in the time limit"
+  # Either damage line counts (player or minion), as for Legion above.
+  # Stacks on top of the less-damage and 100% Delirious rules.
+  - label: "10% less damage + delirium"
+    match_all: ["less damage per equipped item|less damage per item equipped", "100% delirious"]
+    regex: true
+    multiplier: 2
+    note: "Takes too long to clear unless dps build"
   - label: "Sirus storms + no travel skills"
     match_all: ["deatomisation storms", "travel skills are disabled"]
     multiplier: 1.5
@@ -238,14 +254,14 @@ mod_risks:
     fail_chance: 0.80
     note: "The fatal timer runs out during the Ultimatum waves"
   # Every league mechanic can fail even on an easy map: Blight, Legion and
-  # Breach carry a 5% floor (Ultimatum's own floor is the 10% above). Each
+  # Breach carry a 10% floor, like Ultimatum's above. Each
   # steps aside, via `unless`, for its more specific entry below, so the
   # floor never stacks on top of a bigger risk for the same mechanic.
   - label: "Breach"
     match: "unstable breaches must be stabilised"
     unless: "less damage per equipped item|100% delirious"
     regex: true
-    fail_chance: 0.05
+    fail_chance: 0.10
     note: "A Breach can fail to stabilise"
   - label: "Breach + less damage/delirium"
     match_all:
@@ -257,7 +273,7 @@ mod_risks:
   - label: "Blight"
     match: "blight"
     unless: "rare monsters each have"
-    fail_chance: 0.05
+    fail_chance: 0.10
     note: "Monsters can leak through the towers"
   # "Rare Monsters each have 2 additional Modifiers" (or "1 ... Modifier"):
   # extra-tanky rares walk through the Blight towers.
@@ -268,9 +284,9 @@ mod_risks:
   - label: "Legion"
     match: "legion"
     unless: "within 2 metres of a player"
-    fail_chance: 0.05
+    fail_chance: 0.10
     note: "The Legion encounter can fail"
-  # Replaces the 5% above (its `unless` names the melee line). Stacks with
+  # Replaces the 10% above (its `unless` names the melee line). Stacks with
   # the "Legion + melee-range only" difficulty pairing: that one prices the
   # slow clear, this one the chance the encounter times out.
   - label: "Legion + melee-range only"
@@ -285,7 +301,7 @@ mod_risks:
   # of the same name: that one prices the care it takes, this one the death.
   - label: "1 portal"
     match: "only opens 1 portal"
-    fail_chance: 0.03
+    fail_chance: 0.15
     note: "One death ends the map"
 
 # Difficulty scoring. Every listing gets:

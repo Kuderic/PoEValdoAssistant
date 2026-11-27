@@ -94,11 +94,12 @@ note saying what actually goes wrong:
 | No damage + fatal timer | 10 | Impossible unless DPS-check build |
 | Delirium + fatal timer | 10 | Impossible unless DPS-check build |
 | Blight + melee-range only | 2 | Bricks the CC tower strategy |
-| The Feared + void | 2 | The Feared can one-shot; dying deletes the character |
+| The Feared + void | 2 | Desolation can always kill the player no matter how tanky they are |
 | Increasingly lethal + void | 2 | Damage keeps ramping where dying deletes the character |
 | Instability + void | 2 | Unstable players detonate where dying deletes the character |
-| Legion + melee-range only | 2 | Legion's dense packs must all be fought point-blank |
-| Legion + less damage | 2 | Legion's huge packs with crippled damage take forever to clear |
+| Legion + melee-range only | 2 | Makes the Legion much harder to complete in the time limit |
+| Legion + less damage | 2 | Makes the Legion much harder to complete in the time limit |
+| 10% less damage + delirium | 2 | Takes too long to clear unless dps build |
 | Sirus storms + no travel skills | 1.5 | Slowed with no travel skills, so the storms are hard to escape |
 
 These stack multiplicatively, so a map with two 10× pairings lands in the
@@ -121,17 +122,17 @@ EV  =  (1 − fail chance) × market price  −  asking price  −  running cost
 | Ultimatum | 10% | Can brick the map even without penalties |
 | Ultimatum + less damage or delirium | 25% (replaces the 10%) | Protect the Altar, if it rolls, is likely to fail |
 | Ultimatum + fatal timer | 80% (replaces both above) | The fatal timer runs out during the Ultimatum waves |
-| Breach | 5% | A Breach can fail to stabilise |
-| Breach + less damage or delirium | 100% (replaces the 5%) | Breaches can't be stabilised: unclearable |
-| Blight | 5% | Monsters can leak through the towers |
-| Blight + rares with extra modifiers | 50% (replaces the 5%) | Buffed rares leak through the towers |
-| Legion | 5% | The Legion encounter can fail |
-| Legion + melee-range only | 25% (replaces the 5%) | Packs fought point-blank often outlast the encounter |
+| Breach | 10% | A Breach can fail to stabilise |
+| Breach + less damage or delirium | 100% (replaces the 10%) | Breaches can't be stabilised: unclearable |
+| Blight | 10% | Monsters can leak through the towers |
+| Blight + rares with extra modifiers | 50% (replaces the 10%) | Buffed rares leak through the towers |
+| Legion | 10% | The Legion encounter can fail |
+| Legion + melee-range only | 25% (replaces the 10%) | Packs fought point-blank often outlast the encounter |
 | Bismuth | 30% | Bismuth maps bug out and fail |
-| 1 portal | 3% | One death ends the map |
+| 1 portal | 15% | One death ends the map |
 
 Every league mechanic (Blight, Legion, Breach, Ultimatum) carries at least a
-5% chance of failing, however easy the rest of the map is.
+10% chance of failing, however easy the rest of the map is.
 
 A 200d reward listed at 100d with Bismuth on it has an EV of 0.7 × 200 − 100 =
 **+40d**, not +100d. Several risks on one map combine as independent chances
@@ -367,9 +368,11 @@ the ⚙ panel). The first two disappear once a fresh trade average lands.
 at full volume within a few milliseconds, so nothing is still playing when
 you react: press on the sound, don't wait for it to end. Pick the style in
 **⚙ Settings → General → Alert sounds** (clicking one plays it):
-**Short** blips (0.1–0.3 s, the default), a **Soft jingle** (gentle chimes,
-0.35–0.5 s), or **Windows** for the longer Windows sounds (Exclamation
-1.4 s, tada 1.6 s, alarms ~4 s). Each is as loud as the Windows sound it
+**Short** blips (the default), a **Soft jingle** (gentle chimes), or
+**Windows** for the longer Windows sounds (Exclamation 1.4 s, tada 1.6 s,
+alarms ~4 s). **Sound plays** (1×–4×, default 3×) repeats the Short or
+jingle pattern back to back: a Valdo alert at 3× is three blips over
+0.45 s, and the first one still lands at once. Each is as loud as the Windows sound it
 replaced, so the volume slider means what it did. A `.wav` of your own in
 `alerts.sound` / `generic_sound` / `jackpot_sound` / `super_jackpot_sound`
 always wins.
@@ -555,6 +558,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `thresholds.min_yield` | Minimum SCORE to alert (4), also in the ⚙ panel |
 | `thresholds.min_net` | Minimum EV to alert, in divines (7), also in the ⚙ panel. 0 turns it off |
 | `thresholds.running_cost` | Divine cost of running a map, off every listing |
+| `thresholds.void_min_net` | Minimum EV for a map with the VOID mod to alert, in divines (0 = same bars as any map), also in the ⚙ panel |
 | `thresholds.per_map` | Per-reward threshold overrides |
 | `mod_scoring.base_default` | Difficulty of a clean, unmodded map |
 | `mod_scoring.rules` | Per-mod `min_base` / `multiplier`, optional `warning` |
@@ -567,6 +571,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `shop_overlay.grid` / `.client_log` | The Merchant grid measured at some resolution (default: 2560×1440) / PoE's log path when it isn't found automatically |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
+| `alerts.sound_plays` | How many times the Short/jingle pattern plays, back to back (1–4, default 3). Also in ⚙ Settings → General |
 | `alerts.sound_style` | `short` (default): built-in 0.1–0.3 s blips. `jingle`: soft 0.35–0.5 s chimes. `windows`: the longer Windows sounds. Also in ⚙ Settings → General. Your own `.wav` settings win either way |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (15 / 8), also in the ⚙ panel |
 | `alerts.jackpot_alarm` / `jackpot_sound` | Play an alarm on a jackpot (once; a super jackpot its own alarm, once) instead of the ordinary sound / its .wav |
