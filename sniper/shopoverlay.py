@@ -30,20 +30,26 @@ except ImportError:  # non-Windows dev machine: the marker is a no-op
     win32con = None
 
 KEY = "#010203"  # the colour key: pixels this colour are see-through
-MARK = "#39ff88"  # the item traveled to
-OTHER = "#4dd8ff"  # the same seller's other alerted items
+MARK = "#39ff88"  # a normal alert's box (a jackpot tier's box takes its colour)
 MARK_EDGE = "#000000"  # a dark halo so the box reads on any item art
 GRID = "#ffd34d"  # the grid's outline (and every cell, in the test view)
 LABEL_BG = "#0b0e11"
 LABEL_FG = "#f2f4f5"
 
 
-def _legend(n: int, spot: ShopSpot, numbered: bool) -> str:
-    """'1 ★ tab "7" · col 9, row 10 · Mageblood 80 divine'."""
-    head = (f"{n} " if numbered else "") + ("★ " if n == 1 else "")
-    tab = f'tab "{spot.tab}" · ' if spot.tab else ""
-    tail = f" · {spot.caption}" if spot.caption and numbered else ""
-    return f"{head}{tab}col {spot.x + 1}, row {spot.y + 1}{tail}"
+def box_colour(spot: ShopSpot) -> str:
+    """A box's colour: its alert tier's (ShopSpot.colour, the app's jackpot
+    colours), green for a normal alert. The app shows the same colour."""
+    return spot.colour or MARK
+
+
+def _box_label(n: int, spot: ShopSpot, numbered: bool) -> str:
+    """The label right on top of a box: '2  Nimis · tab "7"' over
+    '80d · +42d EV · diff 144'. ★ marks the item traveled to."""
+    head = (f"{n}  " if numbered else "") + ("★ " if n == 1 and numbered else "")
+    tab = f'tab "{spot.tab}"' if spot.tab else ""
+    first = " · ".join(b for b in (spot.caption, tab) if b)
+    return "\n".join(line for line in (head + first, spot.tag) if line.strip())
 
 
 def _px(h: int, at_1440: float) -> int:
@@ -86,9 +92,9 @@ class ShopMarkerWindow:
     def show(
         self, rect: GameRect, grid: ShopGrid, spots: tuple[ShopSpot, ...], test: bool = False
     ) -> None:
-        """Outline each spot's cell over the game: spots[0] (the item
-        traveled to) in green, the seller's other alerted items in cyan,
-        numbered when there are several, with a legend above the shop.
+        """Outline each spot's cell over the game in its alert tier's
+        colour (box_colour), numbered when there are several (1 = the item
+        traveled to), each with its label right on top of the box.
         `test` also draws every cell line, to check the calibration."""
         if not self._hwnd or not spots:
             return
@@ -113,40 +119,71 @@ class ShopMarkerWindow:
                 c.create_line(lx, gy0, lx, gy1, fill=GRID, width=1)
                 c.create_line(gx0, ly, gx1, ly, fill=GRID, width=1)
         many = len(spots) > 1
+        boxes: list[tuple[int, ShopSpot, tuple[float, float, float, float]]] = []
         thick = _px(rect.h, 5)
         pad = thick / 2
         badge_font = (self._family, -_px(rect.h, 18), "bold")
         # the traveled item last, so it sits on top where cells coincide
         # (two items at the same cell in different tabs)
         for n, spot in reversed(list(enumerate(spots, 1))):
-            colour = MARK if n == 1 else OTHER
+            colour = box_colour(spot)
             x0, y0, x1, y1 = cell_box(grid, pw, ph, spot.x, spot.y)
             bx0, by0 = tk_xy(x0, y0)
             bx1, by1 = tk_xy(x1, y1)
             box = (bx0 - pad, by0 - pad, bx1 + pad, by1 + pad)
+            boxes.append((n, spot, box))
             c.create_rectangle(*box, outline=MARK_EDGE, width=thick + 2)
             c.create_rectangle(*box, outline=colour, width=thick)
-            if many:
+            if many:  # same-tier boxes share a colour: the number tells them apart
                 r = _px(rect.h, 13)
                 cx, cy = box[0] + r, box[1] + r
                 c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=colour, outline=MARK_EDGE)
                 c.create_text(cx, cy, text=str(n), fill=MARK_EDGE, font=badge_font)
-        # the legend stacks upward from just above the grid, clear of the
-        # shop's tab buttons
-        if test:
-            lines = [("Test: the yellow lines should sit on the shop's grid", MARK)]
-        else:
-            lines = [
-                (_legend(n, spot, many), MARK if n == 1 else OTHER)
-                for n, spot in enumerate(spots, 1)
-            ]
-        font = (self._family, -_px(rect.h, 22), "bold")
-        step = _px(rect.h, 34)
-        bottom = max(gy0 - _px(rect.h, 70), step * len(lines))
-        m = _px(rect.h, 6)
-        for i, (text, colour) in enumerate(reversed(lines)):
+        # each box's label sits right on top of it, in its colour: drawn
+        # after every box so no outline crosses a label, and box 1's last so
+        # it stays readable where labels overlap
+        tag_font = (self._family, -_px(rect.h, 17), "bold")
+        tm = _px(rect.h, 3)
+        for n, spot, box in boxes:  # boxes ran last-to-first: box 1 ends on top
+            text = "" if test else _box_label(n, spot, many)
+            if not text:
+                continue
+            colour = box_colour(spot)
             tid = c.create_text(
-                (gx0 + gx1) / 2, bottom - i * step, text=text, fill=LABEL_FG, font=font, anchor="s"
+                (box[0] + box[2]) / 2,
+                box[1] - thick / 2 - tm // 2,
+                text=text,
+                fill=colour,
+                font=tag_font,
+                anchor="s",
+                justify="center",
+            )
+            bx = c.bbox(tid)
+            if bx:
+                # keep it on screen when the box hugs the window's edge
+                shift = max(0, tm - bx[0]) - max(0, bx[2] - (rect.w - tm))
+                if shift:
+                    c.move(tid, shift, 0)
+                    bx = c.bbox(tid)
+                back = c.create_rectangle(
+                    bx[0] - tm,
+                    bx[1] - tm // 2,
+                    bx[2] + tm,
+                    bx[3],
+                    fill=LABEL_BG,
+                    outline=colour,
+                )
+                c.tag_lower(back, tid)
+        if test:  # the calibration check says what to look for, over the grid
+            font = (self._family, -_px(rect.h, 22), "bold")
+            m = _px(rect.h, 6)
+            tid = c.create_text(
+                (gx0 + gx1) / 2,
+                max(gy0 - _px(rect.h, 70), _px(rect.h, 34)),
+                text="Test: the yellow lines should sit on the shop's grid",
+                fill=LABEL_FG,
+                font=font,
+                anchor="s",
             )
             bx = c.bbox(tid)
             if bx:
@@ -156,7 +193,7 @@ class ShopMarkerWindow:
                     bx[2] + m,
                     bx[3] + m // 2,
                     fill=LABEL_BG,
-                    outline=colour,
+                    outline=MARK,
                 )
                 c.tag_lower(back, tid)
         self._win.geometry(f"{rect.w}x{rect.h}+{rect.x}+{rect.y}")

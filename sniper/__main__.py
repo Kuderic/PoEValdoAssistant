@@ -99,6 +99,8 @@ class App:
             mega_jackpot_min_net=config.alerts.mega_jackpot_min_net,
             mega_jackpot_min_yield=config.alerts.mega_jackpot_min_yield,
         )
+        # alert tiers switched off in the settings (config.ALERT_TIERS)
+        self.muted_tiers: frozenset[str] = frozenset(config.alerts.muted_tiers)
         self.server = SniperServer(
             config,
             self.book,
@@ -233,12 +235,26 @@ class App:
             rows.append((reward, state, price, self.book.price_age_s(reward)))
         return tuple(rows)
 
+    def _muted_tier(self, decision: Decision) -> str:
+        """The alert's tier when the user switched that tier off, else ""."""
+        if decision.verdict != "alert" or decision.listing.generic or not self.muted_tiers:
+            return ""
+        tier = self.store.tier_of(decision)
+        return tier if tier in self.muted_tiers else ""
+
+    def set_muted_tiers(self, tiers) -> None:
+        """Settings panel: the alert tiers switched off; asyncio thread."""
+        self.muted_tiers = frozenset(tiers)
+        event("muted_tiers_updated", tiers=sorted(self.muted_tiers))
+
     def _on_decision(self, decision: Decision) -> None:
         if self._hold_listing(decision):
             return
         self._recent[decision.listing.listing_id] = decision
         while len(self._recent) > RECENT_CAP:
             self._recent.popitem(last=False)
+        muted = self._muted_tier(decision)
+        alerting = decision.verdict == "alert" and not muted
         if self.bus:  # live feed shows every listing, alerting or not
             self.bus.put(
                 ListingSeen(
@@ -249,7 +265,7 @@ class App:
                         currency=decision.listing.price.currency,
                         net_div=decision.net_div,
                         difficulty=decision.difficulty,
-                        verdict=decision.verdict,
+                        verdict="muted" if muted else decision.verdict,
                         mods=decision.mods_annotated,
                         received_monotonic=time.monotonic(),
                         pairings=decision.pairings,
@@ -258,16 +274,23 @@ class App:
                         generic=decision.listing.generic,
                         # verdict-gated: a blocked/below-threshold row must
                         # never be painted as the one worth chasing
-                        jackpot=decision.verdict == "alert" and self.store.is_jackpot(decision),
-                        super_jackpot=decision.verdict == "alert"
-                        and self.store.is_super_jackpot(decision),
-                        mega_jackpot=decision.verdict == "alert"
-                        and self.store.is_mega_jackpot(decision),
+                        jackpot=alerting and self.store.is_jackpot(decision),
+                        super_jackpot=alerting and self.store.is_super_jackpot(decision),
+                        mega_jackpot=alerting and self.store.is_mega_jackpot(decision),
                         risks=decision.risks,
                         fail_chance=decision.fail_chance,
                     )
                 )
             )
+        if muted:
+            event(
+                "alert_muted",
+                listing_id=decision.listing.listing_id,
+                key=decision.key,
+                tier=muted,
+                net_div=round(decision.net_div or 0, 2),
+            )
+            return
         if decision.verdict != "alert":
             return
         if self.store.insert(decision):
@@ -854,6 +877,9 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
         """(jackpot net, yield, super net, yield, mega net, yield)"""
         loop.call_soon_threadsafe(app.set_jackpot_thresholds, *bars)
 
+    def on_muted_tiers(tiers: tuple[str, ...]) -> None:
+        loop.call_soon_threadsafe(app.set_muted_tiers, tiers)
+
     restart = {"requested": False}
 
     def on_update_install() -> None:
@@ -888,6 +914,7 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
         on_price_override=on_price_override,
         on_price_recheck=on_price_recheck,
         on_jackpot_change=on_jackpot_change,
+        on_muted_tiers=on_muted_tiers,
         overrides_path=config.state_dir / SCORING_OVERRIDES_NAME,
         on_update_install=on_update_install,
         on_popup_key=on_popup_key,

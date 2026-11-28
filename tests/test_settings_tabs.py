@@ -43,7 +43,7 @@ def search_box(ov) -> tk.Entry:
 def test_settings_open_on_the_alerts_tab_and_switch(root):
     ov = Overlay(root, Bus(), make_config())
     ov._open_tuning()
-    assert shown(ov) == ["When to alert", "Jackpots"]
+    assert shown(ov) == ["When to alert", "Alert tiers", "Jackpots"]
     ov._settings_select("Map scoring")
     # (the test config has no risks or pairings, so just the difficulty cards)
     assert shown(ov) == ["Base difficulty", "Difficulty multipliers"]
@@ -69,7 +69,7 @@ def test_search_looks_through_every_tab(root):
     assert card["title_label"].cget("text") == "Hotkey & sound   ·   General"
     # clearing it goes back to the tab that was open
     search_box(ov).delete(0, "end")
-    assert shown(ov) == ["When to alert", "Jackpots"]
+    assert shown(ov) == ["When to alert", "Alert tiers", "Jackpots"]
 
 
 def test_a_search_with_no_match_says_so(root):
@@ -144,9 +144,9 @@ def test_the_super_mega_bars_are_in_the_panel_and_save(root, tmp_path):
     ov._open_tuning()
     jackpots = next(s for s in ov._settings_sections if s["name"] == "Jackpots")
     (_name, net_box, yield_box) = next(w for t, w in jackpots["rows"] if t.startswith("super mega"))
-    assert (net_box.get(), yield_box.get()) == ("40", "20")
+    assert (net_box.get(), yield_box.get()) == ("80", "20")
     net_box.delete(0, "end")
-    net_box.insert(0, "45")
+    net_box.insert(0, "90")
     ov._apply_settings_now()
-    assert load_extra_overrides(path)["mega_jackpot_min_net"] == 45.0
-    assert bars[-1][4:] == (45.0, 20.0)  # handed to the alert store too
+    assert load_extra_overrides(path)["mega_jackpot_min_net"] == 90.0
+    assert bars[-1][4:] == (90.0, 20.0)  # handed to the alert store too

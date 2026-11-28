@@ -212,6 +212,16 @@ class AlertStore:
             self._super_min_yield,
         )
 
+    def tier_of(self, decision: Decision) -> str:
+        """ "mega" | "super" | "jackpot" | "normal" (config.ALERT_TIERS)."""
+        if self.is_mega_jackpot(decision):
+            return "mega"
+        if self.is_super_jackpot(decision):
+            return "super"
+        if self.is_jackpot(decision):
+            return "jackpot"
+        return "normal"
+
     def is_mega_jackpot(self, decision: Decision) -> bool:
         """A super jackpot that also clears the mega bars (the same chain:
         every lower tier's exclusions hold)."""

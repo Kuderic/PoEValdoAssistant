@@ -101,6 +101,7 @@ note saying what actually goes wrong:
 | Legion + less damage | 2 | Makes the Legion much harder to complete in the time limit |
 | 10% less damage + delirium | 2 | Takes too long to clear unless dps build |
 | Sirus storms + no travel skills | 1.5 | Slowed with no travel skills, so the storms are hard to escape |
+| Ultimatum + no block | 4 | Ultimatum waves hit hard when you cannot block |
 
 These stack multiplicatively, so a map with two 10× pairings lands in the
 hundreds of thousands of difficulty and will simply never alert — which is
@@ -369,7 +370,7 @@ the ⚙ panel). The first two disappear once a fresh trade average lands.
 at full volume within a few milliseconds, so nothing is still playing when
 you react: press on the sound, don't wait for it to end. Pick the style in
 **⚙ Settings → General → Alert sounds** (clicking one plays it):
-**Short** blips (the default), a **Soft jingle** (gentle chimes), or
+**Short** blips, a **Soft jingle** (gentle chimes, the default), or
 **Windows** for the longer Windows sounds (Exclamation 1.4 s, tada 1.6 s,
 alarms ~4 s). Every alert plays once. Jackpots and super jackpots play
 their own fanfare, and the style changes those too: in **Short** a bright
@@ -411,10 +412,18 @@ tab refreshes that listing — the site locks a used Travel button until then
 own.
 
 **Shop marker:** once a travel lands, the item's cell is outlined over the
-game as the seller's hideout loads (green box, with the tab name and
-column/row above Faustus' Merchant window), so you can click it the moment
-the shop opens. **The same seller's other alerts are marked too** (cyan,
-numbered, each with its tab, cell and price in the list above the shop):
+game as the seller's hideout loads, so you can click it the moment the shop
+opens. The box is coloured by the alert's tier, as in the app: green for a
+normal alert, magenta for a jackpot, gold for a super jackpot, cyan for a
+super mega jackpot. Right on top of the box is its label: the reward and
+tab, then price, EV and difficulty (`Nimis · tab "7"` /
+`80d · +42d EV · diff 144`).
+**The same seller's other alerts are marked too**, each box numbered
+(1 ★ = the one you traveled to), since two of one tier share a colour. While
+two or more boxes are drawn, the app labels the same listings to match: the
+alert card's stash line reads **Box N** in that box's colour, the runner-up
+bands carry a coloured number, and the recent listings show `▣ box N`.
+Marked:
 any of theirs that alerted in the last 3 minutes, plus any that alert while
 you're on the way or in the hideout, which are added to the marker as they
 arrive. It goes away when you leave the hideout or after 60s (an item added
@@ -486,10 +495,19 @@ short — alerts expire in seconds and the next one cancels this one, so a
 If a search is too broad it will alert constantly; tighten the filters on
 the trade site rather than in the app.
 
+### Alert tiers you don't want
+
+**⚙ Settings → Alerts → Alert tiers** has a switch per tier: **Normal**,
+**Jackpot**, **Super** and **Super mega**. Switch one off and its listings
+stop alerting: no alert card, sound, pop-up or hotkey target. They still
+show in Recent listings, greyed out with `[off]`, and clicking one still
+travels. Live searches outside Valdo aren't a tier and always alert.
+(`alerts.muted_tiers` in config.yaml.)
+
 ### Jackpots
 
-A Valdo listing that is **both** big money and cheap to run (EV ≥ 15d
-**and** score ≥ 8 by default) is a jackpot:
+A Valdo listing that is **both** big money and cheap to run (EV ≥ 25d
+**and** score ≥ 12 by default) is a jackpot:
 
 <img src="docs/overlay-jackpot.png" alt="A jackpot alert: Nimis at 80 divine, +80 EV, score +144, difficulty 55, with a magenta JACKPOT banner and a magenta frame around the alert card" width="420">
 
@@ -515,8 +533,8 @@ and can be a jackpot or super jackpot like a divine one.
 
 #### Super jackpots
 
-The tier above: a jackpot that **also** clears higher bars (EV ≥ 30d **and**
-score ≥ 10 by default) is a super jackpot:
+The tier above: a jackpot that **also** clears higher bars (EV ≥ 45d **and**
+score ≥ 15 by default) is a super jackpot:
 
 <img src="docs/overlay-super-jackpot.png" alt="A super jackpot alert: Nimis at 80 divine, +80 EV, score +144, with a gold SUPER JACKPOT banner, gold frame and gold TELEPORT button; a magenta jackpot runner-up sits below it" width="420">
 
@@ -530,7 +548,7 @@ Tune the bars in the ⚙ panel's **Alerts** tab (the *Super jackpot* row) or wit
 
 #### Super mega jackpots
 
-The top tier: a super jackpot that **also** clears EV ≥ 40d **and** score
+The top tier: a super jackpot that **also** clears EV ≥ 80d **and** score
 ≥ 20 (by default) is a super mega jackpot:
 
 - an electric cyan **★★★ SUPER MEGA JACKPOT** banner, frame and TELEPORT
@@ -605,7 +623,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `shop_overlay.grid` / `.client_log` | The Merchant grid measured at some resolution (default: 2560×1440) / PoE's log path when it isn't found automatically |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
-| `alerts.sound_style` | `short` (default): built-in 0.1–0.2 s blips. `jingle`: soft 0.35–0.4 s chimes. Jackpots get a ~1 s fanfare in each (bright / chimed / the Windows alarm). `windows`: the longer Windows sounds. Also in ⚙ Settings → General. Your own `.wav` settings win either way |
+| `alerts.sound_style` | `short`: built-in 0.1–0.2 s blips. `jingle` (default): soft 0.35–0.4 s chimes. Jackpots get a ~1 s fanfare in each (bright / chimed / the Windows alarm). `windows`: the longer Windows sounds. Also in ⚙ Settings → General. Your own `.wav` settings win either way |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (15 / 8), also in the ⚙ panel |
 | `alerts.jackpot_alarm` / `jackpot_sound` | Play an alarm on a jackpot (once; a super jackpot its own alarm, once) instead of the ordinary sound / its .wav |
 | `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 10), also in the ⚙ panel / its alarm .wav |

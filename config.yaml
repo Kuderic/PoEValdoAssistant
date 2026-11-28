@@ -50,7 +50,12 @@ alerts:
   #   chimed in jingle, the Windows alarm in windows)
   #   windows  the longer Windows sounds (Exclamation 1.4s, tada 1.6s,
   #            Alarm02 3.75s, Alarm03 4s) named in the comments here
-  sound_style: short
+  sound_style: jingle
+  # Tiers that never alert: any of normal, jackpot, super, mega. They
+  # still show (greyed, [off]) in the recent listings, which you can click
+  # to travel, but get no alert card, sound, pop-up or hotkey. Searches
+  # outside Valdo always alert. Also in the gear panel (Alerts tab).
+  muted_tiers: []
   traveled_display_seconds: 10 # traveled map's mods stay readable this long
   feed_rows: 40                # live-feed history rows (the area scrolls)
   # JACKPOT: a listing whose EV and SCORE BOTH clear these bars (e.g. a
@@ -60,19 +65,19 @@ alerts:
   # Stays magenta in the live feed so a missed one is obvious later.
   # Currency mismatches never count.
   # Both bars are also editable in the ⚙ panel (saved to scoring_overrides.yaml).
-  jackpot_min_net: 15          # divines
-  jackpot_min_yield: 8         # divines per 100 difficulty
+  jackpot_min_net: 25          # divines
+  jackpot_min_yield: 12        # divines per 100 difficulty
   jackpot_alarm: true          # false -> a jackpot plays the ordinary alert sound
   jackpot_sound: ""            # .wav played once; empty -> built-in (or Alarm02.wav)
   # SUPER JACKPOT: the tier above - a jackpot that ALSO clears these higher
   # bars. Gold banner and frame, its own alarm (played once), and it
   # outranks a jackpot for the hotkey. Also in ⚙.
-  super_jackpot_min_net: 30    # divines
-  super_jackpot_min_yield: 10  # divines per 100 difficulty
+  super_jackpot_min_net: 45    # divines
+  super_jackpot_min_yield: 15  # divines per 100 difficulty
   super_jackpot_sound: ""      # empty -> built-in (or Alarm03.wav)
   # SUPER MEGA JACKPOT: the top tier - a super jackpot that ALSO clears
   # these. Cyan, its own bigger fanfare, outranks everything. Also in ⚙.
-  mega_jackpot_min_net: 40     # divines
+  mega_jackpot_min_net: 80     # divines
   mega_jackpot_min_yield: 20   # divines per 100 difficulty
   mega_jackpot_sound: ""       # empty -> built-in (or Alarm04.wav)
 
@@ -228,6 +233,16 @@ mod_pairings:
     match_all: ["deatomisation storms", "travel skills are disabled"]
     multiplier: 1.5
     note: "Slowed with no travel skills, so the storms are hard to escape"
+  # Same Ultimatum patterns as the ULTIMATUM rule (so "no chance to contain
+  # Ultimatum Encounters" does not count). Stacks on top of the ULTIMATUM
+  # and Players cannot Block rules.
+  - label: "Ultimatum + no block"
+    match_all:
+      - "an ultimatum encounter|ultimatum encounter waves|ultimatum modifier"
+      - "players cannot block"
+    regex: true
+    multiplier: 4
+    note: "Ultimatum waves hit hard when you cannot block"
 
 # FAILURE RISKS: mods (or combinations) that can make the map FAIL. A failed
 # map pays nothing and what you paid for it is gone, so each risk scales the

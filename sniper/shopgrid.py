@@ -170,13 +170,16 @@ def save(path: Path, enabled: bool, grid: ShopGrid | None) -> None:
 @dataclass(frozen=True)
 class ShopSpot:
     """One item to mark: its listing, the seller's tab and its 0-based cell,
-    and a short caption for the legend ("Mageblood 80 divine")."""
+    the reward's name and the tag drawn right above its box ("80d · +42d EV
+    · diff 144"), and its alert tier's colour ("" = a normal alert)."""
 
     listing_id: str
     tab: str
     x: int
     y: int
     caption: str = ""
+    tag: str = ""
+    colour: str = ""
 
 
 class ShopMarker:
@@ -268,6 +271,37 @@ class ShopMarker:
         self.shown = self._spots
         self._until = now + seconds
         return self.shown
+
+    def drop(self, listing_id: str) -> str:
+        """A travel found this listing sold or delisted. "cancelled" when it
+        is the item traveled to: the travel never happened, so the marker
+        must not wait for (or stay up in) an area that is not that shop.
+        "redraw" when another marked item went and the marker is on screen,
+        "dropped" when it went from a marker still waiting, "" otherwise."""
+        if not any(s.listing_id == listing_id for s in self._spots):
+            return ""
+        if self._spots[0].listing_id == listing_id:
+            self.cancel()
+            return "cancelled"
+        self._spots = tuple(s for s in self._spots if s.listing_id != listing_id)
+        if self.shown is not None:
+            self.shown = self._spots
+            return "redraw"
+        return "dropped"
+
+    @property
+    def armed(self) -> bool:
+        """Waiting for the seller's hideout to load."""
+        return self._deadline is not None
+
+    def boxes(self, now: float) -> tuple[ShopSpot, ...]:
+        """The spots the marker draws, or will draw once the hideout loads:
+        the app labels those listings with the same box numbers."""
+        if self.shown is not None:
+            return self.shown
+        if self._deadline is not None and now <= self._deadline:
+            return self._spots
+        return ()
 
     def cancel(self) -> bool:
         """Drop everything (feature switched off). True if it was up."""

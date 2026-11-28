@@ -188,8 +188,8 @@ def test_restored_runner_up_keeps_its_jackpot_flag():
 
 
 def test_config_defaults():
-    assert DEFAULTS.jackpot_min_net == 30
-    assert DEFAULTS.jackpot_min_yield == 50
+    assert DEFAULTS.jackpot_min_net == 25
+    assert DEFAULTS.jackpot_min_yield == 12
 
 
 def test_jackpot_keys_load_and_validate(tmp_path):
@@ -443,12 +443,12 @@ def mega_store() -> AlertStore:
     )
 
 
-def test_the_shipped_mega_bars_are_ev_40_and_score_20(tmp_path):
+def test_the_shipped_mega_bars_are_ev_80_and_score_20(tmp_path):
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
     alerts = load_config(root / "config.yaml", state_dir=tmp_path).alerts
-    assert (alerts.mega_jackpot_min_net, alerts.mega_jackpot_min_yield) == (40, 20)
+    assert (alerts.mega_jackpot_min_net, alerts.mega_jackpot_min_yield) == (80, 20)
 
 
 def test_super_mega_needs_both_bars_and_implies_super_and_jackpot():
@@ -509,3 +509,42 @@ def test_settings_panel_mega_bars_round_trip(tmp_path):
     )
     alerts = load_config(path).alerts
     assert (alerts.mega_jackpot_min_net, alerts.mega_jackpot_min_yield) == (50, 25)
+
+
+# ------------------------------------------------------- 1.3.17's bars
+
+
+def test_the_shipped_bars(tmp_path):
+    alerts = load_config("config.yaml", state_dir=tmp_path).alerts
+    bars = (
+        alerts.jackpot_min_net,
+        alerts.jackpot_min_yield,
+        alerts.super_jackpot_min_net,
+        alerts.super_jackpot_min_yield,
+        alerts.mega_jackpot_min_net,
+        alerts.mega_jackpot_min_yield,
+    )
+    assert bars == (25, 12, 45, 15, 80, 20)
+    assert (DEFAULTS.jackpot_min_net, DEFAULTS.mega_jackpot_min_yield) == (25, 20)
+
+
+def test_old_default_bars_pinned_by_a_save_give_way_to_the_new_ones(tmp_path):
+    from sniper.config import save_scoring_overrides
+
+    save_scoring_overrides(
+        CONFIG.mod_scoring,
+        tmp_path / "scoring_overrides.yaml",
+        jackpot_min_net=15,
+        jackpot_min_yield=8,
+        super_jackpot_min_net=30,
+        super_jackpot_min_yield=10,
+        mega_jackpot_min_net=40,
+        mega_jackpot_min_yield=7,  # never a default: the user's own choice
+    )
+    alerts = load_config("config.yaml", state_dir=tmp_path).alerts
+    assert alerts.jackpot_min_net == 25
+    assert alerts.jackpot_min_yield == 12
+    assert alerts.super_jackpot_min_net == 45
+    assert alerts.super_jackpot_min_yield == 15
+    assert alerts.mega_jackpot_min_net == 80
+    assert alerts.mega_jackpot_min_yield == 7

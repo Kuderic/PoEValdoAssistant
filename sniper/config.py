@@ -31,6 +31,8 @@ JACKPOT_KEYS = (
     "mega_jackpot_min_net",
     "mega_jackpot_min_yield",
 )
+# alert tiers, lowest first: alerts.muted_tiers names the ones that never alert
+ALERT_TIERS = ("normal", "jackpot", "super", "mega")
 
 
 # Defaults changed after the panel could already save them. The panel saves
@@ -45,6 +47,20 @@ RETIRED_FAIL_CHANCES = {  # changed in 1.3.13
     "Blight": (0.05,),
     "Legion": (0.05,),
     "1 portal": (0.03,),
+}
+
+
+# Every jackpot bar config.yaml has shipped before 1.3.17's (25/12, 45/15,
+# 80/20). The panel saves all six bars on any save, so these sat pinned in
+# scoring_overrides.yaml; a saved value equal to one of them is a default
+# nobody chose, and the current default applies.
+RETIRED_JACKPOT_BARS = {
+    "jackpot_min_net": (10.0, 15.0, 30.0),
+    "jackpot_min_yield": (8.0, 10.0, 50.0),
+    "super_jackpot_min_net": (30.0, 60.0),
+    "super_jackpot_min_yield": (10.0, 20.0, 50.0, 100.0),
+    "mega_jackpot_min_net": (40.0,),
+    # (mega score 20 shipped before too, and is the default again)
 }
 
 
@@ -116,6 +132,7 @@ def save_scoring_overrides(
     popup_enabled: bool | None = None,
     popup_opacity: float | None = None,
     popup_key: str | None = None,
+    muted_tiers: tuple[str, ...] | None = None,
 ) -> None:
     """Persist tuning-panel values (numbers, hotkey combo, alert volume;
     match patterns stay in config.yaml)."""
@@ -164,6 +181,8 @@ def save_scoring_overrides(
         data["popup_opacity"] = popup_opacity
     if popup_key is not None:
         data["popup_key"] = popup_key
+    if muted_tiers is not None:
+        data["muted_tiers"] = list(muted_tiers)
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
@@ -185,6 +204,7 @@ def load_extra_overrides(path: Path) -> dict:
         "popup_enabled",
         "popup_opacity",
         "popup_key",
+        "muted_tiers",
         *JACKPOT_KEYS,
     )
     return {k: raw[k] for k in keys if raw.get(k) is not None}
@@ -228,7 +248,7 @@ class AlertsConfig:
     # What an empty sound setting plays (sound.SOUND_STYLES): "short" built-in
     # 0.1-0.3s blips, "jingle" a soft 0.35-0.5s chime, "windows" the longer
     # Windows sounds (Exclamation, tada, Alarm02/03). Also in the panel.
-    sound_style: str = "short"
+    sound_style: str = "jingle"
     # 1.3.11's switch: false still means the Windows sounds when sound_style
     # is left at its default
     short_sounds: bool = True
@@ -236,8 +256,8 @@ class AlertsConfig:
     feed_rows: int = 40  # live-feed history rows (the area scrolls)
     # Jackpot: net AND yield both at or above these (see margin.is_jackpot).
     # Gets its own colour and the hotkey's top slot.
-    jackpot_min_net: float = 30.0
-    jackpot_min_yield: float = 50.0
+    jackpot_min_net: float = 25.0
+    jackpot_min_yield: float = 12.0
     # A jackpot plays an alarm once (a super jackpot its own alarm, once)
     # instead of the ordinary alert sound.
     # jackpot_sound empty -> sound.JACKPOT_WAV. Plays at `volume`.
@@ -245,15 +265,20 @@ class AlertsConfig:
     jackpot_sound: str = ""
     # Super jackpot: a jackpot that also clears these higher bars. Outranks
     # a jackpot, gold styling, own alarm (empty -> sound.SUPER_JACKPOT_WAV).
-    super_jackpot_min_net: float = 60.0
-    super_jackpot_min_yield: float = 100.0
+    super_jackpot_min_net: float = 45.0
+    super_jackpot_min_yield: float = 15.0
     super_jackpot_sound: str = ""
     # Super mega jackpot: a super jackpot that also clears these. Outranks
     # everything, cyan styling, its own fanfare (empty ->
     # sound.MEGA_JACKPOT_WAV in the Windows style).
-    mega_jackpot_min_net: float = 40.0
+    mega_jackpot_min_net: float = 80.0
     mega_jackpot_min_yield: float = 20.0
     mega_jackpot_sound: str = ""
+    # Tiers that do NOT alert (ALERT_TIERS: normal, jackpot, super, mega):
+    # still in the recent listings (greyed, "[off]"), but no alert card,
+    # sound, pop-up or hotkey target. Live searches outside Valdo are not
+    # a tier and always alert. Also in ⚙ Settings → Alerts.
+    muted_tiers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -574,6 +599,14 @@ def load_config(
         raise ConfigError("alerts.super_jackpot_min_net / super_jackpot_min_yield must be >= 0")
     if alerts.mega_jackpot_min_net < 0 or alerts.mega_jackpot_min_yield < 0:
         raise ConfigError("alerts.mega_jackpot_min_net / mega_jackpot_min_yield must be >= 0")
+    muted = alerts.muted_tiers
+    if muted is None:
+        muted = ()
+    if isinstance(muted, str) or not all(t in ALERT_TIERS for t in muted):
+        raise ConfigError(
+            f"alerts.muted_tiers must be a list of {list(ALERT_TIERS)}, got {alerts.muted_tiers!r}"
+        )
+    alerts = replace(alerts, muted_tiers=tuple(muted))
 
     ninja = build(NinjaConfig, "ninja")
     if ninja.enabled and ninja.refresh_minutes < 1:
@@ -800,8 +833,12 @@ def load_config(
     if "popup_key" in extra:  # "" is a choice too: no key
         popup = replace(popup, dismiss_key=str(extra["popup_key"]).strip())
     for key in JACKPOT_KEYS:
-        if key in extra:
+        if key in extra and not _retired(float(extra[key]), key, RETIRED_JACKPOT_BARS):
             alerts = replace(alerts, **{key: max(0.0, float(extra[key]))})
+    if isinstance(extra.get("muted_tiers"), list):
+        alerts = replace(
+            alerts, muted_tiers=tuple(t for t in ALERT_TIERS if t in extra["muted_tiers"])
+        )
 
     updates = build(UpdatesConfig, "updates")
     if updates.check_interval_hours < 0.1:

@@ -42,7 +42,7 @@ from sniper.bus import (
     UpdateStatus,
     WarmupStatus,
 )
-from sniper.config import POPUP_MIN_OPACITY, Config
+from sniper.config import ALERT_TIERS, POPUP_MIN_OPACITY, Config
 from sniper.gamewindow import game_client_rect, minimize_without_focus, raise_without_focus
 from sniper.hotkey import trigger_key
 from sniper.logging_setup import event
@@ -57,7 +57,7 @@ from sniper.shopgrid import (
     ShopSpot,
 )
 from sniper.shopgrid import save as save_shop_settings
-from sniper.shopoverlay import Calibrator, ShopMarkerWindow
+from sniper.shopoverlay import Calibrator, ShopMarkerWindow, box_colour
 from sniper.sound import (
     GENERIC_WAV,
     JACKPOT_PLAYS,
@@ -160,6 +160,11 @@ HELP = {
         "asked us to slow down; prices resume by themselves.",
     ),
     "mute": ("Sound", "Mute or unmute alert sounds, jackpot alarms included."),
+    "version": (
+        "Version",
+        "The Valdo Sniper version you are running. A green bar appears at the "
+        "top when a newer one is out.",
+    ),
     "settings": (
         "Settings",
         "Alert bars, hotkey, how hard each mod is, deadly pairings and reward prices.",
@@ -240,7 +245,9 @@ HELP = {
         "shop the moment the hideout loads. The grid marks the cell; col and row "
         "count from the top left. The trade site does not say how big the tab is, so "
         "a 12×12 tab is assumed unless the position only fits a quad (24×24) tab. "
-        "Unknown for listings caught from the page instead of the network.",
+        "Unknown for listings caught from the page instead of the network. When "
+        "the in-game marker draws two or more boxes in one shop, 'Box N' and its "
+        "colour match the numbered box over the game.",
     ),
     "risk": (
         "Failure risk",
@@ -327,8 +334,25 @@ def _shop_spot(view: AlertView) -> ShopSpot | None:
     if view.stash is None:
         return None
     tab, x, y = view.stash
-    caption = f"{_display_name(view.key or view.item_name)} {view.amount:g} {view.currency}"
-    return ShopSpot(view.listing_id, tab, x, y, caption.strip())
+    tier = _tier(view)
+    return ShopSpot(
+        view.listing_id,
+        tab,
+        x,
+        y,
+        _display_name(view.key or view.item_name),
+        _shop_tag(view),
+        tier.accent if tier else "",
+    )
+
+
+def _shop_tag(view: AlertView) -> str:
+    """The line over the item's box in game: price, EV, difficulty."""
+    price = f"{view.amount:g}d" if view.currency == "divine" else f"{view.amount:g} {view.currency}"
+    if view.generic:  # no EV or difficulty for a non-Valdo listing
+        return price
+    ev = "?d EV" if view.net_div is None else f"{view.net_div:+.0f}d EV"
+    return f"{price} · {ev} · diff {view.difficulty:g}"
 
 
 def _tab_names(picked, total: int) -> str:
@@ -612,6 +636,8 @@ JACKPOT_SOUND_S = 4.0
 TRAVEL_FAIL_S = 10.0
 # the settings panel's alert sound choices (sound.SOUND_STYLES), in order
 SOUND_STYLE_LABELS = {"short": "Short", "jingle": "Soft jingle", "windows": "Windows"}
+# the settings panel's alert tier toggles (config.ALERT_TIERS)
+TIER_NAMES = {"normal": "Normal", "jackpot": "Jackpot", "super": "Super", "mega": "Super mega"}
 # the settings panel's Test button shows the shop grid over the game this long
 SHOP_TEST_S = 10.0
 # the main window's smallest size; the alert pop-up lifts the height limit
@@ -793,6 +819,8 @@ class Overlay:
         on_price_recheck=None,
         # Callable[[float, float], None]: jackpot bars (min net, min yield)
         on_jackpot_change=None,
+        # Callable[[tuple[str, ...]], None]: the alert tiers switched off
+        on_muted_tiers=None,
         overrides_path=None,  # Path for scoring_overrides.yaml persistence
         # Callable[[], None]: update pill clicked with an update staged
         on_update_install=None,
@@ -808,6 +836,8 @@ class Overlay:
         self._on_price_override = on_price_override
         self._on_price_recheck = on_price_recheck
         self._on_jackpot_change = on_jackpot_change
+        self._on_muted_tiers = on_muted_tiers
+        self._muted_tiers: tuple[str, ...] = config.alerts.muted_tiers
         self._on_update_install = on_update_install
         self._on_popup_key = on_popup_key
         self._update: UpdateStatus | None = None
@@ -863,6 +893,11 @@ class Overlay:
         self._shop_gone: set[str] = set()  # travels found these sold/delisted
         self._client_log: str | None = None  # the PoE log followed, if any
         self._shop_tick_id: str | None = None
+        # listing id -> its box number while the marker is armed or up with
+        # two or more boxes, so the app labels each listing like the game
+        self._shop_boxes: dict[str, int] = {}
+        self._shop_box_spots: tuple[ShopSpot, ...] = ()
+        self._shop_box_colours: dict[str, str] = {}  # listing id -> box colour
         self._calibrating = False
         self._calibrator: Calibrator | None = None
         self._shop_fields: dict[str, tk.Entry] = {}  # the open settings panel's
@@ -989,11 +1024,20 @@ class Overlay:
         )
         self._mute_btn.pack(side="right", padx=(0, 12))
         self._mute_btn.bind("<Button-1>", lambda e: self._toggle_mute())
+        self._version_label = tk.Label(
+            inner,
+            text=f"v{__version__}",
+            bg=STRIP,
+            fg=FAINT,
+            font=self._font("ui", 9),
+        )
+        self._version_label.pack(side="right", padx=(0, 12))
         self._bind_help(self._tabs_label.widgets, HELP["tabs"])
         self._bind_help(self._game_label.widgets, HELP["game"])
         self._bind_help(self._price_label.widgets, HELP["prices"])
         self._bind_help((self._mute_btn,), HELP["mute"])
         self._bind_help((tune_btn,), HELP["settings"])
+        self._bind_help((self._version_label,), HELP["version"])
         tk.Frame(root, bg=HAIR, height=1).pack(fill="x")
 
         # A newer release (sniper.updater), announced at the very top: the
@@ -1713,6 +1757,7 @@ class Overlay:
                     if ev.reason in GONE_REASONS:
                         self._shop_gone.add(ev.listing_id)
                         self._listing_gone(ev.listing_id)
+                        self._shop_listing_gone(ev.listing_id, ev.reason)
                     # a failed travel (item sold, row gone...) must not keep
                     # the ➜ pin up as if the teleport were in progress
                     if (
@@ -2255,8 +2300,11 @@ class Overlay:
             if show[widget]:
                 widget.pack(**opts)
 
-    def _set_stash(self, stash: tuple[str, int, int] | None) -> None:
-        """Draw the item's cell in the seller's tab (see _stash_spot)."""
+    def _set_stash(self, stash: tuple[str, int, int] | None, listing_id: str = "") -> None:
+        """Draw the item's cell in the seller's tab (see _stash_spot). While
+        the shop marker draws several boxes, the cell takes this listing's
+        box colour, the seller's other marked cells in the same tab show as
+        outlines in theirs, and the words lead with "Box N"."""
         canvas = self._stash_grid
         canvas.delete("all")
         if stash is None:
@@ -2272,11 +2320,31 @@ class Overlay:
             canvas.create_line(1, at, px + 1, at, fill=HAIR)
         # the marked cell, never smaller than a readable dot on a quad tab
         size = max(cell, 6)
+        box = self._shop_boxes.get(listing_id)
+        for spot in self._shop_box_spots:
+            if spot.listing_id == listing_id or spot.tab != name:
+                continue
+            ox, oy = 1 + (spot.x + 0.5) * cell, 1 + (spot.y + 0.5) * cell
+            canvas.create_rectangle(
+                ox - size / 2,
+                oy - size / 2,
+                ox + size / 2,
+                oy + size / 2,
+                outline=box_colour(spot),
+            )
         cx, cy = 1 + (x + 0.5) * cell, 1 + (y + 0.5) * cell
         canvas.create_rectangle(
-            cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2, fill=GOOD, outline=""
+            cx - size / 2,
+            cy - size / 2,
+            cx + size / 2,
+            cy + size / 2,
+            fill=GOOD if box is None else self._shop_box_colours[listing_id],
+            outline="",
         )
-        self._stash_where.config(text=where)
+        self._stash_where.config(
+            text=where if box is None else f"Box {box}  ·  {where}",
+            fg=FG if box is None else self._shop_box_colours[listing_id],
+        )
         tab = f"tab “{name}”  ·  " if name else ""
         self._stash_detail.config(text=f"{tab}col {x + 1}, row {y + 1}")
 
@@ -2538,6 +2606,7 @@ class Overlay:
         joined = "" if spot is None else self._shop_marker.add(spot, new.seller, now)
         if not joined:
             return
+        self._shop_refresh_boxes()
         event(
             "shop_marker_added",
             listing_id=new.listing_id,
@@ -2582,6 +2651,25 @@ class Overlay:
         shown = self._shop_marker.travel_ok(spots, view.seller, time.monotonic(), log_live)
         if shown is not None:  # no log to wait on: mark it right away
             self._shop_show(shown, reason="travel_ok_no_log")
+        elif self._shop_tick_id is None:  # armed: the tick drops stale box labels
+            self._shop_tick_id = self._root.after(250, self._shop_tick)
+        self._shop_refresh_boxes()
+
+    def _shop_listing_gone(self, listing_id: str, reason: str) -> None:
+        """The trade site's final answer said the listing is sold or gone.
+        The first "travel sent" result had already armed the marker, so
+        without this the next area load (your own hideout, a map) would put
+        the boxes up over the wrong place and leave them there."""
+        action = self._shop_marker.drop(listing_id)
+        if not action:
+            return
+        event("shop_marker_dropped", listing_id=listing_id, reason=reason, action=action)
+        if action == "cancelled":
+            self._shop_hide("travel_failed")
+        elif action == "redraw":
+            self._shop_show(self._shop_marker.shown, reason="spot_gone")
+        else:
+            self._shop_refresh_boxes()
 
     def _shop_area(self, area: str) -> None:
         action, spots = self._shop_marker.area_entered(time.monotonic())
@@ -2595,6 +2683,7 @@ class Overlay:
         if rect is None:
             self._shop_marker.cancel()
             event("shop_marker_skipped", reason="game_window_not_found")
+            self._shop_refresh_boxes()
             return
         if self._shop_window is None:
             self._shop_window = ShopMarkerWindow(self._root, self._families.get("ui", "Segoe UI"))
@@ -2611,18 +2700,37 @@ class Overlay:
         )
         if self._shop_tick_id is None:
             self._shop_tick_id = self._root.after(250, self._shop_tick)
+        self._shop_refresh_boxes()
 
     def _shop_tick(self) -> None:
         self._shop_tick_id = None
         if self._shop_marker.tick(time.monotonic()):
             self._shop_hide("timeout")
-        elif self._shop_marker.shown is not None:
+        elif self._shop_marker.shown is not None or self._shop_marker.armed:
             self._shop_tick_id = self._root.after(250, self._shop_tick)
+        self._shop_refresh_boxes()
 
     def _shop_hide(self, reason: str, **fields) -> None:
         if self._shop_window is not None and self._shop_window.visible:
             self._shop_window.hide()
             event("shop_marker_hidden", reason=reason, **fields)
+        self._shop_refresh_boxes()
+
+    def _shop_refresh_boxes(self) -> None:
+        """Number the app's listings like the marker's boxes: only when it
+        marks two or more (one box is never ambiguous), and only while it is
+        armed or up. Re-renders when the numbering changed."""
+        spots = self._shop_marker.boxes(time.monotonic())
+        if len(spots) < 2:
+            spots = ()
+        boxes = {s.listing_id: n for n, s in enumerate(spots, 1)}
+        if boxes == self._shop_boxes:
+            return
+        self._shop_boxes = boxes
+        self._shop_box_spots = spots
+        self._shop_box_colours = {s.listing_id: box_colour(s) for s in spots}
+        self._render_alerts()
+        self._render_feed()
 
     def _shop_test(self) -> dict:
         """Settings panel: show the grid and a corner cell for a few
@@ -2665,6 +2773,7 @@ class Overlay:
         self._shop_enabled = on
         if not on and self._shop_marker.cancel():
             self._shop_hide("disabled")
+        self._shop_refresh_boxes()
         self._save_shop()
 
     def _save_shop(self) -> None:
@@ -2963,7 +3072,7 @@ class Overlay:
         self._price_panel.pack_forget()  # the alert names its own reward price
         self._set_stats(top)
         self._set_age(top.index_lag_ms)
-        self._set_stash(top.stash)
+        self._set_stash(top.stash, top.listing_id)
         self._set_travel_button(has_target=True, pinned=pinned is not None, jackpot=tier)
         for label, note, mult in top.pairings:
             row = tk.Frame(self._pairings, bg=PAIR_BG)
@@ -3154,6 +3263,17 @@ class Overlay:
             font=self._font("mono", 9),
             anchor="w",
         )
+        box = self._shop_boxes.get(a.listing_id)
+        badge = None
+        if box is not None:  # the same number and colour as its in-game box
+            badge = tk.Label(
+                band,
+                text=f" {box} ",
+                bg=self._shop_box_colours[a.listing_id],
+                fg=BG,
+                font=self._font("ui", 9, "bold"),
+            )
+            badge.pack(side="left", padx=(8, 0), pady=5)
         text.pack(side="left", fill="x", expand=True, padx=(10, 0), pady=5)
         arrow = tk.Label(
             band,
@@ -3164,7 +3284,7 @@ class Overlay:
         )
         arrow.pack(side="right", padx=(6, 10))
 
-        parts = (band, text, arrow)
+        parts = (band, text, arrow) + ((badge,) if badge is not None else ())
         # tooltip FIRST: _bind_tooltip takes <Enter>/<Leave> with a plain
         # bind(), which replaces whatever is already on those sequences, so
         # the tint below has to be added after it and with add="+".
@@ -3484,6 +3604,50 @@ class Overlay:
             hint="Taken off every listing BEFORE EV and Score are computed: it\n"
             "accounts for loss on selling and the time spent running the map.\n"
             "Recommended value is 1.",
+        )
+        end_card()
+
+        # Which tiers alert at all: one toggle per tier, saved at once
+        heading("Alert tiers")
+        tier_btns: dict[str, tk.Label] = {}
+        tiers_hint = (
+            "Switch a tier off and its listings stop alerting: no alert\n"
+            "card, sound, pop-up or hotkey. They still show greyed out\n"
+            "with [off] in Recent listings, where a click still travels.\n"
+            "Live searches outside Valdo always alert."
+        )
+
+        def show_tiers() -> None:
+            for tier, btn in tier_btns.items():
+                on = tier not in self._muted_tiers
+                btn.config(fg=GOOD if on else DIM, bg=BOX)
+                btn.config(text=("☑ " if on else "☐ ") + TIER_NAMES[tier])
+
+        def toggle_tier(tier: str) -> None:
+            muted = set(self._muted_tiers) ^ {tier}
+            self._muted_tiers = tuple(t for t in ALERT_TIERS if t in muted)
+            show_tiers()
+            event("muted_tiers_changed", tiers=list(self._muted_tiers))
+            if self._on_muted_tiers is not None:
+                self._on_muted_tiers(self._muted_tiers)
+            collect(save=True)
+
+        card, r = next_row()
+        tiers_name = row_label(card, r, "Alert for", tiers_hint)
+        tiers_box = tk.Frame(card, bg=SURFACE)
+        tiers_box.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
+        for i, tier in enumerate(ALERT_TIERS):
+            btn = tk.Label(tiers_box, bg=BOX, font=self._font("ui", 9), padx=6, cursor="hand2")
+            btn.grid(row=i // 2, column=i % 2, padx=(0, 4), pady=(0, 3), sticky="w")
+            btn.bind("<Button-1>", lambda e, t=tier: toggle_tier(t))
+            tier_btns[tier] = btn
+        show_tiers()
+        self._tier_toggles = (tier_btns, toggle_tier)  # for tests
+        sections[-1]["rows"].append(
+            (
+                f"alert for tiers {tiers_hint} mute off normal jackpot super mega".casefold(),
+                [tiers_name, tiers_box],
+            )
         )
         end_card()
 
@@ -4217,6 +4381,7 @@ class Overlay:
                     mega_jackpot_min_net=new_mjp_net,
                     mega_jackpot_min_yield=new_mjp_yield,
                     raise_overlay=raise_state[0],
+                    muted_tiers=self._muted_tiers,
                     sound_style=self._sound_style,
                     void_min_net=new_void_min_net,
                     popup_enabled=popup_state[0],
@@ -4365,6 +4530,7 @@ class Overlay:
                 "blocked": "  [blocked]",
                 "no_reference": "  [no ref]",
                 "no_rate": "  [no rate]",
+                "muted": "  [off]",
             }.get(e.verdict, "")
             price = f"{e.amount:g}d" if e.currency == "divine" else f"{e.amount:g} {e.currency}"
             ratio = net_yield(e.net_div, e.difficulty)
@@ -4381,6 +4547,9 @@ class Overlay:
             tier = _tier(e)
             if tier is not None:
                 note = tier.feed_note
+            box = self._shop_boxes.get(e.listing_id)
+            if box is not None:
+                note += f"  ▣ box {box}"
             if e.received_monotonic > 0:
                 age = f"{max(0, int((time.monotonic() - e.received_monotonic) / 60))}m ago"
             else:

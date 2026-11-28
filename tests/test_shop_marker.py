@@ -429,7 +429,8 @@ def test_a_landed_travel_marks_the_item_when_the_hideout_loads(overlay):
     ((rect, grid, spots, test),) = ov._shop_window.shown
     assert (rect, grid, test) == (RECT, DEFAULT_GRID, False)
     assert ov._shop_window.last_cells == [("L1", "7", 8, 9)]
-    assert spots[0].caption == "Nimis 80 divine"
+    assert spots[0].caption == "Nimis"
+    assert spots[0].colour == ""  # a normal alert: the marker's green
     bus.put(AreaEntered("MapWorldsStrand"))  # off to run the map
     ov._drain_once()
     assert ov._shop_window.visible is False
@@ -571,3 +572,268 @@ def test_calibration_saves_the_clicked_corners(overlay, tmp_path):
     assert g.left == pytest.approx(412, abs=1)
     assert g.size == pytest.approx(850, abs=2)
     assert load_saved(tmp_path / shopgrid.SHOP_OVERLAY_NAME)["grid"] == g
+
+
+# ------------------------------------------------------- box labels in the app
+
+
+def test_a_box_takes_its_alert_tiers_colour():
+    from sniper import overlay as overlay_mod
+    from sniper.overlay import _shop_spot
+    from sniper.shopoverlay import MARK, box_colour
+
+    normal = alert()
+    jackpot = replace(normal, jackpot=True)
+    super_ = replace(normal, jackpot=True, super_jackpot=True)
+    mega = replace(super_, mega_jackpot=True)
+    colours = [box_colour(_shop_spot(v)) for v in (normal, jackpot, super_, mega)]
+    assert colours == [
+        MARK,
+        overlay_mod.JACKPOT_TIER.accent,
+        overlay_mod.SUPER_TIER.accent,
+        overlay_mod.MEGA_TIER.accent,
+    ]
+
+
+def test_the_marker_reports_its_boxes_while_armed_or_up_only():
+    m = ShopMarker(60)
+    a, b = ShopSpot("A", "7", 0, 0), ShopSpot("B", "7", 1, 1)
+    m.travel_ok((a, b), "Bob", 0.0, log_live=True)
+    assert m.boxes(1.0) == (a, b)  # armed: waiting for the hideout
+    assert m.boxes(shopgrid.ARM_S + 1) == ()  # the hideout never loaded
+    m.travel_ok((a, b), "Bob", 100.0, log_live=False)
+    assert m.boxes(101.0) == (a, b)  # on screen
+    m.cancel()
+    assert m.boxes(101.0) == ()
+
+
+def two_boxes(ov, bus, l2_jackpot=False):
+    """Bob's L2 alerted, then the travel to his L1 landed: two boxes."""
+    from sniper.bus import FeedEntry, ListingSeen
+
+    for lid in ("L2", "L1"):
+        bus.put(ListingSeen(FeedEntry(lid, "Foil Nimis", 80, "divine", 80.0, 1, "alert")))
+    l2 = replace(alert("L2", ("7", 0, 0)), jackpot=l2_jackpot)
+    bus.put(arrived(l2, others=(alert("L1"),)))
+    bus.put(traveled("L1"))
+    bus.put(ClickOutcome("L1", True, ""))
+    ov._drain_once()
+
+
+def test_two_boxes_label_the_apps_listings_like_the_game(overlay):
+    from sniper import overlay as overlay_mod
+    from sniper.shopoverlay import MARK
+
+    ov, bus = overlay
+    two_boxes(ov, bus, l2_jackpot=True)
+    assert ov._shop_boxes == {"L1": 1, "L2": 2}
+    ov._root.update_idletasks()
+    # the card holds the traveled listing: box 1, a normal alert's green
+    assert ov._stash_where.cget("text").startswith("Box 1")
+    assert ov._stash_where.cget("fg") == MARK
+    rows = {ov._feed_rows[i].cget("text").split()[-1] for i in range(2)}
+    assert rows == {"1", "2"}
+    assert all("▣ box" in ov._feed_rows[i].cget("text") for i in range(2))
+    # the runner band for L2 (a jackpot) carries a number badge in the
+    # jackpot colour its box has in game
+    badges = [
+        w
+        for band in ov._runners.winfo_children()
+        for w in band.winfo_children()
+        if isinstance(w, tk.Label) and w.cget("text").strip() == "2"
+    ]
+    assert [b.cget("bg") for b in badges] == [overlay_mod.JACKPOT_TIER.accent]
+
+
+def test_the_labels_go_when_the_marker_does(overlay):
+    ov, bus = overlay
+    two_boxes(ov, bus)
+    bus.put(AreaEntered("MapWorldsStrand"))  # left the hideout
+    ov._drain_once()
+    assert ov._shop_boxes == {}
+    assert not ov._stash_where.cget("text").startswith("Box")
+    assert "▣ box" not in ov._feed_rows[0].cget("text")
+
+
+def test_a_single_box_gets_no_label(overlay):
+    ov, bus = overlay
+    bus.put(traveled())
+    bus.put(ClickOutcome("L1", True, ""))
+    ov._drain_once()
+    assert ov._shop_window.last_cells == [("L1", "7", 8, 9)]
+    assert ov._shop_boxes == {}
+
+
+# ----------------------------------------------------- the tag above each box
+
+
+def test_the_tag_reads_price_ev_and_difficulty():
+    from sniper.overlay import _shop_tag
+
+    v = alert()
+    assert _shop_tag(v) == "80d · +80d EV · diff 55"
+    assert _shop_tag(replace(v, amount=300, currency="chaos", net_div=None, difficulty=144)) == (
+        "300 chaos · ?d EV · diff 144"
+    )
+    assert _shop_tag(replace(v, generic=True)) == "80d"
+
+
+def test_the_traveled_spot_carries_its_tag(overlay):
+    ov, bus = overlay
+    bus.put(traveled())
+    bus.put(ClickOutcome("L1", True, ""))
+    ov._drain_once()
+    assert ov._shop_window.shown[-1][2][0].tag == "80d · +80d EV · diff 55"
+
+
+@pytest.fixture
+def drawn(monkeypatch):
+    """A real marker window that draws on its canvas but is never shown."""
+    from sniper import shopoverlay
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("no display")
+    root.withdraw()
+    win = shopoverlay.ShopMarkerWindow(root)
+    win._hwnd = win._hwnd or 1
+    monkeypatch.setattr(
+        shopoverlay,
+        "win32gui",
+        SimpleNamespace(ShowWindow=lambda *a: None, SetWindowPos=lambda *a: None),
+    )
+    monkeypatch.setattr(
+        shopoverlay,
+        "win32con",
+        SimpleNamespace(
+            SW_SHOWNOACTIVATE=4, SW_HIDE=0, HWND_TOPMOST=-1, SWP_NOACTIVATE=0, SWP_SHOWWINDOW=0
+        ),
+    )
+    yield win
+    root.destroy()
+
+
+def test_each_box_has_its_label_right_on_top_of_it_in_its_colour(drawn):
+    from sniper.shopoverlay import MARK
+
+    spots = (
+        ShopSpot("A", "7", 8, 9, "Nimis", "80d · +42d EV · diff 144"),
+        ShopSpot("B", "8", 0, 0, "Mageblood", "60d · +20d EV · diff 90", "#ff3df5"),
+    )
+    drawn.show(RECT, DEFAULT_GRID, spots)
+    c = drawn._canvas
+    texts = [c.itemcget(i, "text") for i in c.find_all() if c.type(i) == "text"]
+    # the number badges, then one label per box - no separate list elsewhere
+    assert sorted(texts) == sorted(
+        [
+            "1",
+            "2",
+            '1  ★ Nimis · tab "7"\n80d · +42d EV · diff 144',
+            '2  Mageblood · tab "8"\n60d · +20d EV · diff 90',
+        ]
+    )
+    for spot, colour in zip(spots, (MARK, "#ff3df5"), strict=True):
+        (tid,) = [
+            i for i in c.find_all() if c.type(i) == "text" and spot.tag in c.itemcget(i, "text")
+        ]
+        assert c.itemcget(tid, "fill") == colour
+        x0, y0, x1, y1 = (
+            v * RECT.w / RECT.pw for v in cell_box(DEFAULT_GRID, RECT.pw, RECT.ph, spot.x, spot.y)
+        )
+        tx0, ty0, tx1, ty1 = c.bbox(tid)
+        assert ty1 <= y0  # above the box
+        assert y0 - ty1 < 8  # touching it
+        assert tx0 >= 0 and tx1 <= RECT.w  # on screen
+        assert tx0 < (x0 + x1) / 2 < tx1  # centred over it
+
+
+def test_a_single_box_is_labelled_without_a_number(drawn):
+    drawn.show(RECT, DEFAULT_GRID, (ShopSpot("A", "", 8, 9, "Nimis", "80d · +42d EV · diff 1"),))
+    c = drawn._canvas
+    texts = [c.itemcget(i, "text") for i in c.find_all() if c.type(i) == "text"]
+    assert texts == ["Nimis\n80d · +42d EV · diff 1"]
+
+
+def test_a_tag_at_the_window_edge_is_pulled_back_on_screen(drawn):
+    spots = (ShopSpot("A", "7", 0, 0, "", "1234 chaos · +1234d EV · diff 999"),)
+    narrow = GameRect(x=0, y=0, w=400, h=1152, pw=500, ph=1440)
+    drawn.show(narrow, DEFAULT_GRID, spots)
+    c = drawn._canvas
+    (tid,) = [i for i in c.find_all() if c.type(i) == "text" and "chaos" in c.itemcget(i, "text")]
+    tx0, _, tx1, _ = c.bbox(tid)
+    assert tx0 >= 0 and tx1 <= narrow.w
+
+
+# ------------------------------------- a sold listing must not leave a marker
+
+
+def test_dropping_the_traveled_item_cancels_the_marker():
+    m = ShopMarker(60)
+    a, b = ShopSpot("A", "7", 0, 0), ShopSpot("B", "7", 1, 1)
+    m.travel_ok((a, b), "Bob", 0.0, log_live=True)
+    assert m.drop("A") == "cancelled"
+    assert m.area_entered(1.0) == ("", None)  # nothing left to show anywhere
+    assert m.boxes(1.0) == ()
+
+
+def test_dropping_another_item_keeps_the_rest():
+    m = ShopMarker(60)
+    a, b = ShopSpot("A", "7", 0, 0), ShopSpot("B", "7", 1, 1)
+    m.travel_ok((a, b), "Bob", 0.0, log_live=True)
+    assert m.drop("B") == "dropped"
+    assert m.drop("Z") == ""
+    assert m.area_entered(1.0) == ("show", (a,))
+    m.add(b, "Bob", 2.0)
+    assert m.drop("B") == "redraw"
+    assert m.shown == (a,)
+
+
+def test_a_sold_listing_disarms_the_marker_before_any_area_loads(overlay):
+    """The bug: the first "travel sent" armed the marker, the trade site
+    then said the item was sold, and the next area load (your own hideout)
+    put the box up over the wrong place for a minute."""
+    ov, bus = overlay
+    bus.put(ClientLogStatus("C:/PoE/logs/LatestClient.txt"))
+    bus.put(traveled())
+    bus.put(ClickOutcome("L1", True, ""))
+    bus.put(ClickOutcome("L1", False, "item_no_longer_available"))
+    bus.put(AreaEntered("HideoutRemidusMonastery_"))
+    ov._drain_once()
+    assert ov._shop_window.shown == []
+
+
+def test_a_sold_listing_takes_a_marker_already_up_down(overlay):
+    ov, bus = overlay
+    bus.put(traveled())
+    bus.put(ClickOutcome("L1", True, ""))  # no client log: up at once
+    ov._drain_once()
+    assert ov._shop_window.visible is True
+    bus.put(ClickOutcome("L1", False, "item_no_longer_available"))
+    ov._drain_once()
+    assert ov._shop_window.visible is False
+    assert ov._shop_marker.shown is None
+
+
+def test_another_marked_item_sold_is_redrawn_without_it(overlay):
+    ov, bus = overlay
+    bus.put(arrived(alert("L2", ("7", 0, 0))))
+    bus.put(traveled("L1"))
+    bus.put(ClickOutcome("L1", True, ""))
+    ov._drain_once()
+    assert ov._shop_window.last_cells == [("L1", "7", 8, 9), ("L2", "7", 0, 0)]
+    bus.put(ClickOutcome("L2", False, "row_gone"))
+    ov._drain_once()
+    assert ov._shop_window.visible is True
+    assert ov._shop_window.last_cells == [("L1", "7", 8, 9)]
+
+
+def test_a_failure_that_is_not_a_sale_leaves_the_marker(overlay):
+    """A second press right after a travel is refused ("travel just sent")
+    while that travel is still on its way: the marker for it must stay."""
+    ov, bus = overlay
+    bus.put(traveled())
+    bus.put(ClickOutcome("L1", True, ""))
+    bus.put(ClickOutcome("L1", False, "travel just sent - click again to re-travel"))
+    ov._drain_once()
+    assert ov._shop_window.visible is True

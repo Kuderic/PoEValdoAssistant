@@ -346,9 +346,9 @@ into the WAV (`sound.repeat_wav`, cached per volume), so
 it is still one async PlaySound that a mute can cut off.
 `alerts.sound_style` picks what an empty sound setting plays
 (`sound.builtin_wav(kind, style)`, synthesised once into the temp folder,
-named by a hash of its recipe). `short` (default) is the `SHORT_NOTES`
+named by a hash of its recipe). `short` is the `SHORT_NOTES`
 blips for the routine kinds: 0.11-0.17s, full level within 2ms. `jingle`
-is the `JINGLE_NOTES` chimes: overlapping near-pure sines with a 6ms
+(the default since 1.3.17) is the `JINGLE_NOTES` chimes: overlapping near-pure sines with a 6ms
 attack and a bell decay, 0.35-0.40s, half level within 5ms. Jackpot and
 super jackpot get a fanfare in each style. `short`: `FANFARE_NOTES`
 (`synth_fanfare`), a rising run whose overlapping notes ring into a chord,
@@ -803,6 +803,19 @@ scoring_overrides.yaml).
 - Logged: `popup_shown`, `popup_expanded` (reason), `popup_dismissed`
   (reason, key), `popup_key_bound`.
 
+## Muted alert tiers
+
+`alerts.muted_tiers` (⚙ Alerts → Alert tiers, saved as `muted_tiers` in
+scoring_overrides.yaml) lists tiers that never alert: `normal`, `jackpot`,
+`super`, `mega` (`config.ALERT_TIERS`). `App._on_decision` asks
+`AlertStore.tier_of` for an alert verdict and, when that tier is muted,
+publishes the feed row with verdict `"muted"` (greyed, `[off]`, no tier
+colour), logs `alert_muted` (tier) and stops: nothing enters the store, so
+no card, sound, pop-up, shop-marker join or hotkey target. The listing
+stays in `_recent`, so a click on its feed row still travels. Generic
+(non-Valdo) listings are not a tier and always alert. The panel's toggles
+call `App.set_muted_tiers` (logged `muted_tiers_updated`).
+
 ## Shop marker
 
 After a travel lands, the item's cell (`listing.stash {name, x, y}`) is
@@ -812,22 +825,48 @@ clicks, sends input or reads the game's memory, so the one-press-one-action
 rule is untouched.
 
 - **Which items**: the marker belongs to one seller, since their hideout
-  is where the travel goes. `spots[0]` (green) is the item traveled to; the
-  others (cyan, numbered, legend lines with tab/cell/price) are that
-  seller's other alerts. The overlay remembers every alert it sees
-  (`AlertsChanged`, first-seen time). At travel time it adds the seller's
-  alerts seen within `SAME_SELLER_S` (180s) with a known cell and not found
-  gone by a failed travel. An alert of theirs arriving later, while the
-  marker is armed or up, joins it (`ShopMarker.add`). On screen it is drawn
-  at once and the marker stays up at least `ADDED_MIN_S` (20s) more. At most
-  8 spots. Matching is on the account name (`listing.account.name`).
+  is where the travel goes. `spots[0]` is the item traveled to; the
+  others are that seller's other alerts. The overlay remembers every alert
+  it sees (`AlertsChanged`, first-seen time). At travel time it adds the
+  seller's alerts seen within `SAME_SELLER_S` (180s) with a known cell and
+  not found gone by a failed travel. An alert of theirs arriving later,
+  while the marker is armed or up, joins it (`ShopMarker.add`). On screen
+  it is drawn at once and the marker stays up at least `ADDED_MIN_S` (20s)
+  more. At most 8 spots. Matching is on the account name
+  (`listing.account.name`).
+- **How a box looks**: its colour is its alert tier's (`ShopSpot.colour` =
+  the overlay's `_Tier.accent`: magenta jackpot, gold super, cyan mega;
+  "" = a normal alert, `MARK` green), the same colour the app paints that
+  tier. With several boxes each gets a number badge (1 = traveled to), as
+  same-tier boxes share a colour. Its label sits right on top of the box,
+  in its colour (`_box_label`): number (★ on 1), reward name
+  (`ShopSpot.caption`) and tab, then `ShopSpot.tag` (`overlay._shop_tag`:
+  price · EV · difficulty, the price alone for a non-Valdo listing). It is
+  nudged back inside the window when the box hugs an edge. There is no
+  separate list above the shop any more; only the calibration Test still
+  writes a line there.
+- **Box labels in the app**: while `ShopMarker.boxes(now)` (the spots armed
+  or on screen) holds two or more, the overlay maps listing id -> box
+  number (`_shop_refresh_boxes`, re-run on arm/add/show/hide and every
+  250ms tick while armed or up) and re-renders: the alert card's stash line
+  reads "Box N · where" in the box colour, the mini grid fills its cell in
+  that colour and outlines the seller's other marked cells in the same tab,
+  runner bands get a coloured number badge, and feed rows end `▣ box N`.
+  One box is never ambiguous, so it gets no label.
 - **When** (`shopgrid.ShopMarker`, fed by the overlay): the `Traveled` view
   supplies the item and an ok `ClickOutcome` for the same listing arms
   it. The first area load within `ARM_S` (20s) after that is the seller's
   hideout: the marker goes up. Any later load (leaving) takes it down, as
   does `shop_overlay.seconds` (60). With no client log the marker goes up as
   soon as the travel lands. Failed travels and listings without a stash
-  spot never arm it.
+  spot never arm it. A travel reports twice: "sent" (ok) at once, then the trade
+  site's answer up to ~2s later. The first arms the marker, so when the
+  second says the listing is gone (`GONE_REASONS`: sold, row gone),
+  `ShopMarker.drop` cancels it if that was the item traveled to (the travel
+  never happened: the next area load is not that shop, and the box would
+  sit over your own hideout or map for a minute) or removes just that box
+  otherwise (logged `shop_marker_dropped`). Other failures, such as the
+  "travel just sent" refusal of a quick second press, leave it alone.
 - **Area loads** (`clientlog.ClientLogWatcher`, own daemon thread): tails
   `<game dir>/logs/LatestClient.txt` (else `Client.txt`; the game dir comes
   from the running process's exe, `shop_overlay.client_log` overrides) and

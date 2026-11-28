@@ -135,8 +135,11 @@ def test_a_silent_recipe_does_not_divide_by_zero():
     assert set(a) == {0}
 
 
-def test_short_is_the_default_style(tmp_path):
-    assert load_config("config.yaml").alerts.sound_style == "short"
+def test_the_soft_jingle_is_the_default_style(tmp_path):
+    assert load_config("config.yaml").alerts.sound_style == "jingle"
+    empty = tmp_path / "config.yaml"
+    empty.write_text("alerts: {}\n", encoding="utf-8")
+    assert load_config(empty).alerts.sound_style == "jingle"
 
 
 @pytest.mark.parametrize(
@@ -195,8 +198,13 @@ def make_overlay():
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_the_overlay_plays_the_short_sound_by_default(make_overlay, kind):
-    assert make_overlay()._alert_wav(kind) == str(short_wav(kind))
+def test_the_overlay_plays_the_jingle_by_default(make_overlay, kind):
+    assert make_overlay()._alert_wav(kind) == str(builtin_wav(kind, "jingle"))
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_the_short_style_plays_the_short_sound(make_overlay, kind):
+    assert make_overlay(sound_style="short")._alert_wav(kind) == str(short_wav(kind))
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -218,11 +226,11 @@ def test_picking_a_style_in_the_panel_switches_saves_and_plays_it(make_overlay, 
     played: list[str] = []
     ov._play_sound = lambda kind="valdo": played.append(kind)
     ov._open_tuning()
-    ov._style_pick("jingle")
-    assert ov._alert_wav("valdo") == str(builtin_wav("valdo", "jingle"))
+    ov._style_pick("short")
+    assert ov._alert_wav("valdo") == str(short_wav("valdo"))
     assert played == ["valdo"]  # heard at once
-    assert load_extra_overrides(tmp_path / SCORING_OVERRIDES_NAME)["sound_style"] == "jingle"
-    ov._style_pick("jingle")  # the current one again: replayed, nothing to save
+    assert load_extra_overrides(tmp_path / SCORING_OVERRIDES_NAME)["sound_style"] == "short"
+    ov._style_pick("short")  # the current one again: replayed, nothing to save
     assert played == ["valdo", "valdo"]
 
 
@@ -290,4 +298,4 @@ def test_a_wav_of_your_own_is_named_on_the_button(make_overlay, tmp_path):
     ov = make_overlay(jackpot_sound=str(tmp_path / "mine.wav"))
     ov._open_tuning()
     assert ov._jackpot_btns["jackpot"].cget("text") == "▶ your .wav"
-    assert ov._jackpot_btns["super"].cget("text") == "▶ Short fanfare"
+    assert ov._jackpot_btns["super"].cget("text") == "▶ Soft jingle fanfare"
