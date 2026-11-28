@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -27,7 +28,28 @@ JACKPOT_KEYS = (
     "jackpot_min_yield",
     "super_jackpot_min_net",
     "super_jackpot_min_yield",
+    "mega_jackpot_min_net",
+    "mega_jackpot_min_yield",
 )
+
+
+# Defaults changed after the panel could already save them. The panel saves
+# EVERY value, not just the ones the user touched, so an old default would
+# stay pinned in scoring_overrides.yaml forever. A saved value equal to a
+# retired default is taken as never chosen: the current default applies.
+RETIRED_MULTIPLIERS = {
+    "Increasingly lethal": (1.8,),  # 2.3 since 1.3.16
+}
+RETIRED_FAIL_CHANCES = {  # changed in 1.3.13
+    "Breach": (0.05,),
+    "Blight": (0.05,),
+    "Legion": (0.05,),
+    "1 portal": (0.03,),
+}
+
+
+def _retired(value: float, label: str, table: dict[str, tuple[float, ...]]) -> bool:
+    return any(math.isclose(value, old) for old in table.get(label, ()))
 
 
 def apply_scoring_overrides(scoring: ModScoringConfig, path: Path) -> ModScoringConfig:
@@ -38,13 +60,16 @@ def apply_scoring_overrides(scoring: ModScoringConfig, path: Path) -> ModScoring
     rules = []
     for r in scoring.rules:
         o = per_label.get(r.label) or {}
+        multiplier = r.multiplier
+        if o.get("multiplier") is not None:
+            saved = float(o["multiplier"])
+            if not _retired(saved, r.label, RETIRED_MULTIPLIERS):
+                multiplier = saved
         rules.append(
             replace(
                 r,
                 min_base=float(o["min_base"]) if o.get("min_base") is not None else r.min_base,
-                multiplier=float(o["multiplier"])
-                if o.get("multiplier") is not None
-                else r.multiplier,
+                multiplier=multiplier,
             )
         )
     saved_pairings = raw.get("pairings") or {}
@@ -52,9 +77,13 @@ def apply_scoring_overrides(scoring: ModScoringConfig, path: Path) -> ModScoring
         replace(p, multiplier=float(saved_pairings[p.label])) if p.label in saved_pairings else p
         for p in scoring.pairings
     )
-    saved_risks = raw.get("risks") or {}
+    saved_risks = {
+        label: float(chance)
+        for label, chance in (raw.get("risks") or {}).items()
+        if not _retired(float(chance), label, RETIRED_FAIL_CHANCES)
+    }
     risks = tuple(
-        replace(r, fail_chance=min(1.0, max(0.0, float(saved_risks[r.label]))))
+        replace(r, fail_chance=min(1.0, max(0.0, saved_risks[r.label])))
         if r.label in saved_risks
         else r
         for r in scoring.risks
@@ -79,6 +108,8 @@ def save_scoring_overrides(
     jackpot_min_yield: float | None = None,
     super_jackpot_min_net: float | None = None,
     super_jackpot_min_yield: float | None = None,
+    mega_jackpot_min_net: float | None = None,
+    mega_jackpot_min_yield: float | None = None,
     raise_overlay: bool | None = None,
     sound_style: str | None = None,
     void_min_net: float | None = None,
@@ -117,6 +148,10 @@ def save_scoring_overrides(
         data["super_jackpot_min_net"] = super_jackpot_min_net
     if super_jackpot_min_yield is not None:
         data["super_jackpot_min_yield"] = super_jackpot_min_yield
+    if mega_jackpot_min_net is not None:
+        data["mega_jackpot_min_net"] = mega_jackpot_min_net
+    if mega_jackpot_min_yield is not None:
+        data["mega_jackpot_min_yield"] = mega_jackpot_min_yield
     if raise_overlay is not None:
         data["raise_overlay"] = raise_overlay
     if sound_style is not None:
@@ -213,6 +248,12 @@ class AlertsConfig:
     super_jackpot_min_net: float = 60.0
     super_jackpot_min_yield: float = 100.0
     super_jackpot_sound: str = ""
+    # Super mega jackpot: a super jackpot that also clears these. Outranks
+    # everything, cyan styling, its own fanfare (empty ->
+    # sound.MEGA_JACKPOT_WAV in the Windows style).
+    mega_jackpot_min_net: float = 40.0
+    mega_jackpot_min_yield: float = 20.0
+    mega_jackpot_sound: str = ""
 
 
 @dataclass(frozen=True)
@@ -531,6 +572,8 @@ def load_config(
         raise ConfigError("alerts.jackpot_min_net / jackpot_min_yield must be >= 0")
     if alerts.super_jackpot_min_net < 0 or alerts.super_jackpot_min_yield < 0:
         raise ConfigError("alerts.super_jackpot_min_net / super_jackpot_min_yield must be >= 0")
+    if alerts.mega_jackpot_min_net < 0 or alerts.mega_jackpot_min_yield < 0:
+        raise ConfigError("alerts.mega_jackpot_min_net / mega_jackpot_min_yield must be >= 0")
 
     ninja = build(NinjaConfig, "ninja")
     if ninja.enabled and ninja.refresh_minutes < 1:

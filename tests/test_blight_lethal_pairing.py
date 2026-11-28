@@ -35,7 +35,8 @@ def test_the_deadly_mageblood_no_longer_clears_the_bar(scoring):
     result = scoring.evaluate(DEADLY_MAGEBLOOD)
     assert "Blight + lethal + instability" in {label for label, _n, _m in result.pairings}
     # it scored 1123.2 before; instability on kill has since gone ×1.5 -> ×2.5
-    assert result.score == pytest.approx(1123.2 / 1.5 * 2.5 * 3)
+    # and increasingly lethal ×1.8 -> ×2.3
+    assert result.score == pytest.approx(1123.2 / 1.5 * 2.5 * 3 / 1.8 * 2.3)
     # at the user's 4 div per 100 difficulty it needed 44.9 div; now 134.8,
     # above the +122.3 div it was listed at
     assert 4.0 * result.score / 100 > 122.33

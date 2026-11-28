@@ -96,6 +96,8 @@ class App:
             jackpot_min_yield=config.alerts.jackpot_min_yield,
             super_jackpot_min_net=config.alerts.super_jackpot_min_net,
             super_jackpot_min_yield=config.alerts.super_jackpot_min_yield,
+            mega_jackpot_min_net=config.alerts.mega_jackpot_min_net,
+            mega_jackpot_min_yield=config.alerts.mega_jackpot_min_yield,
         )
         self.server = SniperServer(
             config,
@@ -259,6 +261,8 @@ class App:
                         jackpot=decision.verdict == "alert" and self.store.is_jackpot(decision),
                         super_jackpot=decision.verdict == "alert"
                         and self.store.is_super_jackpot(decision),
+                        mega_jackpot=decision.verdict == "alert"
+                        and self.store.is_mega_jackpot(decision),
                         risks=decision.risks,
                         fail_chance=decision.fail_chance,
                     )
@@ -274,6 +278,7 @@ class App:
                 net_div=round(decision.net_div or 0, 2),
                 jackpot=self.store.is_jackpot(decision),
                 super_jackpot=self.store.is_super_jackpot(decision),
+                mega_jackpot=self.store.is_mega_jackpot(decision),
                 active_alerts=len(self.store),
             )
             self._push_alerts(
@@ -470,15 +475,21 @@ class App:
         min_yield: float,
         super_min_net: float | None = None,
         super_min_yield: float | None = None,
+        mega_min_net: float | None = None,
+        mega_min_yield: float | None = None,
     ) -> None:
-        """Settings panel jackpot + super jackpot bars; asyncio thread."""
-        self.store.set_jackpot_thresholds(min_net, min_yield, super_min_net, super_min_yield)
+        """Settings panel jackpot / super / super mega bars; asyncio thread."""
+        self.store.set_jackpot_thresholds(
+            min_net, min_yield, super_min_net, super_min_yield, mega_min_net, mega_min_yield
+        )
         event(
             "jackpot_thresholds_updated",
             min_net=min_net,
             min_yield=min_yield,
             super_min_net=super_min_net,
             super_min_yield=super_min_yield,
+            mega_min_net=mega_min_net,
+            mega_min_yield=mega_min_yield,
         )
 
     def set_price_override(self, reward: str, divine: float | None) -> None:
@@ -839,12 +850,9 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
     def on_price_recheck(reward: str) -> None:
         loop.call_soon_threadsafe(app.request_price_recheck, reward)
 
-    def on_jackpot_change(
-        min_net: float, min_yield: float, super_net: float, super_yield: float
-    ) -> None:
-        loop.call_soon_threadsafe(
-            app.set_jackpot_thresholds, min_net, min_yield, super_net, super_yield
-        )
+    def on_jackpot_change(*bars: float) -> None:
+        """(jackpot net, yield, super net, yield, mega net, yield)"""
+        loop.call_soon_threadsafe(app.set_jackpot_thresholds, *bars)
 
     restart = {"requested": False}
 

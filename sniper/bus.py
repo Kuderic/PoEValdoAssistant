@@ -104,6 +104,7 @@ class FeedEntry:
     # highlighted so a missed one is unmistakable minutes later
     jackpot: bool = False
     super_jackpot: bool = False  # the tier above (implies jackpot)
+    mega_jackpot: bool = False  # the top tier (implies super_jackpot)
     # failure risks (label, note, chance) and their combined chance
     risks: tuple[tuple[str, str, float], ...] = ()
     fail_chance: float = 0.0

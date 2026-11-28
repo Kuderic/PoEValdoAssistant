@@ -76,6 +76,7 @@ Userscript -> Python:
   "price": { "amount": 123.0, "currency": "divine" },
   "seller": "string account name",
   "reward": "string or null, e.g. \"Foil Mageblood\" from the Reward property",
+  "map_area": "string or null: the map's layout (\"Strand\"), its Map Area property (0.8.7+)",
   "mods": ["string, raw mod line texts; may be empty"],
   "row_index": 0,
   "detected_at": "ISO-8601 timestamp, userscript clock",
@@ -323,7 +324,7 @@ listing regardless of profit.
 Generic alerts carry `difficulty = 0`, which makes `net_yield`
 return `None` — they can never enter the Score column or perturb the Valdo
 ranking maths. A generic alert holds the top slot above every ordinary
-Valdo alert (only a jackpot or super jackpot outranks it): it comes from a
+Valdo alert (only a jackpot tier outranks it): it comes from a
 search the user built by hand for one item, so it is the rare one worth
 interrupting for.
 Generic alerts rank newest first among themselves (they have no efficiency
@@ -349,15 +350,20 @@ named by a hash of its recipe). `short` (default) is the `SHORT_NOTES`
 blips for the routine kinds: 0.11-0.17s, full level within 2ms. `jingle`
 is the `JINGLE_NOTES` chimes: overlapping near-pure sines with a 6ms
 attack and a bell decay, 0.35-0.40s, half level within 5ms. Jackpot and
-super jackpot get a `FANFARE_NOTES` fanfare in both styles
-(`synth_fanfare`): a rising run whose overlapping notes ring into a chord,
-with octave, a detuned shimmer and vibrato easing in. 0.98s / 1.15s, at
-their loudest-100ms level within ~2ms. Played once: 1.3.13 repeated the
+super jackpot get a fanfare in each style. `short`: `FANFARE_NOTES`
+(`synth_fanfare`), a rising run whose overlapping notes ring into a chord,
+with octave, a detuned shimmer and vibrato easing in, 0.98s / 1.15s, at
+their loudest-100ms level within ~2ms. `jingle`: `CHIME_FANFARE_NOTES`
+(`synth_chime_fanfare`), the same run as the jingle's bells (no vibrato
+or shimmer, its 6ms attack), 1.16s / 1.24s. 1.3.14-1.3.15 shared one
+fanfare between the two, which read as "the style does nothing" when
+previewed. Played once: 1.3.13 repeated the
 pattern (`sound_plays`), which was grating on jackpots and unwanted on
 routine alerts, so it was withdrawn (an old key is ignored). `windows` is
 the Windows files. All built-in sounds match their loudest 100ms RMS to
 the Windows sound they replace (`SHORT_LEVELS`). The ⚙ panel's Alert
-sounds row (with ▶ Play previews of both fanfares) switches it live,
+sounds row (with previews of both jackpot sounds, each button naming what
+it plays in the picked style: `_jackpot_sound_name`) switches it live,
 saves it as `sound_style` in scoring_overrides.yaml (wins over config.yaml)
 and plays the pick. 1.3.11's `short_sounds: false` still maps to `windows`
 unless `sound_style` is set. Long sounds made the user wait for them to finish before
@@ -375,10 +381,18 @@ A **super jackpot** is a jackpot that also clears
 (`AlertStore.is_super_jackpot`). Requiring the jackpot first keeps every
 jackpot exclusion and means super bars set below the jackpot bars cannot
 skip a tier. `AlertView.super_jackpot` implies `jackpot`, so code that only
-knows jackpots still treats one correctly. The rank key is (generic, super,
-jackpot, yield or recency). The overlay styles both tiers through one `_Tier`
-palette (gold for super), and a super jackpot plays its own alarm three
-times.
+knows jackpots still treats one correctly.
+
+A **super mega jackpot** is the top tier, the same chain one step further:
+a super jackpot that also clears `alerts.mega_jackpot_min_net` /
+`mega_jackpot_min_yield` (40 / 20 shipped; `AlertStore.is_mega_jackpot`).
+`mega_jackpot` implies `super_jackpot` and `jackpot`. The rank key is
+(mega, super, jackpot, generic, yield or recency). The overlay styles all
+three tiers through one `_Tier` palette (magenta, gold, cyan for mega).
+Each tier plays its own fanfare once (sound kinds `jackpot` / `super` /
+`mega`; the mega fanfare is a faster three-octave run into a bigger chord,
+`Alarm04.wav` in the Windows style), and `alert_sound` picks the highest
+tier in a batch.
 None of this touches the click path: one press is still one travel.
 
 ## Scam guard
@@ -460,7 +474,17 @@ for regex, `match_all` for combos where every pattern must hit):
 - Baseline rule values (config.yaml): Feared 100 / Twisted 50 / Einhar 80 /
   invitation bosses 60 / porcupines 20 (inert while base_default is 25);
   multipliers: ghosts 3-4 x2.2, void x2 (+warning), fatal x2, delirium
-  x1.8, increasingly lethal x1.7, reflect x1.1; bismuth warning-only.
+  x1.8, increasingly lethal x2.3, reflect x1.1; bismuth warning-only.
+- A changed default must reach users who saved the panel (it saves every
+  value, so the old default sits in scoring_overrides.yaml): add the old
+  value to `RETIRED_MULTIPLIERS` / `RETIRED_FAIL_CHANCES` in config.py. A
+  saved value equal to a retired default is ignored, so the new default
+  applies; anything else the user set still wins.
+- `ModScoring.annotate` lists mods biggest multiplier first (a row with
+  none counts as ×1; a higher base breaks ties, then the listing's order),
+  so the alert card and the history hover both read hardest-first.
+- The alert's line under the reward leads with the map's layout
+  (`map_area`, its Map Area property; `Map: Strand`).
 - Match texts are best-effort guesses at the live mod wording; every
   listing's full mod list lands in `logs/*.jsonl`, so verify and tune the
   patterns against real captures.

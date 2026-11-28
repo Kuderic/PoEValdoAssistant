@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Valdo Map Sniper - capture & forward
 // @namespace    valdo-sniper
-// @version      0.8.6
+// @version      0.8.7
 // @description  Forwards live-search listings to the local sniper program; clicks Travel to Hideout on command (one command, one click).
 // @match        https://www.pathofexile.com/trade*
 // @grant        none
@@ -53,6 +53,9 @@ const SELECTORS = {
   seller: '.details .info .profile-link a',
   modLine: '.item-mod span[data-field^="stat."]',
   rewardValue: '.item-property span[type="76"] > span:last-of-type',
+  /* the map's layout, the "Map Area: Strand" property (type 105), same
+     markup as the reward (tests/fixtures/results_snapshot.html) */
+  mapAreaValue: '.item-property span[type="105"] > span:last-of-type',
   /* the search form's reward dropdown (see the note above) */
   filterTitle: '.filter-title',
   filterBlock: '.filter',
@@ -102,7 +105,7 @@ const LIVE_ERRORS = [
    script it loaded with until it is reloaded, so this is the only way to
    tell from logs/ whether a live tab is on a stale userscript.
    KEEP IN SYNC with the @version header above. */
-const SCRIPT_VERSION = '0.8.6';
+const SCRIPT_VERSION = '0.8.7';
 
 const WS_URL = 'ws://127.0.0.1:8765';
 const HEARTBEAT_MS = 30_000;
@@ -221,6 +224,7 @@ function parseRow(rowEl) {
     price,
     seller,
     reward: textOf(rowEl, SELECTORS.rewardValue) || null,
+    map_area: textOf(rowEl, SELECTORS.mapAreaValue) || null,
     mods: extractMods(rowEl),
   };
 }
@@ -242,7 +246,8 @@ function listingId(rowEl, parsed) {
  * tests/fixtures/trade_fetch_response.json):
  * - entry.id is the same 64-hex id the DOM row carries as data-id, so the
  *   click path resolves network-captured listings unchanged;
- * - the Reward is properties[type==76].values[0][0];
+ * - the Reward is properties[type==76].values[0][0], the Map Area (layout)
+ *   properties[type==105].values[0][0];
  * - explicitMods entries are {description} objects on the live site (plain
  *   strings on the public API - both accepted);
  * - listing.indexed is GGG's own index time. Forwarding it is the only way
@@ -264,12 +269,12 @@ function parseFetchItem(entry) {
   const seller = typeof listing.account?.name === 'string' ? listing.account.name : '';
   const itemName = typeof item.name === 'string' ? item.name : '';
   if (!itemName || !currency || !seller || !Number.isFinite(amount)) return null;
+  // Reward (type 76) prices the map; Map Area (type 105) is its layout
   let reward = null;
+  let mapArea = null;
   for (const prop of item.properties || []) {
-    if (prop && prop.type === 76) {
-      reward = prop.values?.[0]?.[0] ?? null;
-      break;
-    }
+    if (prop && prop.type === 76) reward = prop.values?.[0]?.[0] ?? null;
+    if (prop && prop.type === 105) mapArea = prop.values?.[0]?.[0] ?? null;
   }
   const mods = (item.explicitMods || [])
     .map((m) => (typeof m === 'string' ? m : m?.description || ''))
@@ -284,6 +289,7 @@ function parseFetchItem(entry) {
     price: { amount, currency },
     seller,
     reward: typeof reward === 'string' && reward ? reward : null,
+    map_area: typeof mapArea === 'string' && mapArea ? mapArea : null,
     mods,
     indexed: typeof listing.indexed === 'string' ? listing.indexed : null,
     stash: parseStash(listing.stash),

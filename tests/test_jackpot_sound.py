@@ -88,6 +88,19 @@ def test_a_super_jackpot_plays_over_a_jackpot_alarm(ov):
     assert ov.played == ["jackpot", "super"]
 
 
+def test_a_super_mega_jackpot_plays_its_fanfare_and_wears_its_banner(ov):
+    from dataclasses import replace
+
+    sup = view("sup", super_jackpot=True)
+    mega = replace(view("mega", super_jackpot=True), mega_jackpot=True)
+    arrive(ov, [sup], sup)
+    arrive(ov, [mega, sup], mega)
+    assert ov.played == ["super", "mega"]
+    assert ov._jp_left.cget("text") == "★★★  SUPER MEGA JACKPOT"
+    assert ov._jp_tier is overlay_mod.MEGA_TIER
+    assert ov._jackpot_help()[0] == "Super mega jackpot"
+
+
 def tone(seconds: float, rate: int = 8000) -> bytes:
     out = io.BytesIO()
     with wave.open(out, "wb") as w:

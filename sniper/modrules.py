@@ -174,13 +174,20 @@ class ModScoring:
 
         Lines claimed by one match_all combo rule (two-liner mods like the
         less-damage pair) merge into a SINGLE display row with the modifier
-        shown once."""
+        shown once.
+
+        Rows come highest multiplier first, so what makes the map hard is
+        read first; a row with no multiplier counts as ×1, and among equals
+        a higher base comes first, then the listing's own order."""
         rank = {"none": 0, "yellow": 1, "red": 2}
         mods = list(mods)
         matched = [c for c in self._rules if c.hits(mods)]
 
+        weight: dict[int, tuple[float, float]] = {}  # row index -> (mult, base)
+
         def describe(lines: list[str]) -> tuple[str, str, str]:
             notes: list[str] = []
+            mult, base = 1.0, 0.0
             level = "none"
             warn_color = None
             for compiled in matched:
@@ -189,8 +196,10 @@ class ModScoring:
                 rule = compiled.rule
                 if rule.min_base is not None:
                     notes.append(f"base {rule.min_base:g}")
+                    base = max(base, rule.min_base)
                 if rule.multiplier is not None:
                     notes.append(f"×{rule.multiplier:g}")
+                    mult *= rule.multiplier
                 if rank[self._rule_level(rule)] > rank[level]:
                     level = self._rule_level(rule)
                 if rule.warning and (warn_color != "red"):
@@ -203,6 +212,7 @@ class ModScoring:
             # VOID/ULTIMATUM/etc. are marked wherever mods are listed
             text = "\n".join(lines)
             text = {"red": f"❗ {text}", "yellow": f"⚠️ {text}"}.get(warn_color, text)
+            weight[len(rows)] = (mult, base)
             return (text, " · ".join(dict.fromkeys(notes)), level)
 
         # assign each line to at most one matched combo rule
@@ -224,4 +234,5 @@ class ModScoring:
                 seen_groups.add(ci)
                 members = [mods[j] for j in sorted(group_of) if group_of[j] == ci]
                 rows.append(describe(members))
-        return tuple(rows)
+        order = sorted(range(len(rows)), key=lambda i: (-weight[i][0], -weight[i][1], i))
+        return tuple(rows[i] for i in order)

@@ -73,3 +73,45 @@ def test_extra_overrides_absent(tmp_path):
     path = tmp_path / "scoring_overrides.yaml"
     save_scoring_overrides(BASE, path)  # no threshold/combo passed
     assert load_extra_overrides(path) == {}
+
+
+def saved_and_loaded(tmp_path, overrides: dict):
+    """What the app runs with when scoring_overrides.yaml holds `overrides`."""
+    from pathlib import Path
+
+    import yaml
+
+    from sniper.config import load_config
+
+    root = Path(__file__).resolve().parent.parent
+    (tmp_path / "scoring_overrides.yaml").write_text(yaml.safe_dump(overrides), encoding="utf-8")
+    sc = load_config(root / "config.yaml", state_dir=tmp_path).mod_scoring
+    return {r.label: r.multiplier for r in sc.rules}, {r.label: r.fail_chance for r in sc.risks}
+
+
+def test_a_retired_default_saved_by_the_panel_gives_way_to_the_new_one(tmp_path):
+    """The panel saves every value; 1.8 was Increasingly lethal's default
+    until it became 2.3, so a saved 1.8 is not the user's choice. Same for
+    the fail chances 1.3.13 raised."""
+    multipliers, chances = saved_and_loaded(
+        tmp_path,
+        {
+            "rules": {"Increasingly lethal": {"min_base": None, "multiplier": 1.8}},
+            "risks": {"Breach": 0.05, "Blight": 0.05, "Legion": 0.05, "1 portal": 0.03},
+        },
+    )
+    assert multipliers["Increasingly lethal"] == 2.3
+    assert (chances["Breach"], chances["Blight"], chances["Legion"]) == (0.10, 0.10, 0.10)
+    assert chances["1 portal"] == 0.15
+
+
+def test_a_value_the_user_chose_still_wins(tmp_path):
+    multipliers, chances = saved_and_loaded(
+        tmp_path,
+        {
+            "rules": {"Increasingly lethal": {"min_base": None, "multiplier": 1.9}},
+            "risks": {"Breach": 0.07},
+        },
+    )
+    assert multipliers["Increasingly lethal"] == 1.9
+    assert chances["Breach"] == 0.07

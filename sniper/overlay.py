@@ -62,6 +62,8 @@ from sniper.sound import (
     GENERIC_WAV,
     JACKPOT_PLAYS,
     JACKPOT_WAV,
+    MEGA_JACKPOT_PLAYS,
+    MEGA_JACKPOT_WAV,
     SUPER_JACKPOT_PLAYS,
     SUPER_JACKPOT_WAV,
     SoundCommand,
@@ -211,9 +213,10 @@ HELP = {
         "refresh; a ↻ before the price means it is being re-fetched right now.",
     ),
     "reward_value": (
-        "Reward value",
-        "What this map's reward unique sells for, and how long ago that price was "
-        "checked on the trade site. EV is worked out from it.",
+        "Map and reward value",
+        "The map's layout (its Map Area, e.g. Strand), then what its reward unique "
+        "sells for and how long ago that price was checked on the trade site. EV is "
+        "worked out from that price.",
     ),
     "feed": (
         "Recent listings",
@@ -530,6 +533,13 @@ SUPER_SOFT = "#ffe08a"
 SUPER_BANNER = "#8a5c00"  # dark enough for white text
 SUPER_YIELD_BG = "#33280f"
 SUPER_BTN_FG = "#2a1d00"
+# super mega jackpot: electric cyan, the top tier (no other colour on the
+# card is anywhere near it)
+MEGA = "#3de8ff"
+MEGA_SOFT = "#a8f3ff"
+MEGA_BANNER = "#00708a"  # dark enough for white text
+MEGA_YIELD_BG = "#0d2a33"
+MEGA_BTN_FG = "#00222b"
 
 
 @dataclass(frozen=True)
@@ -567,10 +577,22 @@ SUPER_TIER = _Tier(
     "★★  SUPER JACKPOT",
     "  ★★ SUPER",
 )
+MEGA_TIER = _Tier(
+    MEGA,
+    MEGA_SOFT,
+    MEGA_BANNER,
+    MEGA_YIELD_BG,
+    "#b3e6f0",
+    MEGA_BTN_FG,
+    "★★★  SUPER MEGA JACKPOT",
+    "  ★★★ MEGA",
+)
 
 
 def _tier(item) -> _Tier | None:
     """The jackpot tier of an AlertView or FeedEntry; None for neither."""
+    if getattr(item, "mega_jackpot", False):
+        return MEGA_TIER
     if getattr(item, "super_jackpot", False):
         return SUPER_TIER
     return JACKPOT_TIER if item.jackpot else None
@@ -581,7 +603,7 @@ TRADE_URL = "https://www.pathofexile.com/trade/search"
 # A jackpot's alarm plays SOUND_PLAYS times - once each, currently (any
 # repeats are baked into the WAV, see sound.repeat_wav). Until it has finished, a
 # routine alert sound is skipped rather than cut it off.
-SOUND_PLAYS = {"jackpot": JACKPOT_PLAYS, "super": SUPER_JACKPOT_PLAYS}
+SOUND_PLAYS = {"jackpot": JACKPOT_PLAYS, "super": SUPER_JACKPOT_PLAYS, "mega": MEGA_JACKPOT_PLAYS}
 # one play's length if the WAV cannot be read: the default alarms run
 # 3.75 s (Alarm02) and 4.0 s (Alarm03)
 JACKPOT_SOUND_S = 4.0
@@ -793,6 +815,8 @@ class Overlay:
         self._jackpot_yield = config.alerts.jackpot_min_yield
         self._super_net = config.alerts.super_jackpot_min_net
         self._super_yield = config.alerts.super_jackpot_min_yield
+        self._mega_net = config.alerts.mega_jackpot_min_net
+        self._mega_yield = config.alerts.mega_jackpot_min_yield
         self._overrides_path = overrides_path
         # reward -> divine, the session price corrections currently applied.
         # Kept here so the panel only pushes what actually changed and can be
@@ -1187,7 +1211,14 @@ class Overlay:
         # For a Valdo alert it says what the reward is worth and how old
         # that price is - the number NET is worked out from.
         self._subtitle = tk.Label(
-            card, text="", bg=SURFACE, fg=DIM, font=self._font("ui", 10), anchor="w"
+            card,
+            text="",
+            bg=SURFACE,
+            fg=DIM,
+            font=self._font("ui", 10),
+            anchor="w",
+            justify="left",
+            wraplength=470,  # wraps rather than clipping a long source note
         )
         self._bind_help(
             (self._subtitle,),
@@ -1744,7 +1775,16 @@ class Overlay:
             )
         for view in new_views:
             if view.jackpot:
-                event("jackpot_alert", listing_id=view.listing_id, key=view.key)
+                event(
+                    "jackpot_alert",
+                    listing_id=view.listing_id,
+                    key=view.key,
+                    tier="mega"
+                    if view.mega_jackpot
+                    else "super"
+                    if view.super_jackpot
+                    else "jackpot",
+                )
         # one sound per batch, played once (SND_ASYNC bursts cancel anyway);
         # if a batch mixes kinds, the biggest news wins (alert_sound)
         if new_alert:
@@ -1800,11 +1840,16 @@ class Overlay:
         return entry.age_s + (time.monotonic() - self._reward_prices_at)
 
     def _reward_value_text(self, view: AlertView) -> str:
-        """The line under a Valdo alert's name: what its reward is worth, when
-        that price was last checked, and its source when it is not trade."""
-        if view.generic or not view.reference_amount:
+        """The line under a Valdo alert's name: the map's layout, what its
+        reward is worth, when that price was last checked, and its source
+        when it is not trade."""
+        if view.generic:
             return ""
-        bits = [f"Reward worth {_money(view.reference_amount, view.reference_currency)}"]
+        layout = f"Map: {view.map_area}" if view.map_area else ""
+        if not view.reference_amount:
+            return layout
+        bits = [layout] if layout else []
+        bits.append(f"Reward worth {_money(view.reference_amount, view.reference_currency)}")
         # a trade price is the normal case and goes unnamed; any other source
         # (last session, poe.ninja, a pinned price) is worth calling out
         source = SOURCE_WORDS.get(view.reference_source)
@@ -3484,6 +3529,15 @@ class Overlay:
             self._super_yield,
             "super jackpot",
         )
+        mjp_net_e, mjp_yield_e = tier_row(
+            "Super mega jackpot",
+            "The top tier: a super jackpot that ALSO clears these bars gets\n"
+            "a cyan banner and frame, its own bigger fanfare, and outranks\n"
+            "every other alert.",
+            self._mega_net,
+            self._mega_yield,
+            "super mega jackpot",
+        )
         caption("Each tier needs both bars (e.g. +80d EV at score 144).")
         end_card()
 
@@ -3630,9 +3684,12 @@ class Overlay:
             "What every alert plays (unless you set a .wav of your own):\n"
             "Short - crisp 0.1-0.2s blips.\n"
             "Soft jingle - gentle 0.35-0.4s chimes.\n"
-            "Jackpots play their own ~1s fanfare in either.\n"
             "Windows - the longer Windows sounds (1.4-4s).\n"
-            "Each kind (Valdo, other search, jackpot, super) still sounds\n"
+            "Jackpots play their own ~1s fanfare in each: bright in\n"
+            "Short, rung as chimes in Soft jingle, the Windows alarm\n"
+            "in Windows (the buttons below play them).\n"
+            "Each kind (Valdo, other search, jackpot, super, super mega)\n"
+            "still sounds"
             "different. Click one to hear it."
         )
         style_name = row_label(card, r, "Alert sounds", style_hint)
@@ -3640,10 +3697,15 @@ class Overlay:
         style_box.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
         style_btns: dict[str, tk.Label] = {}
 
+        # the jackpot preview buttons, labelled with what they will play
+        jackpot_btns: dict[str, tk.Label] = {}
+
         def show_style() -> None:
             for style, btn in style_btns.items():
                 on = style == self._sound_style
                 btn.config(bg=GOOD if on else BOX, fg=BG if on else DIM)
+            for kind, btn in jackpot_btns.items():
+                btn.config(text=f"▶ {self._jackpot_sound_name(kind)}")
 
         def pick_style(style: str) -> None:
             changed = style != self._sound_style
@@ -3661,21 +3723,33 @@ class Overlay:
             style_btns[style] = btn
         show_style()
         self._style_pick = pick_style  # for tests
-        # the jackpot fanfares are otherwise only heard when one hits
-        button_row(
+        # the jackpot fanfares are otherwise only heard when one hits; each
+        # button names what it plays, which follows the Alert sounds choice
+        jackpot_btns["jackpot"] = button_row(
             "Jackpot sound",
-            "▶ Play",
-            "Plays the jackpot fanfare (the same in Short and Soft\njingle) at your volume.",
+            "",
+            "Plays what a jackpot plays in the Alert sounds style\npicked above, at your volume.",
             "jackpot fanfare sound preview",
             lambda: self._play_sound("jackpot"),
         )
-        button_row(
+        jackpot_btns["super"] = button_row(
             "Super jackpot sound",
-            "▶ Play",
-            "Plays the super jackpot fanfare at your volume.",
+            "",
+            "Plays what a super jackpot plays in the Alert sounds\n"
+            "style picked above, at your volume.",
             "super jackpot fanfare sound preview",
             lambda: self._play_sound("super"),
         )
+        jackpot_btns["mega"] = button_row(
+            "Super mega jackpot sound",
+            "",
+            "Plays what a super mega jackpot plays in the Alert sounds\n"
+            "style picked above, at your volume.",
+            "super mega jackpot fanfare sound preview",
+            lambda: self._play_sound("mega"),
+        )
+        show_style()
+        self._jackpot_btns = jackpot_btns  # for tests
         sections[-1]["rows"].append(
             (
                 f"alert sounds {style_hint} jingle chime blip sound style".casefold(),
@@ -3997,6 +4071,8 @@ class Overlay:
                 new_jp_yield = float(jp_yield_e.get())
                 new_sjp_net = float(sjp_net_e.get())
                 new_sjp_yield = float(sjp_yield_e.get())
+                new_mjp_net = float(mjp_net_e.get())
+                new_mjp_yield = float(mjp_yield_e.get())
                 new_opacity = float(opacity_e.get()) / 100
                 # start from the pins already in force: a reward whose live
                 # search opened after this panel did has no row here, and
@@ -4028,7 +4104,12 @@ class Overlay:
             if bad_risk is not None:
                 note.config(text=f"{bad_risk}: fail % must be 0-100", fg=BAD)
                 return
-            if min(new_jp_net, new_jp_yield, new_sjp_net, new_sjp_yield) < 0:
+            if (
+                min(
+                    new_jp_net, new_jp_yield, new_sjp_net, new_sjp_yield, new_mjp_net, new_mjp_yield
+                )
+                < 0
+            ):
                 note.config(text="Jackpot bars must be >= 0", fg=BAD)
                 return
             if new_min_net < 0:
@@ -4073,10 +4154,31 @@ class Overlay:
             self._current_combo = new_combo
             self._raise_on_hotkey = raise_state[0]
             self._set_popup(popup_state[0], new_opacity, new_popup_key)
-            bars = (new_jp_net, new_jp_yield, new_sjp_net, new_sjp_yield)
-            current = (self._jackpot_net, self._jackpot_yield, self._super_net, self._super_yield)
+            bars = (
+                new_jp_net,
+                new_jp_yield,
+                new_sjp_net,
+                new_sjp_yield,
+                new_mjp_net,
+                new_mjp_yield,
+            )
+            current = (
+                self._jackpot_net,
+                self._jackpot_yield,
+                self._super_net,
+                self._super_yield,
+                self._mega_net,
+                self._mega_yield,
+            )
             if bars != current:
-                self._jackpot_net, self._jackpot_yield, self._super_net, self._super_yield = bars
+                (
+                    self._jackpot_net,
+                    self._jackpot_yield,
+                    self._super_net,
+                    self._super_yield,
+                    self._mega_net,
+                    self._mega_yield,
+                ) = bars
                 if self._on_jackpot_change is not None:
                     self._on_jackpot_change(*bars)
             if new_volume != self._volume:
@@ -4112,6 +4214,8 @@ class Overlay:
                     jackpot_min_yield=new_jp_yield,
                     super_jackpot_min_net=new_sjp_net,
                     super_jackpot_min_yield=new_sjp_yield,
+                    mega_jackpot_min_net=new_mjp_net,
+                    mega_jackpot_min_yield=new_mjp_yield,
                     raise_overlay=raise_state[0],
                     sound_style=self._sound_style,
                     void_min_net=new_void_min_net,
@@ -4146,6 +4250,8 @@ class Overlay:
             jp_yield_e,
             sjp_net_e,
             sjp_yield_e,
+            mjp_net_e,
+            mjp_yield_e,
             combo_e,
             base_e,
             vol_e,
@@ -4490,6 +4596,13 @@ class Overlay:
         )
 
     def _jackpot_help(self):
+        if self._jp_tier is MEGA_TIER:
+            return (
+                "Super mega jackpot",
+                f"A super jackpot that also clears the top bars: EV ≥ {self._mega_net:g}d "
+                f"and score ≥ {self._mega_yield:g}. It outranks every other alert for "
+                "the hotkey and plays its own, biggest fanfare once.",
+            )
         if self._jp_tier is SUPER_TIER:
             return (
                 "Super jackpot",
@@ -4555,6 +4668,7 @@ class Overlay:
             "generic": (alerts.generic_sound, GENERIC_WAV),
             "jackpot": (alerts.jackpot_sound, JACKPOT_WAV),
             "super": (alerts.super_jackpot_sound, SUPER_JACKPOT_WAV),
+            "mega": (alerts.mega_jackpot_sound, MEGA_JACKPOT_WAV),
         }.get(kind, (alerts.sound, None))
         # an empty setting plays the chosen built-in style (short blips or
         # the soft jingle) unless that is the Windows sounds; a .wav of the
@@ -4572,6 +4686,22 @@ class Overlay:
             self._wav_cache[key] = alert_wav_path(configured, volume, default, repeat=plays)
         return self._wav_cache[key]
 
+    def _jackpot_sound_name(self, kind: str) -> str:
+        """What a jackpot (kind "jackpot"/"super") plays now, in words for
+        the settings panel's preview buttons."""
+        alerts = self._config.alerts
+        own = {
+            "jackpot": alerts.jackpot_sound,
+            "super": alerts.super_jackpot_sound,
+            "mega": alerts.mega_jackpot_sound,
+        }.get(kind, "")
+        if own:
+            return "your .wav"
+        return {
+            "short": "Short fanfare",
+            "jingle": "Soft jingle fanfare",
+        }.get(self._sound_style, "Windows alarm")
+
     def _jackpot_sound_s(self, kind: str) -> float:
         """How long the jackpot alarm of `kind`, all its plays, lasts."""
         seconds = wav_seconds(self._alert_wav(kind))
@@ -4580,7 +4710,7 @@ class Overlay:
     def _warm_alert_wavs(self) -> None:
         """Rescale every alert sound off the UI thread. Called at startup and
         after a volume change, which invalidates every cached key."""
-        for kind in ("valdo", "generic", "jackpot", "super"):
+        for kind in ("valdo", "generic", "jackpot", "super", "mega"):
             self._alert_wav(kind)
 
     def _play_sound(self, kind: str = "valdo") -> None:

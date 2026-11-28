@@ -31,9 +31,9 @@ from sniper.config import (
 )
 from sniper.sound import SHORT_LEVELS, builtin_wav, short_wav, synth_wav
 
-KINDS = ("valdo", "generic", "jackpot", "super")
+KINDS = ("valdo", "generic", "jackpot", "super", "mega")
 ROUTINE = ("valdo", "generic")
-JACKPOTS = ("jackpot", "super")
+JACKPOTS = ("jackpot", "super", "mega")
 STYLES = ("short", "jingle")
 # the longest each may run: routine alerts short enough not to wait for
 MAX_S = {"short": 0.35, "jingle": 0.5, "fanfare": 1.3}
@@ -86,22 +86,20 @@ def test_each_is_as_loud_as_the_sound_it_replaces(kind, style):
 
 def test_the_kinds_still_sound_different():
     files = {(k, st): builtin_wav(k, st).read_bytes() for k in KINDS for st in STYLES}
-    # every routine sound is its own; each jackpot fanfare is one sound
-    # shared by both styles, unlike anything routine
-    assert len({files[k, st] for k in ROUTINE for st in STYLES}) == 4
-    for k in JACKPOTS:
-        assert files[k, "short"] == files[k, "jingle"]
-    assert len(set(files.values())) == 4 + 2
+    # every kind sounds different in every style: the style changes the
+    # jackpot fanfares too (bright in Short, chimed in Soft jingle)
+    assert len(set(files.values())) == len(KINDS) * len(STYLES)
 
 
+@pytest.mark.parametrize("style", STYLES)
 @pytest.mark.parametrize("kind", JACKPOTS)
-def test_a_jackpot_plays_a_fanfare_not_a_repeated_beep(kind):
+def test_a_jackpot_plays_a_fanfare_not_a_repeated_beep(kind, style):
     """Overlapping notes that rise and ring together: the sound never
     falls back to silence between notes, as a repeated beep does."""
-    notes = sound.FANFARE_NOTES[kind]
-    freqs = [f for f, *_ in notes]
-    assert freqs == sorted(freqs) and len(set(freqs)) == len(freqs)
-    a, rate = samples(builtin_wav(kind, "short"))
+    table = sound.CHIME_FANFARE_NOTES if style == "jingle" else sound.FANFARE_NOTES
+    freqs = [f for f, *_ in table[kind]]
+    assert freqs == sorted(freqs) and len(freqs) >= 4
+    a, rate = samples(builtin_wav(kind, style))
     win = int(rate * 0.01)
     body = a[: int(rate * 0.5)]  # the run and the start of the chord
     quietest = min(max(abs(x) for x in body[i : i + win]) for i in range(0, len(body) - win, win))
@@ -235,20 +233,18 @@ def test_an_old_sound_plays_key_is_ignored(tmp_path):
     assert not hasattr(load_config(cfg).alerts, "sound_plays")
 
 
-def test_the_panel_previews_both_fanfares(make_overlay):
+def test_the_panel_previews_every_jackpot_sound(make_overlay):
     ov = make_overlay()
     played: list[str] = []
     ov._play_sound = lambda kind="valdo": played.append(kind)
     ov._open_tuning()
     ov._settings_select("General")  # clicks on a hidden tab are dropped
     ov._tune_window.update()
-    buttons = [
-        w for w in _walk(ov._tune_window) if isinstance(w, tk.Label) and w.cget("text") == "▶ Play"
-    ]
+    buttons = list(ov._jackpot_btns.values())
     for b in buttons:
         b.event_generate("<Button-1>")
     ov._tune_window.update()
-    assert sorted(played) == ["jackpot", "super"]
+    assert sorted(played) == ["jackpot", "mega", "super"]
 
 
 def _walk(widget):
@@ -261,3 +257,37 @@ def test_a_sound_file_of_your_own_still_wins(make_overlay, tmp_path):
     mine = tmp_path / "mine.wav"
     mine.write_bytes(synth_wav(((440, 0.2),)))
     assert make_overlay(sound=str(mine))._alert_wav("valdo") == str(mine)
+
+
+@pytest.mark.parametrize(
+    ("style", "label"),
+    [
+        ("short", "▶ Short fanfare"),
+        ("jingle", "▶ Soft jingle fanfare"),
+        ("windows", "▶ Windows alarm"),
+    ],
+)
+def test_the_jackpot_buttons_say_what_they_play(make_overlay, style, label):
+    """Picking an Alert sounds style changes the jackpot sounds too, and the
+    preview buttons say so instead of a bare "Play"."""
+    ov = make_overlay()
+    ov._open_tuning()
+    ov._style_pick(style)
+    assert {k: b.cget("text") for k, b in ov._jackpot_btns.items()} == {
+        "jackpot": label,
+        "super": label,
+        "mega": label,
+    }
+
+
+def test_the_jingle_style_plays_its_own_jackpot_fanfare(make_overlay):
+    ov = make_overlay(sound_style="jingle")
+    assert ov._alert_wav("jackpot") == str(builtin_wav("jackpot", "jingle"))
+    assert builtin_wav("jackpot", "jingle") != builtin_wav("jackpot", "short")
+
+
+def test_a_wav_of_your_own_is_named_on_the_button(make_overlay, tmp_path):
+    ov = make_overlay(jackpot_sound=str(tmp_path / "mine.wav"))
+    ov._open_tuning()
+    assert ov._jackpot_btns["jackpot"].cget("text") == "▶ your .wav"
+    assert ov._jackpot_btns["super"].cget("text") == "▶ Short fanfare"

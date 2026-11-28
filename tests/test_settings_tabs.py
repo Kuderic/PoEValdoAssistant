@@ -129,3 +129,24 @@ def test_the_watching_panel_lists_rewards_and_other_tabs(root):
     assert "⚡ 1 other live search (not Valdo maps)" in texts
     assert "1 tab still loading its search…" in texts
     assert not hasattr(ov, "_searches_label")  # the old Watching line is gone
+
+
+def test_the_super_mega_bars_are_in_the_panel_and_save(root, tmp_path):
+    path = tmp_path / "scoring_overrides.yaml"
+    bars: list[tuple] = []
+    ov = Overlay(
+        root,
+        Bus(),
+        make_config(),
+        overrides_path=path,
+        on_jackpot_change=lambda *b: bars.append(b),
+    )
+    ov._open_tuning()
+    jackpots = next(s for s in ov._settings_sections if s["name"] == "Jackpots")
+    (_name, net_box, yield_box) = next(w for t, w in jackpots["rows"] if t.startswith("super mega"))
+    assert (net_box.get(), yield_box.get()) == ("40", "20")
+    net_box.delete(0, "end")
+    net_box.insert(0, "45")
+    ov._apply_settings_now()
+    assert load_extra_overrides(path)["mega_jackpot_min_net"] == 45.0
+    assert bars[-1][4:] == (45.0, 20.0)  # handed to the alert store too

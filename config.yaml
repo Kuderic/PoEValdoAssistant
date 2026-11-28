@@ -46,7 +46,8 @@ alerts:
   # panel (General tab), where clicking one plays it:
   #   short    built-in blips, 0.1-0.2s, full volume at once
   #   jingle   soft built-in chimes, 0.35-0.4s, just as quick to start
-  #   (jackpots play their own ~1s fanfare in either, once)
+  #   (jackpots play their own ~1s fanfare in each, once: bright in short,
+  #   chimed in jingle, the Windows alarm in windows)
   #   windows  the longer Windows sounds (Exclamation 1.4s, tada 1.6s,
   #            Alarm02 3.75s, Alarm03 4s) named in the comments here
   sound_style: short
@@ -69,6 +70,11 @@ alerts:
   super_jackpot_min_net: 30    # divines
   super_jackpot_min_yield: 10  # divines per 100 difficulty
   super_jackpot_sound: ""      # empty -> built-in (or Alarm03.wav)
+  # SUPER MEGA JACKPOT: the top tier - a super jackpot that ALSO clears
+  # these. Cyan, its own bigger fanfare, outranks everything. Also in ⚙.
+  mega_jackpot_min_net: 40     # divines
+  mega_jackpot_min_yield: 20   # divines per 100 difficulty
+  mega_jackpot_sound: ""       # empty -> built-in (or Alarm04.wav)
 
 hotkey:
   combo: "`"
@@ -266,6 +272,13 @@ mod_risks:
   # Breach carry a 10% floor, like Ultimatum's above. Each
   # steps aside, via `unless`, for its more specific entry below, so the
   # floor never stacks on top of a bigger risk for the same mechanic.
+  # "Players are assaulted by Ruinous Ghosts / Reaching seven Ruin prevents
+  # Reward from being claimed": a run can rack up the Ruin and lose the
+  # reward outright. (Its difficulty multiplier is a separate rule.)
+  - label: "Ruinous Ghosts"
+    match: "ruinous ghosts"
+    fail_chance: 0.10
+    note: "Reaching seven Ruin loses the reward"
   - label: "Breach"
     match: "unstable breaches must be stabilised"
     unless: "less damage per equipped item|100% delirious"
@@ -379,7 +392,7 @@ mod_scoring:
     - label: "3-4 Tormented Spirits"
       match: "possessed by 3 to 4 tormented spirits"
       multiplier: 2.0
-    - { label: "Increasingly lethal", match: "increasingly lethal", multiplier: 1.8 }
+    - { label: "Increasingly lethal", match: "increasingly lethal", multiplier: 2.3 }
     - label: "Reduced Non-Curse Auras"
       match: "reduced effect of non-curse auras"
       multiplier: 1.4

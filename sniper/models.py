@@ -121,6 +121,9 @@ class Listing:
     capture: str = ""
     # the seller's tab and the item's cell in it (network capture only)
     stash: StashSpot | None = None
+    # the map's layout ("Strand"): its Map Area property. None from a
+    # userscript older than 0.8.7, or an item that is not a map
+    map_area: str | None = None
     # where the delay went inside the tab (network capture, script 0.8.3+)
     timing: FetchTiming | None = None
 
@@ -296,6 +299,7 @@ def parse_frame(msg: object) -> Frame:
         row_index = msg.get("row_index")
         indexed_at = msg.get("indexed_at")
         type_line = msg.get("type_line")
+        map_area = msg.get("map_area")
         reward = reward_raw or None
         return Listing(
             search_id=search_id,
@@ -320,6 +324,7 @@ def parse_frame(msg: object) -> Frame:
             # reward-less one was never a Valdo map.
             generic=msg.get("generic") is True or reward is None,
             type_line=type_line if isinstance(type_line, str) and type_line else None,
+            map_area=map_area.strip() if isinstance(map_area, str) and map_area.strip() else None,
             stash=_parse_stash(msg.get("stash")),
             timing=_parse_timing(msg.get("timing")),
         )

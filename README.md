@@ -128,6 +128,7 @@ EV  =  (1 − fail chance) × market price  −  asking price  −  running cost
 | Blight + rares with extra modifiers | 50% (replaces the 10%) | Buffed rares leak through the towers |
 | Legion | 10% | The Legion encounter can fail |
 | Legion + melee-range only | 25% (replaces the 10%) | Packs fought point-blank often outlast the encounter |
+| Ruinous Ghosts | 10% | Reaching seven Ruin loses the reward |
 | Bismuth | 30% | Bismuth maps bug out and fail |
 | 1 portal | 15% | One death ends the map |
 
@@ -345,7 +346,7 @@ also work their sum through for the listing on screen, e.g. EV shows
 
 | Element | What it tells you |
 |---|---|
-| **Reward worth …** | What the map's reward unique sells for and when that price was last checked on the trade site (`price checked 4m ago`). A price from anywhere else says so (last session / poe.ninja estimate / your price). EV is worked out from it |
+| **Map: Strand · Reward worth …** | The map's layout (its Map Area), then what the map's reward unique sells for and when that price was last checked on the trade site (`price checked 4m ago`). A price from anywhere else says so (last session / poe.ninja estimate / your price). EV is worked out from it |
 | **Stash spot** | Where the item sits in the seller's tab: a mini grid with its cell marked, the rough area (`bottom right`), the tab name and the exact `col, row`. Read it while the hideout loads and the click at Faustus is already aimed. Shown for listings caught from the network (almost all of them). The trade site doesn't give the tab size, so a 12×12 tab is assumed unless the position only fits a quad tab |
 | **PRICE** | What you pay, and in which currency. Turns red on a currency mismatch (the classic "20 exalted, not 20 divine" bait) — a full-width banner also appears. Chaos and alchemy prices are never flagged |
 | **EV** | Expected value: reward value (scaled by the chance the map succeeds) − asking price − the running cost, in divine (`+48 div`). What the map leaves you on average |
@@ -353,7 +354,7 @@ also work their sum through for the listing on screen, e.g. EV shows
 | **DIFFICULTY** | How hard the mods make the map; 100 is a typical map. The toughest encounter's base (or the clean-map default) × every dangerous mod and pairing. Plain ≤100, amber >100, red >300 |
 | **latency badge** | The delay between the seller listing the map (the trade site's own index time) and your Chrome tab receiving it from the live search: the head start every other sniper had. Not your reaction time. Green under 2s, red past 5s. A busy tab creeps up over hours; when one does, an amber bar under the status strip says `⟳ RELOAD Mageblood (+2.7s lag)` (or whichever tab) |
 | **☠ rows** | Deadly pairings, with the reason |
-| **Mod list** | Each mod with its contribution (`base 120`, `×2.5`), marked red/amber by severity, modifiers right-aligned |
+| **Mod list** | Each mod with its contribution (`base 120`, `×2.5`), marked red/amber by severity, modifiers right-aligned. Biggest multiplier at the top, down to the mods that add nothing; the history's hover lists them the same way |
 
 **Use latency to decide whether to bother.** From this app's own logs:
 travels clicked within ~2s of detection still lost the item 26% of the time;
@@ -371,10 +372,13 @@ you react: press on the sound, don't wait for it to end. Pick the style in
 **Short** blips (the default), a **Soft jingle** (gentle chimes), or
 **Windows** for the longer Windows sounds (Exclamation 1.4 s, tada 1.6 s,
 alarms ~4 s). Every alert plays once. Jackpots and super jackpots play
-their own fanfare in either built-in style: a fast rising run that rings
-out into a chord, about a second long, starting just as fast as the blips
-but impossible to mistake for an ordinary alert (the **▶ Play** buttons under Alert
-sounds play them). Each is as loud as the Windows sound it
+their own fanfare, and the style changes those too: in **Short** a bright
+rising run that rings out into a chord, in **Soft jingle** the same run
+rung as chimes, in **Windows** the Windows alarms. Each fanfare is about a
+second long, starts just as fast as the blips and can't be mistaken for an
+ordinary alert. The two buttons under Alert sounds play them and say which
+one you'll hear (**▶ Short fanfare**, **▶ Soft jingle fanfare**, **▶
+Windows alarm**, or **▶ your .wav**). Each is as loud as the Windows sound it
 replaced, so the volume slider means what it did. A `.wav` of your own in
 `alerts.sound` / `generic_sound` / `jackpot_sound` / `super_jackpot_sound`
 always wins.
@@ -524,6 +528,21 @@ score ≥ 10 by default) is a super jackpot:
 
 Tune the bars in the ⚙ panel's **Alerts** tab (the *Super jackpot* row) or with `alerts.super_jackpot_min_net` / `super_jackpot_min_yield`.
 
+#### Super mega jackpots
+
+The top tier: a super jackpot that **also** clears EV ≥ 40d **and** score
+≥ 20 (by default) is a super mega jackpot:
+
+- an electric cyan **★★★ SUPER MEGA JACKPOT** banner, frame and TELEPORT
+  button;
+- its own, biggest fanfare (a fast three-octave run into a big high chord,
+  about 1.3 seconds), different again from the other two tiers;
+- it outranks everything for the hotkey, super jackpots included;
+- `★★★ MEGA` in cyan in the live feed.
+
+Tune the bars in the ⚙ panel's **Alerts** tab (the *Super mega jackpot*
+row) or with `alerts.mega_jackpot_min_net` / `mega_jackpot_min_yield`.
+
 ## Tuning it to actually make money
 
 The defaults are a starting point, not an answer. The app logs every listing
@@ -586,10 +605,11 @@ them when you know better than the market average, e.g. right after a patch.
 | `shop_overlay.grid` / `.client_log` | The Merchant grid measured at some resolution (default: 2560×1440) / PoE's log path when it isn't found automatically |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
 | `alerts.volume` | 0.0–1.0, also in the ⚙ panel |
-| `alerts.sound_style` | `short` (default): built-in 0.1–0.2 s blips. `jingle`: soft 0.35–0.4 s chimes. Jackpots get a ~1 s fanfare in either. `windows`: the longer Windows sounds. Also in ⚙ Settings → General. Your own `.wav` settings win either way |
+| `alerts.sound_style` | `short` (default): built-in 0.1–0.2 s blips. `jingle`: soft 0.35–0.4 s chimes. Jackpots get a ~1 s fanfare in each (bright / chimed / the Windows alarm). `windows`: the longer Windows sounds. Also in ⚙ Settings → General. Your own `.wav` settings win either way |
 | `alerts.jackpot_min_net` / `jackpot_min_yield` | Jackpot bars (15 / 8), also in the ⚙ panel |
 | `alerts.jackpot_alarm` / `jackpot_sound` | Play an alarm on a jackpot (once; a super jackpot its own alarm, once) instead of the ordinary sound / its .wav |
 | `alerts.super_jackpot_min_net` / `super_jackpot_min_yield` / `super_jackpot_sound` | Super jackpot bars (30 / 10), also in the ⚙ panel / its alarm .wav |
+| `alerts.mega_jackpot_min_net` / `mega_jackpot_min_yield` / `mega_jackpot_sound` | Super mega jackpot bars (40 / 20), also in the ⚙ panel / its own .wav |
 | `trade_pricing.cache_max_age_minutes` | How stale a restored price may be (720) |
 | `updates.auto_download` / `enabled` | Download new releases in the background (on) / check for them at all (on) |
 

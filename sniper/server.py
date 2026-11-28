@@ -31,7 +31,7 @@ _ROUTE_CAP = 1000
 # tab silently loses whatever the new version added - new fields simply
 # arrive missing, which reads as a broken feature rather than an old script.
 # KEEP IN SYNC with @version in userscript/valdo-sniper.user.js.
-EXPECTED_USERSCRIPT_VERSION = "0.8.6"
+EXPECTED_USERSCRIPT_VERSION = "0.8.7"
 
 # The app serves its own userscript over plain HTTP on the websocket port, so
 # installing is one click (Tampermonkey intercepts any *.user.js URL) and the
@@ -299,6 +299,7 @@ class SniperServer:
             tab_id=listing.tab_id,
             item=listing.item_name,
             reward=listing.reward,
+            map_area=listing.map_area,
             amount=listing.price.amount,
             currency=listing.price.currency,
             seller=listing.seller,

@@ -220,8 +220,9 @@ def test_the_pairing_does_not_merge_the_two_mod_lines():
     assert len(rows) == 2  # two rows, not one combined line
     # each mod keeps its own row and its own note (values are user-tunable,
     # so assert the SHAPE of the note rather than the current number)
-    assert FEARED in rows[0][0] and rows[0][1].startswith("base ")
-    assert VOID in rows[1][0] and rows[1][1].startswith("×")
+    feared = next(row for row in rows if FEARED in row[0])
+    void = next(row for row in rows if VOID in row[0])
+    assert feared[1].startswith("base ") and void[1].startswith("×")
 
 
 @pytest.mark.parametrize(

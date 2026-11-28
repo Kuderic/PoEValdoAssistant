@@ -161,10 +161,33 @@ def test_annotate_marks_scoring_mods():
         ]
     )
     assert annotated == (
-        ("Area contains The Feared", "base 100", "red"),  # base >= 100 -> red
         ("Players in Area are 100% Delirious", "×1.8", "red"),  # >1.4 -> red
+        ("Area contains The Feared", "base 100", "red"),  # base >= 100 -> red
         ("Monsters have 40% increased Attack Speed", "", "none"),
     )
+
+
+def test_annotate_lists_the_biggest_multiplier_first():
+    """Highest multiplier at the top; no multiplier counts as x1, a higher
+    base breaks a tie, and otherwise the listing's own order stands."""
+    annotated = SCORING.annotate(
+        [
+            "Monsters have 40% increased Attack Speed",
+            "Monsters reflect 18% of Elemental Damage",  # x1.1
+            "Area contains Einhar",  # base 80
+            "Area becomes increasingly lethal",  # x1.7
+            "Area contains The Feared",  # base 100
+            "Area becomes fatal after some time",  # x2.0
+        ]
+    )
+    assert [text for text, _note, _level in annotated] == [
+        "Area becomes fatal after some time",
+        "Area becomes increasingly lethal",
+        "Monsters reflect 18% of Elemental Damage",
+        "Area contains The Feared",
+        "Area contains Einhar",
+        "Monsters have 40% increased Attack Speed",
+    ]
 
 
 def test_base_difficulty_colour_boundary():
@@ -184,7 +207,8 @@ def test_base_difficulty_colour_boundary():
         )
     )
     rows = tiers.annotate(["einhar mod", "feared mod", "twisted mod"])
-    assert [level for _, _, level in rows] == ["yellow", "red", "red"]
+    levels = {text: level for text, _, level in rows}
+    assert levels == {"einhar mod": "yellow", "feared mod": "red", "twisted mod": "red"}
 
 
 def test_annotate_unmatched_rule_not_shown():
@@ -211,11 +235,12 @@ def test_annotate_severity_tiers():
     annotated = tiers.annotate(
         ["cull mod", "maven mod", "petrif mod", "cannot block mod", "plain mod"]
     )
+    # (listed biggest multiplier first)
     assert [(note, level) for _, note, level in annotated] == [
-        ("×1", "none"),  # ×1.0: annotated but uncolored
-        ("×1.2", "yellow"),
-        ("×1.4", "yellow"),  # boundary: 1.4 is still yellow
         ("×2.5", "red"),
+        ("×1.4", "yellow"),  # boundary: 1.4 is still yellow
+        ("×1.2", "yellow"),
+        ("×1", "none"),  # ×1.0: annotated but uncolored
         ("", "none"),
     ]
 

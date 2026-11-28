@@ -425,3 +425,87 @@ def test_settings_panel_super_bars_round_trip(tmp_path):
     )
     alerts = load_config(path).alerts
     assert (alerts.super_jackpot_min_net, alerts.super_jackpot_min_yield) == (55, 88)
+
+
+# ------------------------------------------------------ super mega jackpot
+
+
+def mega_store() -> AlertStore:
+    """The shipped bars: jackpot 15/8, super 30/10, super mega 40/20."""
+    return AlertStore(
+        expiry_s=10,
+        jackpot_min_net=15,
+        jackpot_min_yield=8,
+        super_jackpot_min_net=30,
+        super_jackpot_min_yield=10,
+        mega_jackpot_min_net=40,
+        mega_jackpot_min_yield=20,
+    )
+
+
+def test_the_shipped_mega_bars_are_ev_40_and_score_20(tmp_path):
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    alerts = load_config(root / "config.yaml", state_dir=tmp_path).alerts
+    assert (alerts.mega_jackpot_min_net, alerts.mega_jackpot_min_yield) == (40, 20)
+
+
+def test_super_mega_needs_both_bars_and_implies_super_and_jackpot():
+    s = mega_store()
+    s.insert(decision("mega", 45, 200))  # +45d, score 22.5
+    s.insert(decision("rich", 45, 300))  # +45d but score 15: super only
+    s.insert(decision("easy", 35, 100))  # score 35 but +35d: super only
+    flags = {v.listing_id: (v.jackpot, v.super_jackpot, v.mega_jackpot) for v in s.views()}
+    assert flags == {
+        "mega": (True, True, True),
+        "rich": (True, True, False),
+        "easy": (True, True, False),
+    }
+
+
+def test_super_mega_outranks_a_super_jackpot_with_a_better_score():
+    s = mega_store()
+    s.insert(decision("easy", 35, 50))  # super, score 70
+    s.insert(decision("mega", 45, 200))  # mega, score 22.5
+    assert s.views()[0].listing_id == "mega"
+    assert s.consume_best().decision.listing.listing_id == "mega"
+
+
+def test_currency_mismatch_is_never_a_super_mega_jackpot():
+    s = mega_store()
+    assert not s.is_mega_jackpot(replace(decision("scam", 150, 25), currency_mismatch=True))
+
+
+def test_mega_thresholds_change_live_and_stay_when_not_given():
+    s = mega_store()
+    s.set_jackpot_thresholds(15, 8, 30, 10, 100, 100)
+    assert not s.is_mega_jackpot(decision("x", 45, 200))
+    s.set_jackpot_thresholds(15, 8, 30, 10)  # mega bars left as they are
+    assert not s.is_mega_jackpot(decision("x", 45, 200))
+    s.set_jackpot_thresholds(15, 8, 30, 10, 40, 20)
+    assert s.is_mega_jackpot(decision("x", 45, 200))
+
+
+def test_a_super_mega_jackpot_plays_its_own_fanfare():
+    s = mega_store()
+    s.insert(decision("mega", 45, 200))
+    s.insert(decision("sup", 35, 100))
+    mega, sup = s.views()
+    assert alert_sound([sup, mega]) == "mega"
+    assert alert_sound([sup]) == "super"
+    assert sound.MEGA_JACKPOT_WAV not in (sound.JACKPOT_WAV, sound.SUPER_JACKPOT_WAV)
+
+
+def test_settings_panel_mega_bars_round_trip(tmp_path):
+    from sniper.config import ModScoringConfig, save_scoring_overrides
+
+    path = write(tmp_path)
+    save_scoring_overrides(
+        ModScoringConfig(),
+        path.with_name("scoring_overrides.yaml"),
+        mega_jackpot_min_net=50,
+        mega_jackpot_min_yield=25,
+    )
+    alerts = load_config(path).alerts
+    assert (alerts.mega_jackpot_min_net, alerts.mega_jackpot_min_yield) == (50, 25)

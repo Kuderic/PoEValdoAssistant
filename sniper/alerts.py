@@ -4,10 +4,11 @@ ToS-critical semantics (DESIGN.md):
 - best-value-wins: the hotkey consumes the non-expired alert with the
   highest profit per 100 difficulty (see _rank), not the biggest absolute
   profit - except that a jackpot (big net AND big yield) outranks
-  everything else, generic hits included, and a super jackpot (higher bars
-  still) outranks a jackpot: it is the best deal on screen by both
-  measures. Below the jackpots a generic (non-Valdo) hit outranks the
-  remaining Valdo alerts, newest first;
+  everything else, generic hits included, a super jackpot (higher bars
+  still) outranks a jackpot, and a super mega jackpot (higher again)
+  outranks a super jackpot: the best deal on screen by both measures.
+  Below the jackpots a generic (non-Valdo) hit outranks the remaining
+  Valdo alerts, newest first;
 - expiry: a stale listing can never be traveled to by reflex;
 - single consumption: a consumed listing id can never alert or be clicked
   again, even if the tab re-pushes it;
@@ -67,12 +68,16 @@ class AlertView:
     # the tier above: a jackpot that also clears the super bars. Always
     # implies jackpot, so code that only knows jackpots still treats it as one
     super_jackpot: bool = False
+    # the top tier: a super jackpot that also clears the mega bars (implies
+    # super_jackpot and jackpot)
+    mega_jackpot: bool = False
     # failure risks: (label, note, chance); combined chance; its divine cost
     risks: tuple[tuple[str, str, float], ...] = ()
     fail_chance: float = 0.0
     risk_cost_div: float = 0.0
     # seller's tab name and the item's 0-based cell; None when unknown
     stash: tuple[str, int, int] | None = None
+    map_area: str | None = None  # the map's layout ("Strand"), when known
 
 
 @dataclass
@@ -82,6 +87,7 @@ class Alert:
     expires_at_monotonic: float
     jackpot: bool = False
     super_jackpot: bool = False
+    mega_jackpot: bool = False
 
     def view(self) -> AlertView:
         d = self.decision
@@ -110,12 +116,14 @@ class Alert:
             generic=d.listing.generic,
             jackpot=self.jackpot,
             super_jackpot=self.super_jackpot,
+            mega_jackpot=self.mega_jackpot,
             risks=d.risks,
             fail_chance=d.fail_chance,
             risk_cost_div=d.risk_cost_div or 0.0,
             stash=None
             if d.listing.stash is None
             else (d.listing.stash.name, d.listing.stash.x, d.listing.stash.y),
+            map_area=d.listing.map_area,
         )
 
 
@@ -131,8 +139,13 @@ class AlertStore:
         # both None disables the super tier
         super_jackpot_min_net: float | None = None,
         super_jackpot_min_yield: float | None = None,
+        # both None disables the super mega tier
+        mega_jackpot_min_net: float | None = None,
+        mega_jackpot_min_yield: float | None = None,
     ):
         self._expiry_s = expiry_s
+        self._mega_min_net = mega_jackpot_min_net
+        self._mega_min_yield = mega_jackpot_min_yield
         self._jackpot_min_net = jackpot_min_net
         self._jackpot_min_yield = jackpot_min_yield
         self._super_min_net = super_jackpot_min_net
@@ -152,15 +165,20 @@ class AlertStore:
         min_yield: float,
         super_min_net: float | None = None,
         super_min_yield: float | None = None,
+        mega_min_net: float | None = None,
+        mega_min_yield: float | None = None,
     ) -> None:
         """Settings panel. Applies to alerts from now on; a live alert keeps
         the flag it was raised with, so it never changes colour mid-alert.
-        The super bars are left as they are when not given."""
+        The super / mega bars are left as they are when not given."""
         self._jackpot_min_net = min_net
         self._jackpot_min_yield = min_yield
         if super_min_net is not None and super_min_yield is not None:
             self._super_min_net = super_min_net
             self._super_min_yield = super_min_yield
+        if mega_min_net is not None and mega_min_yield is not None:
+            self._mega_min_net = mega_min_net
+            self._mega_min_yield = mega_min_yield
 
     def is_jackpot(self, decision: Decision) -> bool:
         """Generic hits have no net/yield to judge. A currency mismatch is
@@ -194,6 +212,16 @@ class AlertStore:
             self._super_min_yield,
         )
 
+    def is_mega_jackpot(self, decision: Decision) -> bool:
+        """A super jackpot that also clears the mega bars (the same chain:
+        every lower tier's exclusions hold)."""
+        return self.is_super_jackpot(decision) and is_jackpot(
+            decision.net_div,
+            decision.difficulty,
+            self._mega_min_net,
+            self._mega_min_yield,
+        )
+
     # ------------------------------------------------------------- mutations
 
     def insert(self, decision: Decision) -> bool:
@@ -219,6 +247,7 @@ class AlertStore:
             expires_at_monotonic=now + self._expiry_s,
             jackpot=self.is_jackpot(decision),
             super_jackpot=self.is_super_jackpot(decision),
+            mega_jackpot=self.is_mega_jackpot(decision),
         )
         return True
 
@@ -306,12 +335,13 @@ class AlertStore:
     # --------------------------------------------------------------- queries
 
     @staticmethod
-    def _rank(a: Alert) -> tuple[bool, bool, bool, float]:
-        """Sort key, best first: (super jackpot, jackpot, generic, order).
+    def _rank(a: Alert) -> tuple[bool, bool, bool, bool, float]:
+        """Sort key, best first: (super mega, super, jackpot, generic, order).
 
         A jackpot holds the top slot over everything, generic hits included:
         it is the best deal on screen, so it is the one the hotkey takes. A
-        super jackpot outranks a jackpot. (A generic hit is never a jackpot
+        super jackpot outranks a jackpot, a super mega jackpot outranks a
+        super jackpot. (A generic hit is never a jackpot
         itself - see is_jackpot - so the two flags never meet.)
 
         Below the jackpots a generic (non-Valdo) hit comes first: it comes
@@ -328,9 +358,9 @@ class AlertStore:
         """
         d = a.decision
         if d.listing.generic:
-            return (False, False, True, a.created_monotonic)
+            return (False, False, False, True, a.created_monotonic)
         ratio = net_yield(d.net_div, d.difficulty) or 0.0
-        return (a.super_jackpot, a.jackpot, False, ratio)
+        return (a.mega_jackpot, a.super_jackpot, a.jackpot, False, ratio)
 
     def _best(self) -> Alert | None:
         return max(self._alerts.values(), key=self._rank, default=None)
@@ -356,10 +386,13 @@ class AlertStore:
 
 def alert_sound(new_views, jackpot_alarm: bool = True) -> str:
     """The one sound a batch of new alerts plays, once. The biggest news in
-    the batch wins: a super jackpot's alarm, then a jackpot's alarm (both
+    the batch wins: a super mega jackpot's fanfare, a super jackpot's, then
+    a jackpot's (all
     only with alerts.jackpot_alarm on; off, a jackpot sounds like any other
     alert), then a non-Valdo hit's sound, else the Valdo alert."""
     if jackpot_alarm:
+        if any(getattr(v, "mega_jackpot", False) for v in new_views):
+            return "mega"
         if any(v.super_jackpot for v in new_views):
             return "super"
         if any(v.jackpot for v in new_views):

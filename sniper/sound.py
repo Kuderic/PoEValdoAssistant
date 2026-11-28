@@ -44,6 +44,9 @@ JACKPOT_PLAYS = 1
 # told apart by ear (once, 4.0 s).
 SUPER_JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm03.wav")
 SUPER_JACKPOT_PLAYS = 1
+# Super mega jackpot (the top tier): its own alarm again, in the Windows style.
+MEGA_JACKPOT_WAV = Path(r"C:\Windows\Media\Alarm04.wav")
+MEGA_JACKPOT_PLAYS = 1
 
 
 # Built-in SHORT alert sounds (alerts.short_sounds, on by default): synthesised
@@ -70,11 +73,12 @@ JINGLE_NOTES: dict[str, tuple[tuple[float, float, float], ...]] = {
     "generic": ((1047, 0.0, 0.24), (1319, 0.06, 0.24), (1568, 0.12, 0.28)),
 }
 JINGLE_ATTACK_S = 0.006
-# Jackpot and super jackpot FANFARES, the same in both built-in styles: one
-# play, never a repeated beep. A fast rising run that rings out into a
-# chord, with a touch of vibrato and a detuned shimmer the routine sounds
-# do not have, so it cannot be mistaken for an ordinary alert. The first
-# note is the loudest at its start: full level within ~2ms.
+# Jackpot and super jackpot FANFARES (the Short style's; Soft jingle has
+# its own chime version below): one play, never a repeated beep. A fast
+# rising run that rings out into a chord, with a touch of vibrato and a
+# detuned shimmer the routine sounds do not have, so it cannot be mistaken
+# for an ordinary alert. The first note is the loudest at its start: full
+# level within ~2ms.
 # (frequency Hz, start s, ring s, amplitude) per note.
 FANFARE_NOTES: dict[str, tuple[tuple[float, float, float, float], ...]] = {
     "jackpot": (
@@ -91,9 +95,53 @@ FANFARE_NOTES: dict[str, tuple[tuple[float, float, float, float], ...]] = {
         (2093, 0.20, 0.90, 0.75),
         (2637, 0.20, 0.95, 0.45),
     ),
+    # the top tier: a faster three-octave run into a bigger, higher chord
+    "mega": (
+        (523, 0.00, 0.30, 1.0),
+        (659, 0.04, 0.30, 0.6),
+        (784, 0.08, 0.30, 0.6),
+        (1047, 0.12, 0.35, 0.65),
+        (1319, 0.16, 0.40, 0.65),
+        (1568, 0.20, 0.45, 0.65),
+        (2093, 0.26, 1.00, 0.75),
+        (2637, 0.26, 1.00, 0.5),
+        (3136, 0.26, 1.00, 0.4),
+    ),
 }
 FANFARE_ATTACK_S = 0.004
 FANFARE_RELEASE_S = 0.03
+# The Soft jingle style's jackpot fanfares: the same rising run into a
+# chord, rung as bells (near-pure sines, the jingle's softer attack and long
+# tail, no vibrato or shimmer), so a jackpot still stands out from the
+# routine chimes without the brightness. Loud within JINGLE_ATTACK_S.
+# (frequency Hz, start s, ring s, amplitude) per note.
+CHIME_FANFARE_NOTES: dict[str, tuple[tuple[float, float, float, float], ...]] = {
+    "jackpot": (
+        (1047, 0.00, 0.80, 1.0),
+        (1319, 0.07, 0.80, 0.8),
+        (1568, 0.14, 0.90, 0.8),
+        (2093, 0.21, 0.95, 0.9),
+    ),
+    "super": (
+        (784, 0.00, 0.80, 1.0),
+        (1047, 0.06, 0.80, 0.75),
+        (1319, 0.12, 0.85, 0.75),
+        (1568, 0.18, 0.90, 0.75),
+        (2093, 0.24, 1.00, 0.85),
+        (2637, 0.24, 1.00, 0.5),
+    ),
+    "mega": (
+        (523, 0.00, 0.60, 1.0),
+        (659, 0.05, 0.60, 0.7),
+        (784, 0.10, 0.65, 0.7),
+        (1047, 0.15, 0.70, 0.75),
+        (1319, 0.20, 0.75, 0.75),
+        (1568, 0.25, 0.80, 0.75),
+        (2093, 0.30, 0.95, 0.85),
+        (2637, 0.30, 0.95, 0.55),
+        (3136, 0.30, 0.95, 0.4),
+    ),
+}
 # alerts.sound_style: what an empty sound setting plays
 SOUND_STYLES = ("short", "jingle", "windows")
 SYNTH_RATE = 44100
@@ -106,7 +154,7 @@ SYNTH_PEAK = 0.95  # never louder than this, of full scale
 # since a 0.1s sound reads quieter than a long one at the same level. So the
 # volume setting means what it meant before; normalising to full scale
 # instead made them ~18dB louder.
-SHORT_LEVELS = {"valdo": 0.06, "generic": 0.06, "jackpot": 0.13, "super": 0.13}
+SHORT_LEVELS = {"valdo": 0.06, "generic": 0.06, "jackpot": 0.13, "super": 0.13, "mega": 0.13}
 LEVEL_WINDOW_S = 0.1
 # bump when synth_wav itself changes, so cached files are rebuilt
 SYNTH_VERSION = 3
@@ -184,6 +232,26 @@ def synth_fanfare(notes, level: float = 0.13, rate: int = SYNTH_RATE) -> bytes:
     return _render(values, level, rate)
 
 
+def synth_chime_fanfare(notes, level: float = 0.13, rate: int = SYNTH_RATE) -> bytes:
+    """The Soft jingle's jackpot fanfare ((frequency, start s, ring s,
+    amplitude), ...): synth_jingle's bells, overlapping into a chord."""
+    import math
+
+    length = max(int(rate * start) + max(1, int(rate * ring)) for _, start, ring, _a in notes)
+    values = [0.0] * length
+    attack = max(1, int(rate * JINGLE_ATTACK_S))
+    release = max(1, int(rate * FANFARE_RELEASE_S))
+    for freq, start, ring, amp in notes:
+        first, n = int(rate * start), max(1, int(rate * ring))
+        tau = n / 4  # bright strike, long soft tail
+        for i in range(n):
+            t = i / rate
+            env = min(1.0, i / attack) * math.exp(-i / tau) * min(1.0, (n - i) / release)
+            tone = math.sin(2 * math.pi * freq * t) + 0.08 * math.sin(4 * math.pi * freq * t)
+            values[first + i] += amp * env * tone
+    return _render(values, level, rate)
+
+
 def _render(values: list[float], level: float, rate: int) -> bytes:
     """`values` as a mono 16-bit WAV, scaled so its loudest 100ms has RMS
     `level` (see SHORT_LEVELS) and never past SYNTH_PEAK."""
@@ -213,7 +281,7 @@ def _render(values: list[float], level: float, rate: int) -> bytes:
 
 def builtin_wav(kind: str, style: str = "short") -> Path | None:
     """The built-in sound for an alert kind in a style ("short" blips or the
-    soft "jingle"; jackpots get their fanfare in either), as a file
+    soft "jingle"; jackpots get a fanfare in each, bright or chimed), as a file
     (PlaySound plays files asynchronously, not memory). Written once to the
     temp folder under a name hashed from its recipe, so changing the recipe
     makes a new file. None for the "windows" style, an unknown kind, or when
@@ -221,8 +289,13 @@ def builtin_wav(kind: str, style: str = "short") -> Path | None:
     sound."""
     if style not in ("short", "jingle"):
         return None
-    if kind in FANFARE_NOTES:
-        style = "fanfare"  # one file for both styles
+    if kind in FANFARE_NOTES and style == "jingle":
+        style = "chime"
+        notes = CHIME_FANFARE_NOTES[kind]
+        make = synth_chime_fanfare
+        shape = (JINGLE_ATTACK_S, FANFARE_RELEASE_S)
+    elif kind in FANFARE_NOTES:
+        style = "fanfare"
         notes = FANFARE_NOTES[kind]
         make = synth_fanfare
         shape = (FANFARE_ATTACK_S, FANFARE_RELEASE_S)
