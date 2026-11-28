@@ -32,6 +32,7 @@ from sniper.bus import (
     GameStatus,
     HotkeyPressed,
     ListingSeen,
+    PopupKeyPressed,
     PriceStatus,
     PricingHealth,
     RewardPrice,
@@ -775,7 +776,7 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
     import tkinter as tk
 
     from sniper.config import SCORING_OVERRIDES_NAME
-    from sniper.hotkey import Hotkey, HotkeyError
+    from sniper.hotkey import Hotkey, HotkeyError, KeyHook, trigger_key
     from sniper.overlay import Overlay
 
     bus = Bus()
@@ -863,7 +864,14 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ValdoSniper.Overlay")
     root = tk.Tk()
-    Overlay(
+    popup_key: KeyHook | None = None  # hooked once the overlay exists
+
+    def on_popup_key(combo: str) -> str | None:
+        """The panel changed the pop-up's close key (already checked not to
+        share the hotkey's key). Error string or None."""
+        return popup_key.rebind(combo) if popup_key is not None else None
+
+    overlay = Overlay(
         root,
         bus,
         config,
@@ -874,11 +882,29 @@ def run_with_overlay(config: Config, updated_from: str | None = None) -> bool:
         on_jackpot_change=on_jackpot_change,
         overrides_path=config.state_dir / SCORING_OVERRIDES_NAME,
         on_update_install=on_update_install,
+        on_popup_key=on_popup_key,
     )
+
+    def popup_key_pressed() -> None:
+        """Keyboard hook thread: tiny. The key reaches the game either way;
+        it only means something to us while the alert pop-up shows."""
+        if overlay.popup_showing.is_set():
+            bus.put(PopupKeyPressed())
+
+    close_key = config.popup.dismiss_key
+    if close_key and trigger_key(close_key) == trigger_key(hotkey.combo):
+        event("popup_key_ignored", reason="same_as_hotkey", combo=close_key)
+        close_key = ""
+    try:
+        popup_key = KeyHook(close_key, popup_key_pressed, name="popup_key")
+    except ValueError as e:  # a bad key name in config.yaml: run without one
+        event("popup_key_ignored", reason=str(e), combo=close_key)
+        popup_key = KeyHook("", popup_key_pressed, name="popup_key")
     try:
         root.mainloop()
     finally:
         hotkey.unregister()
+        popup_key.unregister()
         client_log.stop()
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)

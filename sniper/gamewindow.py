@@ -72,6 +72,31 @@ def raise_without_focus(hwnd: int) -> bool:
     return True
 
 
+def minimize_without_focus(hwnd: int) -> bool:
+    """Minimize a window WITHOUT activating anything: SW_SHOWMINNOACTIVE,
+    not Tk's iconify (SW_MINIMIZE activates the next window in the Z order,
+    which can take the keyboard away from the game).
+
+    Asynchronous, from a helper thread: called on the Tk thread, ShowWindow
+    has Tk handle the minimize synchronously, and a Python binding it fires
+    then (<Unmap>, <Leave>...) runs with the GIL released by pywin32 - a
+    fatal "PyEval_RestoreThread" crash. From another thread the messages
+    reach Tk through its own event loop, where callbacks are safe. The
+    window is minimized a moment after this returns. False when win32 is
+    unavailable; the caller falls back to Tk."""
+    if win32gui is None or not hwnd:
+        return False
+
+    def run() -> None:
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOWMINNOACTIVE)
+        except Exception as e:
+            event("overlay_minimize_failed", reason=repr(e))
+
+    threading.Thread(target=run, name="overlay-minimize", daemon=True).start()
+    return True
+
+
 def stop_taskbar_flash(hwnd: int) -> None:
     """Cancel a window's orange taskbar flash. Windows starts one whenever
     it refuses a background process's request for the foreground; the user

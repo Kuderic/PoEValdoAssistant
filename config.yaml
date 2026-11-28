@@ -80,6 +80,18 @@ hotkey:
   # minimized) without taking focus from the game. Also in the ⚙ panel.
   raise_overlay: true
 
+# The alert pop-up, for running the overlay minimized: when an alert arrives
+# while it is minimized, it comes back (without taking focus from the game)
+# showing only its alert card, see-through. The teleport hotkey opens the
+# whole window; dismiss_key minimizes it again. All three are in the
+# ⚙ panel (General).
+popup:
+  enabled: true
+  opacity: 0.8   # 0.2 - 1
+  # a global key that acts only while the pop-up is showing; it still
+  # reaches the game. Empty = no key (use the window's minimize button).
+  dismiss_key: esc
+
 ninja:
   enabled: true
   refresh_minutes: 10

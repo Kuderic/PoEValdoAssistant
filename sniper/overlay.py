@@ -13,6 +13,7 @@ delivers AlertsChanged(new_alert=True); the frame->UI delta is logged as
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 import tkinter as tk
@@ -32,6 +33,7 @@ from sniper.bus import (
     GameStatus,
     HotkeyPressed,
     ListingSeen,
+    PopupKeyPressed,
     PriceStatus,
     PricingHealth,
     RewardPrices,
@@ -40,8 +42,9 @@ from sniper.bus import (
     UpdateStatus,
     WarmupStatus,
 )
-from sniper.config import Config
-from sniper.gamewindow import game_client_rect, raise_without_focus
+from sniper.config import POPUP_MIN_OPACITY, Config
+from sniper.gamewindow import game_client_rect, minimize_without_focus, raise_without_focus
+from sniper.hotkey import trigger_key
 from sniper.logging_setup import event
 from sniper.margin import net_yield
 from sniper.server import EXPECTED_USERSCRIPT_VERSION, INSTALL_PATH
@@ -589,6 +592,12 @@ TRAVEL_FAIL_S = 10.0
 SOUND_STYLE_LABELS = {"short": "Short", "jingle": "Soft jingle", "windows": "Windows"}
 # the settings panel's Test button shows the shop grid over the game this long
 SHOP_TEST_S = 10.0
+# the main window's smallest size; the alert pop-up lifts the height limit
+MIN_SIZE = (470, 380)
+# space kept under the alert card in the pop-up, so its border shows
+POPUP_GAP = 8
+# while the pop-up shows, how often to check whether it was minimized
+POPUP_WATCH_MS = 100
 # plain words for the userscript's click_result reasons
 FAIL_TEXT = {
     "row_gone": "listing is gone from the trade page",
@@ -765,6 +774,9 @@ class Overlay:
         overrides_path=None,  # Path for scoring_overrides.yaml persistence
         # Callable[[], None]: update pill clicked with an update staged
         on_update_install=None,
+        # Callable[[str], str | None]: the pop-up's close key changed in the
+        # panel -> error or None (the old key stays on an error)
+        on_popup_key=None,
     ):
         self._root = root
         self._bus = bus
@@ -775,6 +787,7 @@ class Overlay:
         self._on_price_recheck = on_price_recheck
         self._on_jackpot_change = on_jackpot_change
         self._on_update_install = on_update_install
+        self._on_popup_key = on_popup_key
         self._update: UpdateStatus | None = None
         self._jackpot_net = config.alerts.jackpot_min_net
         self._jackpot_yield = config.alerts.jackpot_min_yield
@@ -795,6 +808,22 @@ class Overlay:
         self._current_running_cost = config.thresholds.running_cost
         self._current_combo = config.hotkey.combo
         self._raise_on_hotkey = config.hotkey.raise_overlay
+        # Alert pop-up (config.popup): an alert arriving while this window is
+        # minimized brings it back without focus, cropped to its alert card
+        # and see-through. The teleport hotkey (or a travel, or a click on
+        # it) opens the whole window; the close key minimizes it again.
+        self._popup_enabled = config.popup.enabled
+        self._popup_opacity = config.popup.opacity
+        self._popup_key = config.popup.dismiss_key
+        # the window's full (width, height) while the pop-up shows; None =
+        # not showing
+        self._popup_full: tuple[int, int] | None = None
+        self._popup_fit_id: str | None = None
+        self._popup_watch_id: str | None = None
+        self._popup_closing = ""  # why it is being minimized ("key"), if it is
+        # read by the close key's hook thread (sniper.hotkey.KeyHook), so a
+        # press while no pop-up shows never even reaches the bus
+        self.popup_showing = threading.Event()
         # In-game shop marker (sniper.shopgrid / sniper.shopoverlay): after a
         # travel click lands, the seller's item cell is outlined over the
         # game once the hideout starts loading
@@ -864,7 +893,10 @@ class Overlay:
         root.geometry("515x800+40+40")
         # the four-column headline needs the width; below this the numbers
         # and their unit captions start clipping
-        root.minsize(470, 380)
+        root.minsize(*MIN_SIZE)
+        # a click into the pop-up opens the whole window. (Being minimized
+        # is watched by polling, not <Unmap>: see minimize_without_focus.)
+        root.bind("<FocusIn>", self._popup_focused, add="+")
         # bind_all so the zoom keys work from the settings panel too
         root.bind_all("<Control-plus>", lambda e: self._zoom(+1))
         root.bind_all("<Control-equal>", lambda e: self._zoom(+1))
@@ -1664,6 +1696,9 @@ class Overlay:
                 self._hide_fail()  # a new press: the old failure is news no more
                 if self._raise_on_hotkey:
                     self._raise_overlay()
+                self._popup_expand("hotkey")
+            elif isinstance(ev, PopupKeyPressed):
+                self._popup_dismiss("key")
             elif isinstance(ev, GameStatus):
                 self._game_label.config(
                     text="PoE running" if ev.running else "PoE not running",
@@ -1675,6 +1710,7 @@ class Overlay:
                 self._pin_top(ev.view)
                 alerts_dirty = True
                 self._shop_traveled(ev.view)
+                self._popup_expand("travel")
             elif isinstance(ev, AreaEntered):
                 self._shop_area(ev.area)
             elif isinstance(ev, ClientLogStatus):
@@ -1724,6 +1760,8 @@ class Overlay:
                 # a jackpot's alarm still playing is not cut off by a
                 # routine alert arriving a second later
                 self._play_sound(kind)
+            # after the sound: the pop-up's layout pass must not delay it
+            self._popup_on_alert()
 
     # ----------------------------------------------------------------- fonts
 
@@ -2290,6 +2328,142 @@ class Overlay:
             root.attributes("-topmost", True)
         event("overlay_raised")
 
+    # ------------------------------------------------------------ alert pop-up
+
+    def _hwnd(self) -> int:
+        try:
+            return int(self._root.wm_frame(), 16)
+        except (tk.TclError, ValueError):
+            return 0
+
+    def _normal_size(self) -> tuple[int, int]:
+        """The window's size when not minimized (Tk reports that while
+        minimized too)."""
+        m = re.match(r"(\d+)x(\d+)", self._root.geometry())
+        return (int(m[1]), int(m[2])) if m else (515, 800)
+
+    def _popup_height(self) -> int:
+        """Window height that shows everything down to the alert card's
+        bottom edge: the status strip, any top bars, the card."""
+        root = self._root
+        root.update_idletasks()
+        height = 0
+        for widget in root.pack_slaves():
+            pady = widget.pack_info().get("pady", 0)
+            pads = pady if isinstance(pady, tuple) else (pady, pady)
+            height += widget.winfo_reqheight() + sum(int(str(p)) for p in pads)
+            if widget is self._card:
+                break
+        return height + POPUP_GAP
+
+    def _popup_on_alert(self) -> None:
+        """A new alert: pop the window up if it is minimized."""
+        if not self._popup_enabled:
+            return
+        root = self._root
+        try:
+            if root.state() != "iconic":
+                return  # on screen already (or a pop-up up): render re-crops
+        except tk.TclError:
+            return
+        if self._popup_full is None:
+            self._popup_full = self._normal_size()
+        width = self._popup_full[0]
+        height = self._popup_height()
+        # set while still minimized: Tk applies it as the window comes back,
+        # so the full-size window never flashes up first
+        root.minsize(MIN_SIZE[0], 1)
+        root.attributes("-alpha", self._popup_opacity)
+        root.geometry(f"{width}x{height}")
+        self.popup_showing.set()
+        self._popup_closing = ""
+        self._raise_overlay()  # restores it WITHOUT taking the game's focus
+        event("popup_shown", height=height, opacity=self._popup_opacity)
+        if self._popup_watch_id is None:
+            self._popup_watch_id = root.after(POPUP_WATCH_MS, self._popup_watch)
+
+    def _popup_watch(self) -> None:
+        """While the pop-up is up: once the window is minimized - by the
+        close key, or by hand with the title bar's button - end the pop-up,
+        so it comes back full size and solid when next opened."""
+        self._popup_watch_id = None
+        if self._popup_full is None:
+            return
+        try:
+            minimized = self._root.state() == "iconic"
+        except tk.TclError:
+            return  # tearing down
+        if minimized:
+            self._popup_ended(self._popup_closing or "minimized")
+        else:
+            self._popup_watch_id = self._root.after(POPUP_WATCH_MS, self._popup_watch)
+
+    def _popup_ended(self, reason: str) -> None:
+        if self._popup_restore():
+            event("popup_dismissed", reason=reason, key=self._popup_key)
+
+    def _popup_fit(self) -> None:
+        self._popup_fit_id = None
+        if self._popup_full is None:
+            return
+        width, _ = self._normal_size()
+        self._root.geometry(f"{width}x{self._popup_height()}")
+
+    def _popup_restore(self) -> bool:
+        """End the pop-up: full size and opaque again. Works while
+        minimized too (Tk applies it when the window next comes back).
+        False when no pop-up was showing."""
+        if self._popup_full is None:
+            return False
+        _, full_height = self._popup_full
+        self._popup_full = None
+        self.popup_showing.clear()
+        self._popup_closing = ""
+        root = self._root
+        for timer in (self._popup_fit_id, self._popup_watch_id):
+            if timer is not None:
+                root.after_cancel(timer)
+        self._popup_fit_id = self._popup_watch_id = None
+        root.attributes("-alpha", 1.0)
+        root.minsize(*MIN_SIZE)
+        width, _ = self._normal_size()  # keep a width the user dragged
+        root.geometry(f"{width}x{full_height}")
+        return True
+
+    def _popup_expand(self, reason: str) -> None:
+        """Teleport hotkey / travel / click: the whole window, opaque."""
+        if self._popup_restore():
+            event("popup_expanded", reason=reason)
+
+    def _popup_dismiss(self, reason: str) -> None:
+        """The close key: minimize again, never activating another window.
+        The full size comes back once it is minimized (_popup_watch): set
+        before, the whole window would flash up first."""
+        if self._popup_full is None or self._popup_closing:
+            return
+        self._popup_closing = reason
+        self.popup_showing.clear()  # further presses are the game's alone
+        if not minimize_without_focus(self._hwnd()):
+            self._root.iconify()
+        if self._root.state() == "iconic":  # already (Tk's iconify)
+            self._popup_ended(reason)
+
+    def _popup_focused(self, e) -> None:
+        """Clicked into: the user wants the window, so all of it. The pop-up
+        itself never takes focus (it shows without activating)."""
+        if self._popup_full is not None and self._root.state() == "normal":
+            self._popup_expand("clicked")
+
+    def _set_popup(self, enabled: bool, opacity: float, key: str) -> None:
+        self._popup_enabled = enabled
+        self._popup_key = key
+        if opacity != self._popup_opacity:
+            self._popup_opacity = opacity
+            if self._popup_full is not None:
+                self._root.attributes("-alpha", opacity)
+        if not enabled:
+            self._popup_expand("disabled")
+
     # ------------------------------------------------------ in-game shop marker
 
     def _shop_traveled(self, view: AlertView) -> None:
@@ -2669,6 +2843,13 @@ class Overlay:
             self._setup_note.pack(fill="x", pady=(0, 4), after=self._trade_link)
 
     def _render_alerts(self) -> None:
+        self._render_alert_card()
+        if self._popup_full is not None and self._popup_fit_id is None:
+            # the card's height follows its content: keep the pop-up cut
+            # just under it (after the layout pass that sizes it)
+            self._popup_fit_id = self._root.after_idle(self._popup_fit)
+
+    def _render_alert_card(self) -> None:
         pinned = self._pinned_top
         top_widgets = self._top_widgets
         self._clear_frame(self._pairings)
@@ -3019,7 +3200,7 @@ class Overlay:
         Alerts       when to alert, jackpot bars
         Map scoring  failure risks, deadly pairings, difficulty rules
         Searches     live-search presets, reward price pins
-        General      hotkey & sound, files
+        General      hotkey & sound, alert pop-up, shop marker, files
 
         The search box looks through every tab at once: matching rows show
         in their cards, each card titled with the tab it lives on. Every
@@ -3503,6 +3684,57 @@ class Overlay:
         )
         end_card()
 
+        # Alert pop-up: for running this window minimized
+        heading("Alert pop-up")
+        popup_state = [self._popup_enabled]
+        card, r = next_row()
+        popup_hint = (
+            "While this window is minimized, an alert brings it back\n"
+            "showing only the alert card, see-through, without taking\n"
+            "the keyboard from the game. The teleport hotkey opens the\n"
+            "whole window; the close key below minimizes it again."
+        )
+        popup_name = row_label(card, r, "Pop up on alert when minimized", popup_hint)
+        popup_btn = tk.Label(card, bg=BOX, font=self._font("ui", 9), padx=8, cursor="hand2")
+
+        def show_popup_toggle() -> None:
+            on = popup_state[0]
+            popup_btn.config(text="☑ On" if on else "☐ Off", fg=GOOD if on else DIM)
+
+        def toggle_popup(_event=None) -> None:
+            popup_state[0] = not popup_state[0]
+            show_popup_toggle()
+            collect(save=True)
+
+        show_popup_toggle()
+        popup_btn.bind("<Button-1>", toggle_popup)
+        popup_btn.grid(row=r, column=1, columnspan=2, padx=(2, 12), pady=2, sticky="w")
+        self._popup_toggle = (popup_btn, toggle_popup)  # for tests
+        sections[-1]["rows"].append(
+            (
+                f"pop up on alert when minimized {popup_hint} popup window".casefold(),
+                [popup_name, popup_btn],
+            )
+        )
+        opacity_e = field(
+            "Pop-up opacity (%)",
+            _fmt(round(self._popup_opacity * 100)),
+            hint=f"{POPUP_MIN_OPACITY * 100:.0f} - 100. 100 = solid. The whole window is\n"
+            "solid again once the hotkey opens it.",
+            search="popup transparent transparency alpha see-through",
+        )
+        popup_key_e = field(
+            "Close pop-up key",
+            self._popup_key,
+            width=16,
+            hint="Minimizes the pop-up when you'd rather not travel.\n"
+            "Acts only while the pop-up shows, and the game still\n"
+            "gets the key. Empty = no key.",
+            search="popup dismiss minimize hide esc escape hotkey",
+        )
+        self._popup_fields = (opacity_e, popup_key_e)  # for tests
+        end_card()
+
         # In-game shop marker: its own file (shop_overlay.yaml) and its own
         # saves, so a calibration never waits on the rest of the panel
         heading("Shop marker (in game)")
@@ -3765,6 +3997,7 @@ class Overlay:
                 new_jp_yield = float(jp_yield_e.get())
                 new_sjp_net = float(sjp_net_e.get())
                 new_sjp_yield = float(sjp_yield_e.get())
+                new_opacity = float(opacity_e.get()) / 100
                 # start from the pins already in force: a reward whose live
                 # search opened after this panel did has no row here, and
                 # must not be silently un-pinned by an unrelated edit
@@ -3804,6 +4037,25 @@ class Overlay:
             if new_void_min_net < 0:
                 note.config(text="Void maps EV must be >= 0", fg=BAD)
                 return
+            if not POPUP_MIN_OPACITY <= new_opacity <= 1.0:
+                note.config(
+                    text=f"Pop-up opacity must be {POPUP_MIN_OPACITY * 100:.0f}-100", fg=BAD
+                )
+                return
+            new_popup_key = popup_key_e.get().strip()
+            if new_popup_key:
+                popup_trigger = trigger_key(new_popup_key)
+                if popup_trigger is None:
+                    note.config(text=f"Close pop-up key: {new_popup_key!r} is not a key", fg=BAD)
+                    return
+                if popup_trigger == trigger_key(new_combo):
+                    note.config(text="Close pop-up key must not be the hotkey's key", fg=BAD)
+                    return
+            if new_popup_key != self._popup_key and self._on_popup_key is not None:
+                error = self._on_popup_key(new_popup_key)
+                if error:
+                    note.config(text=error, fg=BAD)
+                    return
 
             error = None
             if self._on_settings_change:
@@ -3820,6 +4072,7 @@ class Overlay:
             self._current_running_cost = new_flat
             self._current_combo = new_combo
             self._raise_on_hotkey = raise_state[0]
+            self._set_popup(popup_state[0], new_opacity, new_popup_key)
             bars = (new_jp_net, new_jp_yield, new_sjp_net, new_sjp_yield)
             current = (self._jackpot_net, self._jackpot_yield, self._super_net, self._super_yield)
             if bars != current:
@@ -3862,6 +4115,9 @@ class Overlay:
                     raise_overlay=raise_state[0],
                     sound_style=self._sound_style,
                     void_min_net=new_void_min_net,
+                    popup_enabled=popup_state[0],
+                    popup_opacity=new_opacity,
+                    popup_key=new_popup_key,
                 )
             # never claim a pinned price was saved: it lives for this session
             # only, and "Saved" would read as a promise the app does not keep
@@ -3893,6 +4149,8 @@ class Overlay:
             combo_e,
             base_e,
             vol_e,
+            opacity_e,
+            popup_key_e,
             *entries.values(),
             *pair_entries.values(),
             *risk_entries.values(),

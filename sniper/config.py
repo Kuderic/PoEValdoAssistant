@@ -82,6 +82,9 @@ def save_scoring_overrides(
     raise_overlay: bool | None = None,
     sound_style: str | None = None,
     void_min_net: float | None = None,
+    popup_enabled: bool | None = None,
+    popup_opacity: float | None = None,
+    popup_key: str | None = None,
 ) -> None:
     """Persist tuning-panel values (numbers, hotkey combo, alert volume;
     match patterns stay in config.yaml)."""
@@ -120,6 +123,12 @@ def save_scoring_overrides(
         data["sound_style"] = sound_style
     if void_min_net is not None:
         data["void_min_net"] = void_min_net
+    if popup_enabled is not None:
+        data["popup_enabled"] = popup_enabled
+    if popup_opacity is not None:
+        data["popup_opacity"] = popup_opacity
+    if popup_key is not None:
+        data["popup_key"] = popup_key
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
@@ -138,6 +147,9 @@ def load_extra_overrides(path: Path) -> dict:
         "raise_overlay",
         "sound_style",
         "void_min_net",
+        "popup_enabled",
+        "popup_opacity",
+        "popup_key",
         *JACKPOT_KEYS,
     )
     return {k: raw[k] for k in keys if raw.get(k) is not None}
@@ -210,6 +222,22 @@ class HotkeyConfig:
     # bring the overlay to the front (restoring it if minimized) on every
     # press, without taking focus from the game
     raise_overlay: bool = True
+
+
+POPUP_MIN_OPACITY = 0.2  # below this the pop-up is too faint to read
+
+
+@dataclass(frozen=True)
+class PopupConfig:
+    """The alert pop-up: a minimized overlay comes back on an alert, showing
+    only its alert card, see-through. The teleport hotkey opens the whole
+    window; `dismiss_key` minimizes it again."""
+
+    enabled: bool = True
+    opacity: float = 0.8  # POPUP_MIN_OPACITY-1.0
+    # a global key, passed through to the game (never swallowed), that acts
+    # only while the pop-up is showing. Empty = no key.
+    dismiss_key: str = "esc"
 
 
 @dataclass(frozen=True)
@@ -400,6 +428,7 @@ class Config:
     logging: LoggingConfig
     updates: UpdatesConfig = field(default_factory=UpdatesConfig)
     shop_overlay: ShopOverlayConfig = field(default_factory=ShopOverlayConfig)
+    popup: PopupConfig = field(default_factory=PopupConfig)
     # folder for per-user state: scoring_overrides.yaml, price_cache.json
     state_dir: Path = field(default_factory=Path)
 
@@ -521,6 +550,19 @@ def load_config(
         raise ConfigError(f"hotkey.consume must be 'all' or 'top', got {hotkey.consume!r}")
     if not hotkey.combo.strip():
         raise ConfigError("hotkey.combo must not be empty")
+
+    popup = build(PopupConfig, "popup")
+    if not isinstance(popup.enabled, bool):
+        raise ConfigError("popup.enabled must be true or false")
+    try:
+        opacity = float(popup.opacity)
+    except (TypeError, ValueError):
+        raise ConfigError("popup.opacity must be a number") from None
+    if not POPUP_MIN_OPACITY <= opacity <= 1.0:
+        raise ConfigError(
+            f"popup.opacity must be between {POPUP_MIN_OPACITY} and 1, got {popup.opacity}"
+        )
+    popup = replace(popup, opacity=opacity, dismiss_key=str(popup.dismiss_key or "").strip())
 
     rules = []
     for i, entry in enumerate(raw.get("mod_warnings") or []):
@@ -707,6 +749,13 @@ def load_config(
         alerts = replace(alerts, volume=volume)
     if extra.get("sound_style") in SOUND_STYLES:
         alerts = replace(alerts, sound_style=extra["sound_style"])
+    if "popup_enabled" in extra:
+        popup = replace(popup, enabled=extra["popup_enabled"] is True)
+    if "popup_opacity" in extra:
+        opacity = min(1.0, max(POPUP_MIN_OPACITY, float(extra["popup_opacity"])))
+        popup = replace(popup, opacity=opacity)
+    if "popup_key" in extra:  # "" is a choice too: no key
+        popup = replace(popup, dismiss_key=str(extra["popup_key"]).strip())
     for key in JACKPOT_KEYS:
         if key in extra:
             alerts = replace(alerts, **{key: max(0.0, float(extra[key]))})
@@ -739,6 +788,7 @@ def load_config(
         logging=build(LoggingConfig, "logging"),
         updates=updates,
         shop_overlay=shop,
+        popup=popup,
         state_dir=state,
     )
 

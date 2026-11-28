@@ -50,6 +50,12 @@ class HotkeyPressed:
 
 
 @dataclass(frozen=True)
+class PopupKeyPressed:
+    """The alert pop-up's dismiss key was pressed while the pop-up showed
+    (sniper.hotkey.KeyHook): minimize it again. A local action only."""
+
+
+@dataclass(frozen=True)
 class AreaEntered:
     """PoE's client log says an area load started (sniper.clientlog)."""
 
@@ -177,6 +183,7 @@ UiEvent = (
     | GameStatus
     | Traveled
     | HotkeyPressed
+    | PopupKeyPressed
     | ListingSeen
     | RewardPrices
     | WarmupStatus

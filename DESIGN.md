@@ -732,6 +732,52 @@ listing can still be judged after its alert has gone.
   keeps the keyboard. The press publishes `HotkeyPressed` on the bus first.
 - Hotkey is inert (no-op with a soft warning) if the PoE process is not
   detected.
+- A press while the alert pop-up shows also opens the whole window (see
+  Alert pop-up).
+
+## Alert pop-up
+
+For users who keep the overlay minimized (`popup`: `enabled` true,
+`opacity` 0.8, `dismiss_key` esc; all three in the ⚙ panel's General tab,
+saved as `popup_enabled` / `popup_opacity` / `popup_key` in
+scoring_overrides.yaml).
+
+- **Show.** A new alert (after its sound) finds the main window minimized
+  (`wm state` iconic): its normal size is remembered, the height limit
+  lifted, `-alpha` set and the height cut to the alert card's bottom edge
+  (`_popup_height`: the packed slaves' requested heights + padding down to
+  `_card`, + `POPUP_GAP`) - all while still minimized, so Tk applies it as
+  the window comes back and the full-size window never flashes up. Then
+  `raise_without_focus` restores it with `SW_SHOWNOACTIVATE`: the game keeps
+  the keyboard. A window already on screen is left alone. While the pop-up
+  is up, every alerts render re-crops it after the layout pass (the card
+  follows its content).
+- **Expand** (`HotkeyPressed`, `Traveled`, or `<FocusIn>` - the user
+  clicked into it): opaque, the remembered height, the usual minimum size;
+  a width the user dragged is kept.
+- **Dismiss.** `sniper.hotkey.KeyHook` hooks the close key globally, never
+  suppressed (Esc still closes the game's panels), and it is a local action
+  only, so no game gate. Its hook-thread callback checks the overlay's
+  `popup_showing` Event and only then puts `PopupKeyPressed` on the bus. The
+  overlay minimizes with `SW_SHOWMINNOACTIVE` (Tk's iconify is
+  `SW_MINIMIZE`, which activates the next window in the Z order) and
+  restores size and opacity once the window is minimized, so the next manual
+  open is the normal window. A 100 ms `after` watch ends the pop-up the same
+  way when the user minimizes it by hand.
+- **Never call `ShowWindow` from the Tk thread with Python bindings that
+  the call can fire.** Tk handles a minimize synchronously inside the call,
+  and pywin32 has released the GIL around it, so a Python `<Unmap>` (or
+  `<Leave>`...) callback crashes the interpreter (`PyEval_RestoreThread`
+  fatal error, found in a real-window test). `minimize_without_focus`
+  therefore calls it from a helper thread: the messages then reach Tk
+  through its event loop, where callbacks are safe. That is also why being
+  minimized is polled, not bound to `<Unmap>`.
+- The close key and the teleport hotkey must not share a trigger key
+  (`trigger_key`): keyboard keys a hook's removal by its trigger, so
+  removing the second hook would fail. The panel refuses it; a config that
+  does it runs without a close key (logged `popup_key_ignored`).
+- Logged: `popup_shown`, `popup_expanded` (reason), `popup_dismissed`
+  (reason, key), `popup_key_bound`.
 
 ## Shop marker
 

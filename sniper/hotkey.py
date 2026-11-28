@@ -105,5 +105,68 @@ class Hotkey:
         event("hotkey_rebound", combo=combo)
         return None
 
+    @property
+    def combo(self) -> str:
+        return self._combo
+
     def unregister(self) -> None:
         self._remove()
+
+
+def trigger_key(combo: str) -> tuple | None:
+    """The scan codes of a combo's trigger (last) key; None if it does not
+    parse. Two hooks must never share one: keyboard keys a hook's removal
+    by its trigger, so removing the second would fail (see Hotkey.rebind)."""
+    try:
+        steps = keyboard.parse_hotkey(combo)
+    except Exception:
+        return None
+    return tuple(steps[0][-1]) if len(steps) == 1 else None
+
+
+class KeyHook:
+    """A global key for a LOCAL action - closing the alert pop-up - never a
+    server action. The key is not swallowed: the game still gets it (Esc
+    still closes its panels). `on_press` runs on keyboard's hook thread, so
+    it must be tiny and non-blocking. An empty combo hooks nothing."""
+
+    def __init__(self, combo: str, on_press: Callable[[], None], name: str = "key"):
+        self._name = name
+        self._on_press = on_press
+        self._combo = ""
+        self._remove: Callable[[], None] | None = None
+        error = self.rebind(combo)
+        if error:
+            raise ValueError(error)
+
+    @property
+    def combo(self) -> str:
+        return self._combo
+
+    def rebind(self, combo: str) -> str | None:
+        """Swap the key live. Returns an error (the old key stays) or None."""
+        combo = combo.strip()
+        if combo == self._combo and (self._remove is not None or not combo):
+            return None
+        if combo:
+            try:
+                keyboard.parse_hotkey(combo)
+            except Exception as e:
+                return f"invalid key {combo!r}: {e}"
+        old = self._combo
+        self.unregister()  # off before on: the same trigger may be re-hooked
+        try:
+            if combo:
+                self._remove = _hook_combo(combo, self._on_press)
+        except Exception as e:
+            if old:
+                self._remove = _hook_combo(old, self._on_press)
+            return f"invalid key {combo!r}: {e}"
+        self._combo = combo
+        event(f"{self._name}_bound", combo=combo)
+        return None
+
+    def unregister(self) -> None:
+        if self._remove is not None:
+            self._remove()
+            self._remove = None

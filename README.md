@@ -388,6 +388,18 @@ the loading screen, then you buy manually at Faustus. The hotkey works even
 while you hold Shift, Ctrl or another key, and holding it down counts as one
 press.
 
+**Keep it minimized if you like (alert pop-up):** with the window
+minimized, on either monitor, an alert brings it back showing **only the
+alert card** (the status strip and the card, nothing below), **80%
+opaque**, without taking the keyboard from the game. Press the **teleport
+hotkey** and the whole window opens, solid, as the travel goes out (a
+TELEPORT click or a click anywhere on the pop-up opens it too). Rather not
+travel? Press **Esc** and it minimizes again; it comes back full size the
+next time you open it yourself. Esc still reaches the game as usual, and it
+only means anything to the overlay while a pop-up is showing. Turn it off,
+change the opacity or pick another close key in **⚙ Settings → General →
+Alert pop-up**.
+
 **Travel again:** if a teleport didn't take, click the same listing again
 (the pinned card or its history row) after a couple of seconds. The trade
 tab refreshes that listing — the site locks a used Travel button until then
@@ -569,6 +581,7 @@ them when you know better than the market average, e.g. right after a patch.
 | `mod_warnings` | `block` rules — logged, never alerted, at any price |
 | `hotkey.combo` / `.consume` | Travel key; `all` clears every alert per press, `top` keeps runners-up (a *failed* travel gives them back either way) |
 | `hotkey.raise_overlay` | `true` (default): every press also brings the overlay to the front (restoring it if minimized) without taking focus from the game. `false` leaves it where it is. Also a toggle in ⚙ Settings |
+| `popup.enabled` / `.opacity` / `.dismiss_key` | Alert pop-up while minimized (on) / its opacity (0.8, from 0.2) / the key that minimizes it again (`esc`; empty = none). All three also in ⚙ Settings → General |
 | `shop_overlay.enabled` / `.seconds` | Outline the item in Faustus' shop after a travel (on) / for how long (60s). Toggle and calibration also in ⚙ Settings → General |
 | `shop_overlay.grid` / `.client_log` | The Merchant grid measured at some resolution (default: 2560×1440) / PoE's log path when it isn't found automatically |
 | `alerts.expiry_seconds` | How long an alert stays travel-able (16) |
